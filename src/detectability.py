@@ -170,15 +170,24 @@ class Detector:
 # ---------------------------------------------------------------------------
 def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
              noise_mm: float, n_trials: int, rng: np.random.Generator,
-             lead_in_days: float = 30.0) -> dict:
+             lead_in_days: float = 30.0, wavelength_m: float | None = None) -> dict:
     """
     One (precursor, revisit) cell of the sweep.
 
     lead_in_days of stable ground before onset, so the detector has to cope
     with a quiet period first rather than starting conveniently at onset.
+
+    wavelength_m, if given, imposes the PHASE UNWRAPPING CEILING. Interferometric
+    phase is ambiguous once displacement between passes exceeds lambda/4, so the
+    measurement is lost exactly when the slope accelerates hardest. Blatten
+    reached 0.65 m/day six days before failure, which is 100x above even the
+    1-day L-band ceiling - so phase saturates long before failure and only
+    offset tracking survives. Pass None to model offset tracking (no ceiling,
+    but use a much larger noise_mm).
     """
     T = precursor.duration_days
-    warnings, errors, alarms = [], [], 0
+    ceiling_mm = (wavelength_m / 4.0) * 1000.0 if wavelength_m else None
+    warnings, errors, alarms, saturated = [], [], 0, 0
 
     for _ in range(n_trials):
         # acquisitions on a fixed cadence with a random phase relative to onset
@@ -189,6 +198,19 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
             continue
 
         truth = np.where(t < 0, 0.0, precursor.displacement(np.maximum(t, 0.0)))
+
+        if ceiling_mm is not None:
+            # First interval whose true displacement exceeds lambda/4 aliases.
+            # Motion only accelerates, so everything after it is lost too.
+            step = np.abs(np.diff(truth))
+            bad = np.nonzero(step > ceiling_mm)[0]
+            if len(bad):
+                cut = int(bad[0]) + 1
+                t, truth = t[:cut], truth[:cut]
+                saturated += 1
+                if len(t) < detector.window + 1:
+                    continue
+
         obs = truth + rng.normal(0.0, noise_mm, size=len(t))
 
         result = detector.run(t, obs, failure_day=T)
@@ -197,11 +219,12 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
             warnings.append(result["warning_days"])
             errors.append(result["prediction_error_days"])
 
+    sat_rate = saturated / n_trials
     if alarms == 0:
         return {"revisit_days": revisit_days, "detection_rate": 0.0,
                 "warning_median": float("nan"), "warning_p25": float("nan"),
                 "warning_p75": float("nan"), "abs_pred_error_median": float("nan"),
-                "n_trials": n_trials}
+                "saturation_rate": sat_rate, "n_trials": n_trials}
 
     w = np.array(warnings)
     return {
@@ -211,6 +234,7 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
         "warning_p25": float(np.percentile(w, 25)),
         "warning_p75": float(np.percentile(w, 75)),
         "abs_pred_error_median": float(np.median(np.abs(errors))),
+        "saturation_rate": sat_rate,
         "n_trials": n_trials,
     }
 
@@ -219,34 +243,40 @@ REVISITS = [1, 2, 3, 4, 6, 8, 12, 16, 24]
 
 
 def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
-          creep_mm: float, detector: Detector, n_trials: int, seed: int) -> list[dict]:
+          creep_mm: float, detector: Detector, n_trials: int, seed: int,
+          wavelength_m: float | None = None) -> list[dict]:
     rng = np.random.default_rng(seed)
     rows = []
     for T in precursor_days:
         p = Precursor(duration_days=T, creep_to_1d_mm=creep_mm)
         print(f"\n{'='*74}")
+        mode = (f"PHASE, lambda={wavelength_m*100:.1f}cm" if wavelength_m
+                else "OFFSET TRACKING, no ceiling")
         print(f"PRECURSOR {T:g} days   ({creep_mm:g} mm creep to 1 day before failure, "
               f"noise {noise_mm:g} mm)")
+        print(f"MEASUREMENT: {mode}")
         print(f"{'='*74}")
-        print(f"{'REVISIT':>8}{'SAMPLES':>9}{'DETECT':>9}{'WARNING (days)':>26}{'|PRED ERR|':>12}")
-        print(f"{'days':>8}{'in T':>9}{'rate':>9}{'median [p25-p75]':>26}{'days':>12}")
+        print(f"{'REVISIT':>8}{'SAMPLES':>9}{'SATUR':>8}{'DETECT':>9}{'WARNING (days)':>24}{'|PRED ERR|':>11}")
+        print(f"{'days':>8}{'in T':>9}{'rate':>8}{'rate':>9}{'median [p25-p75]':>24}{'days':>11}")
         print("-" * 74)
         for dt in revisits:
-            r = simulate(p, detector, dt, noise_mm, n_trials, rng)
+            r = simulate(p, detector, dt, noise_mm, n_trials, rng,
+                         wavelength_m=wavelength_m)
             r["precursor_days"] = T
             r["noise_mm"] = noise_mm
             r["creep_mm"] = creep_mm
             rows.append(r)
             n_in = int(T // dt)
             rate = r["detection_rate"]
+            sat = f"{r.get('saturation_rate', 0):.0%}"
             if rate == 0:
-                print(f"{dt:>8g}{n_in:>9}{'never':>9}{'-':>26}{'-':>12}")
+                print(f"{dt:>8g}{n_in:>9}{sat:>8}{'never':>9}{'-':>24}{'-':>11}")
             else:
                 # a handful of lucky alarms is not detection - do not round it to 0%
                 shown = "<1%" if rate < 0.005 else f"{rate:.0%}"
                 band = f"{r['warning_median']:.1f} [{r['warning_p25']:.1f}-{r['warning_p75']:.1f}]"
-                print(f"{dt:>8g}{n_in:>9}{shown:>9}"
-                      f"{band:>26}{r['abs_pred_error_median']:>12.1f}")
+                print(f"{dt:>8g}{n_in:>9}{sat:>8}{shown:>9}"
+                      f"{band:>24}{r['abs_pred_error_median']:>11.1f}")
         # where does it stop working
         dead = [r["revisit_days"] for r in rows
                 if r["precursor_days"] == T and r["detection_rate"] < 0.5]
@@ -361,6 +391,12 @@ def main() -> int:
     ap.add_argument("--r2-min", type=float, default=0.70)
     ap.add_argument("--trials", type=int, default=400)
     ap.add_argument("--seed", type=int, default=20260829)
+    ap.add_argument("--wavelength", type=float, default=None,
+                    help="radar wavelength in m; imposes the lambda/4 phase ceiling. "
+                         "0.2384 = NISAR L-band, 0.0555 = Sentinel-1 C-band. "
+                         "Omit to model offset tracking (no ceiling).")
+    ap.add_argument("--blatten", action="store_true",
+                    help="calibrated Blatten preset: 7-day rapid phase, 10 m/day at failure")
     ap.add_argument("--csv", metavar="OUT.csv")
     ap.add_argument("--plot", metavar="OUT.png")
     args = ap.parse_args()
@@ -373,7 +409,7 @@ def main() -> int:
         return 0
 
     rows = sweep(args.precursor, args.revisit, args.noise, args.creep,
-                 det, args.trials, args.seed)
+                 det, args.trials, args.seed, args.wavelength)
 
     print("\n" + "=" * 74)
     print("These are MODEL results. Absolute warning times depend on the assumed")

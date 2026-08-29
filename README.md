@@ -163,9 +163,9 @@ Counter-intuitive detail worth keeping: velocity noise scales as
 Sampling density still wins, but the trade-off is why the cliff is sharp rather
 than gradual.
 
-**These are model results.** Absolute warning times depend on assumed precursor
-duration, creep amplitude and noise. Calibrate against a documented failure
-before quoting any number.
+**These are model results**, and the sweep above assumes measurement is always
+possible. It is not - see the Blatten calibration below, where the phase
+unwrapping ceiling removes the signal exactly when the slope accelerates.
 
 ---
 
@@ -283,6 +283,87 @@ methods brief.
 When ascending and descending have **opposite** sensitivity sign at a site, that
 is a genuine cross-check: real downslope motion must appear with opposite LOS
 sign in the two geometries, and atmospheric artefacts will not do that.
+
+---
+
+## Calibration against Blatten (28 May 2025)
+
+Published velocities for the Birch Glacier before it destroyed Blatten:
+
+| Date | Days to failure | Velocity |
+|------|-----------------|----------|
+| 14 May 2025 | 14 | instability first observed on Kleines Nesthorn |
+| 19 May 2025 | 9 | ~300 residents evacuated |
+| 21 May 2025 | 7 | flow speed begins rising |
+| 22 May 2025 | 6 | 0.5-0.8 m/day |
+| 24 May 2025 | 4 | 4-4.5 m/day |
+| 27 May 2025 | 1 | **10 m/day** |
+| 28 May 2025 15:24 | 0 | collapse, ~9 Mm3 |
+
+A Voight fit to those four velocity points gives alpha ~ 1.5, but with only
+four published, rounded values that is indicative rather than authoritative.
+The number that matters is the **scale**: metres per day, not millimetres.
+
+### The finding: phase-based InSAR cannot measure a failing slope
+
+Interferometric phase is ambiguous once displacement between passes exceeds
+lambda/4. That sets a hard velocity ceiling:
+
+| Band | lambda | lambda/4 | ceiling at 12 d | at 4 d | at 1 d |
+|------|--------|----------|-----------------|--------|--------|
+| L (NISAR) | 23.8 cm | 6.0 cm | 5.0 mm/day | 14.9 mm/day | 59.6 mm/day |
+| C (Sentinel-1) | 5.5 cm | 1.4 cm | 1.2 mm/day | 3.5 mm/day | 13.9 mm/day |
+
+Blatten was at **650 mm/day six days before failure** - already 10x above even
+the 1-day L-band ceiling. Simulating the calibrated event both ways:
+
+| Measurement | Revisit | Saturation | Detection | Warning |
+|-------------|---------|------------|-----------|---------|
+| Phase, L-band | 1 d | **100%** | 10% | unreliable (pred. error 21 d) |
+| Phase, L-band | 4 d | **100%** | never | - |
+| Offset tracking | 1 d | 0% | **100%** | **4.9 days** |
+| Offset tracking | 2 d | 0% | **100%** | 2.6 days |
+| Offset tracking | 4 d | 0% | 9% | - |
+
+**For a Blatten-class failure, interferometry is the wrong instrument.** Phase
+saturates the moment the slope starts running away. Offset tracking - GOFF, not
+GUNW - is the only satellite measurement that survives to failure, and it needs
+1-2 day revisit to give useful warning.
+
+The handful of "detections" in the phase rows fire during the pre-saturation
+noise and predict failure ~21 days out for a 7-day precursor. They are false
+alarms, not warnings; the prediction error column is what exposes them.
+
+### Two regimes, two instruments
+
+The ESA analysis of ALOS-2 and SAOCOM L-band found the Kleines Nesthorn flank
+creeping years ahead of failure: ~50 cm/yr by 2023, >150 cm/yr by August 2024.
+That is 1.4-4.1 mm/day - comfortably **inside** the 12-day L-band ceiling.
+
+| | Timescale | Velocity | Instrument | Answers |
+|---|-----------|----------|------------|---------|
+| **Site identification** | years | mm/day | InSAR phase, 12-day | *where* to watch |
+| **Failure timing** | days | m/day | offset tracking, 1-2 day | *when* to evacuate |
+
+Blatten was visible to phase InSAR for **years** before it failed, and invisible
+to it during the fortnight that actually mattered. Both statements are true and
+a credible warning system needs both instruments. This is the strongest argument
+in the project for treating revisit and product type as procurement decisions:
+a national agency buying daily commercial SAR with offset tracking gets the
+second regime, which no free mission currently provides.
+
+```bash
+# Blatten calibrated, phase-limited
+python src/detectability.py --sweep --precursor 7 --creep 27000     --noise 5 --wavelength 0.2384 --revisit 1 2 4 6 12
+
+# same event, offset tracking
+python src/detectability.py --sweep --precursor 7 --creep 27000     --noise 300 --revisit 1 2 4 6 12
+```
+
+Sources: published velocity timeline via Swiss cantonal reporting; long-term
+creep rates from the ESA EO4Society analysis of ALOS-2 / SAOCOM. Neither the
+raw monitoring series nor the InSAR time series is public, so the calibration
+rests on reported summary figures.
 
 ---
 
