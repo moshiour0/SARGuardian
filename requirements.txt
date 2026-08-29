@@ -1,0 +1,16 @@
+# Core — required
+numpy>=1.24
+h5py>=3.9
+
+# Download (search works without it, stdlib only)
+asf_search>=7.0
+
+# Optional — GeoTIFF export and reprojection
+rasterio>=1.3
+pyproj>=3.6
+
+# Optional — quicklooks
+matplotlib>=3.7
+
+# Optional — notebooks
+jupyterlab>=4.0
