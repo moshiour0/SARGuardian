@@ -169,6 +169,55 @@ before quoting any number.
 
 ---
 
+## Impoundment susceptibility
+
+`src/impoundment.py` maps where a landslide could dam a river and how much
+water it would hold. Terrain only - no SAR, no credentials.
+
+The 26 August 2026 cascade was not a single failure: ice/rock detachment ->
+channel blockage -> breach -> surge. The blockage is the multiplier that turns
+a local slope failure into a downstream flood, and blockage potential is a
+property of the terrain, so it can be mapped in advance.
+
+Priority-flood depression filling -> D8 flow routing -> flow accumulation ->
+channel extraction -> flood the upstream contributing area of each channel cell
+to a range of dam heights -> rank, with non-maximum suppression so one valley
+reach cannot fill the table.
+
+```bash
+python src/impoundment.py --api --aoi lhende --heights 25 50 100 150     --rank-by efficiency --geojson outputs/dam_sites_lhende.geojson
+```
+
+Default ranking is **volume per metre of blockage**, not maximum volume. Ranking
+by maximum volume just returns the largest dam height every time; what matters
+operationally is which sites impound a lot for a *small* blockage, because a
+25 m dam is a common event and a 150 m dam is not.
+
+Preliminary result, SRTM 30 m sampled to ~105 m cells:
+
+| AOI | Best site | Mm3/m | 25 m dam | 150 m dam | Sites >2 Mm3 at 25 m |
+|-----|-----------|-------|----------|-----------|----------------------|
+| Langtang | 28.2657 N, 85.5649 E | 0.10 | 2.4 Mm3 | 53.6 Mm3 | 3 of 10 |
+| Lhende Khola | 28.4180 N, 85.5577 E | 0.21 | 5.1 Mm3 | 78.9 Mm3 | 8 of 8 |
+
+**The Lhende Khola catchment is roughly twice as dammable as Langtang**, and
+every site tested there impounds Thame-scale water (>2 Mm3) from only a 25 m
+blockage. That is consistent with a cascade being possible there, though it is
+terrain susceptibility, not a reconstruction of what happened.
+
+Cross this layer with InSAR deformation on the flanking slopes and you get a
+two-factor alert: a site that is both **dammable** and **moving**. That is the
+actual thesis of SARGuardian, and it is defensible in a way a single AI risk
+score is not.
+
+**Limits, and state them in the paper.** Pools are not tested for spilling over
+cols, so volumes are upper bounds near divides. Dam height is imposed, not
+predicted - couple to a runout model before calling any number a forecast. SRTM
+dates from 2000, so terrain reshaped since (the 2015 Gorkha avalanche through
+Langtang) is out of date.
+
+---
+
 ## Method notes
 
 Two hazard classes, different physics, different tooling:
