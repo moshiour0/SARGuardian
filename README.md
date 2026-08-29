@@ -218,6 +218,74 @@ Langtang) is out of date.
 
 ---
 
+## Multi-geometry merge
+
+`src/geometry_merge.py` combines ascending and descending LOS series into one
+denser record of downslope motion.
+
+**You can never interfere ascending with descending** - different look
+geometry, zero coherence. But once each geometry has its own inverted LOS
+series you are combining *measurements*, not phase, and those merge fine.
+
+InSAR sees only the component along the line of sight. On a hillslope the
+standard fix is to assume motion is downslope, take that direction from the
+DEM, and solve for its magnitude:
+
+    d_downslope = d_los / (slope_hat . los_hat)
+
+That denominator is the **sensitivity**. Near zero, the track is blind and
+dividing by it amplifies noise without limit. The tool computes it per track
+and rejects geometries below a threshold.
+
+Heading comes from orbital inclination and latitude
+(`sin(heading_asc) = cos(i)/cos(lat)`), so no per-scene metadata is needed to
+plan.
+
+```bash
+# Which tracks can even see motion here? Needs no data.
+python src/geometry_merge.py --sensitivity --lat 28.29 --lon 85.51
+
+# Merge the per-geometry series from timeseries.py
+python src/geometry_merge.py --merge --ts outputs/ts.csv     --lat 28.29 --lon 85.51 --csv outputs/merged.csv --plot outputs/merged.png
+```
+
+Example, a north-facing 17-degree slope at 28.29 N 85.51 E:
+
+| Track | Heading | Sensitivity | Noise x | Verdict |
+|-------|---------|-------------|---------|---------|
+| S1 ASC 85 | 350.7 | -0.437 | 2.3 | usable |
+| NISAR ASC 98 | 350.5 | -0.437 | 2.3 | usable |
+| NISAR DESC 48 | 189.5 | -0.225 | 4.5 | **blind** |
+| S1 DESC 19 | 189.3 | -0.215 | 4.7 | **blind** |
+| S1 DESC 121 | 189.3 | -0.215 | 4.7 | **blind** |
+
+Two of five tracks usable, giving ~6-day combined sampling instead of 12.
+
+### Sensitivity is not the same thing as layover
+
+Earlier analysis found descending is the better geometry here for **visibility**
+- 1.9% of the AOI in layover/shadow against 9.3% for ascending. This table says
+ascending is better for **sensitivity** on this particular slope. Both are true
+and they are different questions: layover asks whether the sensor can image the
+ground at all, sensitivity asks whether the motion projects into the line of
+sight once it can. Check both before choosing a track.
+
+### The cancellation trap
+
+A slope facing the satellite at close to the incidence angle has **near-zero**
+sensitivity, because horizontal approach and vertical drop cancel in range. At
+39 degrees incidence on a descending pass, an ESE-facing 35-degree slope gives
+sensitivity +0.07 - effectively invisible - while a WNW-facing slope of the same
+steepness gives -0.96, near ideal. A fast-moving slope can therefore show
+nothing at all. This is the quantitative version of the geometry warning in the
+methods brief.
+
+When ascending and descending have **opposite** sensitivity sign at a site, that
+is a genuine cross-check: real downslope motion must appear with opposite LOS
+sign in the two geometries, and atmospheric artefacts will not do that.
+
+---
+
 ## Method notes
 
 Two hazard classes, different physics, different tooling:
