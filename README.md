@@ -120,6 +120,55 @@ AOI, away from ice and the valley floor, and check its coherence first.
 
 ---
 
+## Detectability: how much revisit do you need?
+
+`src/detectability.py` simulates accelerating creep to failure (Voight,
+alpha = 2), runs an inverse-velocity detector (Fukuzono) over samples taken at
+a fixed revisit interval, and measures how much warning survives. It needs no
+data.
+
+```bash
+python src/detectability.py --sweep --plot outputs/detectability.png
+python src/detectability.py --demo --precursor 10 --revisit 4
+```
+
+Result, across 600 noise realisations per cell (5 mm LOS noise, 300 mm creep):
+
+| Precursor | Detection collapses at | Usable revisit |
+|-----------|------------------------|----------------|
+| 5 days    | >= 2 days              | <= 1.7 days    |
+| 10 days   | >= 4 days              | <= 3.3 days    |
+| 20 days   | >= 8 days              | <= 6.7 days    |
+| 40 days   | >= 16 days             | <= 13.3 days   |
+
+**Revisit must be shorter than about one third of the precursor duration.**
+The collapse lands at precursor/2.5 in every case tested - a sharp cliff, not
+a gentle decline, because the detector needs at least three velocity estimates
+inside the accelerating phase to fit a trend.
+
+Applied to a Blatten-class 10-day precursor:
+
+| Configuration | Revisit | Detection |
+|---------------|---------|-----------|
+| Single Sentinel-1 track | 12 d | **never** |
+| NISAR + Sentinel-1, all 5 tracks combined | 4 d | 22% - marginal |
+| Commercial tasking (ICEYE / Capella / Umbra) | 1 d | 100%, ~6 days warning |
+
+This is the argument for the pipeline being sensor-agnostic: **revisit is a
+procurement decision, not a scientific limit.** A national agency that tasks
+daily commercial SAR gets operational early warning from the same code.
+
+Counter-intuitive detail worth keeping: velocity noise scales as
+`sigma*sqrt(2)/dt`, so a *longer* revisit gives a *quieter* velocity estimate.
+Sampling density still wins, but the trade-off is why the cliff is sharp rather
+than gradual.
+
+**These are model results.** Absolute warning times depend on assumed precursor
+duration, creep amplitude and noise. Calibrate against a documented failure
+before quoting any number.
+
+---
+
 ## Method notes
 
 Two hazard classes, different physics, different tooling:
