@@ -97,7 +97,9 @@ NISAR_REPEAT_DAYS = 12
 ASF_API = "https://api.daac.asf.alaska.edu/services/search/param"
 RESULT_CAP = 2000          # ASF silently truncates here
 
-WORKSPACE = Path(os.getenv("WORKSPACE_DIR", "./workspace_langtang"))
+# Default under data/ so downloads never land inside src/. Override with
+# WORKSPACE_DIR, and run src/organise.py afterwards to sort by product.
+WORKSPACE = Path(os.getenv("WORKSPACE_DIR", "./data"))
 
 # NISAR product groups. Filtering server-side is essential: an unfiltered NISAR
 # query over this AOI returns >2000 rows, of which ~1900 are ECMWF_SMST weather
@@ -325,7 +327,7 @@ def download(product_types: list[str], records: list[dict]) -> None:
         logger.warning("Nothing matches %s", product_types)
         return
 
-    outdir = WORKSPACE / "nisar_l2"
+    outdir = WORKSPACE / "nisar_l2" / "_incoming"
     outdir.mkdir(parents=True, exist_ok=True)
     session = build_session()
 

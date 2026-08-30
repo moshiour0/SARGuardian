@@ -202,48 +202,93 @@ def read_gunw(
     ref_radius_px: int = 5,
     clip_aoi: bool = True,
     flip_sign: bool = False,
+    apply_iono: bool = True,
+    auto_ref: bool = False,
 ) -> dict:
     with h5py.File(path, "r") as f:
         datasets = walk(f)
 
         p_phase = find(datasets, "unwrappedphase", ndim=2)
-        p_coh = find(datasets, "coherencemagnitude", ndim=2) or find(datasets, "coherence", ndim=2)
-        p_conn = find(datasets, "connectedcomponents", ndim=2)
-        p_mask = find(datasets, "layovershadowmask", ndim=2) or find(datasets, "mask", ndim=2)
-        p_x = find(datasets, "xcoordinates", ndim=1)
-        p_y = find(datasets, "ycoordinates", ndim=1)
-
         if not p_phase:
             raise RuntimeError(
                 "No 'unwrappedPhase' dataset found. Run --inspect and check the layout."
             )
 
-        logger.info("phase      : %s %s", p_phase, datasets[p_phase][0])
-        logger.info("coherence  : %s", p_coh or "NOT FOUND")
-        logger.info("components : %s", p_conn or "not found")
+        # A real GUNW carries THREE grids at different postings:
+        #   unwrappedInterferogram   4275 x 4356
+        #   pixelOffsets             4275 x 4356
+        #   wrappedInterferogram    17100 x 17424
+        # Several layer names (coherenceMagnitude, xCoordinates, projection)
+        # appear in more than one of them. Searching the whole file by name can
+        # therefore pair the WRAPPED coherence with the UNWRAPPED phase and blow
+        # up on the shape mismatch. Anchor every sibling lookup to the group the
+        # phase actually lives in, and to its parent for grid-level layers.
+        grp = p_phase.rsplit("/", 1)[0]              # .../unwrappedInterferogram/HH
+        parent = grp.rsplit("/", 1)[0]               # .../unwrappedInterferogram
+        shape = datasets[p_phase][0]
+
+        def sibling(*names, group=grp, ndim=2):
+            for n in names:
+                for cand in (f"{group}/{n}", f"{parent}/{n}"):
+                    for key, (shp, _dt) in datasets.items():
+                        if key.lower() == cand.lower() and len(shp) == ndim:
+                            if ndim != 2 or shp == shape:
+                                return key
+            return None
+
+        p_coh = sibling("coherenceMagnitude", "coherence")
+        p_conn = sibling("connectedComponents")
+        p_mask = sibling("mask", "layoverShadowMask")
+        p_iono = sibling("ionospherePhaseScreen")
+        p_x = sibling("xCoordinates", ndim=1)
+        p_y = sibling("yCoordinates", ndim=1)
+
+        logger.info("group      : %s", grp)
+        logger.info("phase      : %s", shape)
+        logger.info("coherence  : %s", p_coh.rsplit("/", 1)[-1] if p_coh else "NOT FOUND")
+        logger.info("components : %s", p_conn.rsplit("/", 1)[-1] if p_conn else "not found")
+        logger.info("ionosphere : %s", p_iono.rsplit("/", 1)[-1] if p_iono else "not found")
 
         phase = np.asarray(f[p_phase][()], dtype=np.float64)
         coherence = np.asarray(f[p_coh][()], dtype=np.float64) if p_coh else None
         components = np.asarray(f[p_conn][()]) if p_conn else None
         losmask = np.asarray(f[p_mask][()]) if p_mask else None
+        iono = np.asarray(f[p_iono][()], dtype=np.float64) if p_iono else None
         xs = np.asarray(f[p_x][()], dtype=np.float64) if p_x else None
         ys = np.asarray(f[p_y][()], dtype=np.float64) if p_y else None
 
         epsg = None
-        p_proj = find(datasets, "projection")
-        if p_proj:
-            try:
-                val = f[p_proj]
-                epsg = int(val.attrs.get("epsg_code", np.ravel(val[()])[0]))
-            except Exception:
-                pass
+        for cand in (f"{grp}/projection", f"{parent}/projection"):
+            hit = next((k for k in datasets if k.lower() == cand.lower()), None)
+            if hit:
+                try:
+                    val = f[hit]
+                    epsg = int(val.attrs.get("epsg_code", np.ravel(val[()])[0]))
+                    break
+                except Exception:
+                    pass
 
         wavelength = read_wavelength(f, datasets)
 
-    # phase -> LOS displacement, millimetres
+    # Ionospheric correction. L-band phase delay scales as 1/f^2, so NISAR is
+    # far more affected than C-band and ships an estimated screen with every
+    # GUNW. Subtract it unless explicitly told not to.
+    iono_rms_mm = None
     scale = -(wavelength / (4.0 * math.pi)) * 1000.0
     if flip_sign:
         scale = -scale
+
+    if iono is not None and apply_iono and iono.shape == phase.shape:
+        good = np.isfinite(iono)
+        if good.any():
+            iono_rms_mm = float(np.sqrt(np.nanmean((iono[good] * scale) ** 2)))
+        phase = phase - np.nan_to_num(iono, nan=0.0)
+        logger.info("Ionosphere screen subtracted (RMS %.1f mm in LOS)",
+                    iono_rms_mm if iono_rms_mm is not None else float("nan"))
+    elif iono is not None and not apply_iono:
+        logger.warning("Ionosphere screen present but NOT applied (--no-iono)")
+
+    # phase -> LOS displacement, millimetres
     disp = phase * scale
 
     valid = np.isfinite(disp) & (phase != 0)
@@ -256,11 +301,21 @@ def read_gunw(
         valid &= components > 0          # component 0 = not reliably unwrapped
         gates["connected_component>0"] = int(valid.sum())
     if losmask is not None and losmask.shape == valid.shape:
-        try:
-            valid &= losmask == 0        # 0 = good in the usual convention
-            gates["layover/shadow clear"] = int(valid.sum())
-        except Exception:
-            pass
+        # NISAR's GUNW 'mask' is NOT a layover/shadow flag. Per its own
+        # description it is a three-digit code:
+        #     hundreds = water flag in the reference RSLC (1 = water)
+        #     tens     = subswath number in the reference RSLC (0 = invalid)
+        #     units    = subswath number in the secondary RSLC (0 = invalid)
+        # So a usable pixel is dry land that fell inside a real subswath in
+        # BOTH acquisitions. Naively keeping mask == 0 keeps precisely the
+        # pixels that were invalid in both - the exact inverse of what you want.
+        m = losmask.astype(np.int32)
+        water = m // 100
+        ref_sub = (m // 10) % 10
+        sec_sub = m % 10
+        usable = (water == 0) & (ref_sub > 0) & (sec_sub > 0) & (losmask != 255)
+        valid &= usable
+        gates["land + valid subswath"] = int(valid.sum())
 
     # Quality mask WITHOUT the AOI clip. The reference point is usually chosen
     # on stable ground outside the area of interest, so it must not be clipped
@@ -274,8 +329,55 @@ def read_gunw(
             valid &= aoi_mask
             gates["inside AOI"] = int(valid.sum())
 
+    # Automatic reference selection. Guessing a reference point does not work:
+    # on this scene the three "obvious" choices had ZERO usable pixels because
+    # winter snow had decorrelated them, while a block 8 km away sat at 0.84
+    # coherence. Pick the best fully-valid block instead, preferring ground
+    # outside the AOI so the reference is not part of what is being measured.
+    if auto_ref and xs is not None and ys is not None:
+        blk = max(3, 2 * ref_radius_px + 1)
+        ny, nx = coherence.shape if coherence is not None else disp.shape
+        by, bx = ny // blk, nx // blk
+        if by and bx:
+            cut_v = quality_valid[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+            full = cut_v.all(axis=(1, 3))
+            if aoi_mask is not None:
+                cut_a = aoi_mask[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+                full &= ~cut_a.any(axis=(1, 3))       # keep blocks clear of the AOI
+            if coherence is not None:
+                cut_c = coherence[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+                score = np.where(full, cut_c.mean(axis=(1, 3)), -1.0)
+            else:
+                score = full.astype(float) - (~full)
+            if score.max() > 0:
+                bi, bj = np.unravel_index(int(np.argmax(score)), score.shape)
+                i = bi * blk + blk // 2
+                j = bj * blk + blk // 2
+                ref_lon, ref_lat = float(xs[j]), float(ys[i])   # grid units here
+                logger.info("Auto reference: grid (%d, %d), mean coherence %.2f",
+                            i, j, float(score[bi, bj]))
+                _auto_grid_ref = (i, j)
+            else:
+                logger.warning("Auto reference found no fully-valid block.")
+                _auto_grid_ref = None
+        else:
+            _auto_grid_ref = None
+    else:
+        _auto_grid_ref = None
+
     # reference correction - unwrapped phase is relative
     ref_value = None
+    if _auto_grid_ref is not None:
+        i, j = _auto_grid_ref
+        r = ref_radius_px
+        window = disp[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
+        wvalid = quality_valid[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
+        if wvalid.sum() > 0:
+            ref_value = float(np.median(window[wvalid]))
+            disp = disp - ref_value
+            logger.info("Referenced automatically: subtracted %.2f mm (%d px)",
+                        ref_value, int(wvalid.sum()))
+        ref_lat = ref_lon = None      # consumed; skip the manual branch below
     if ref_lat is not None and ref_lon is not None and xs is not None and ys is not None:
         rx, ry = ref_lon, ref_lat
         if epsg and epsg != 4326:
@@ -301,10 +403,10 @@ def read_gunw(
                     "Reference window at %.4f N %.4f E has no usable pixels - NOT referenced. "
                     "Pick a point with good coherence, or widen --ref-radius.",
                     ref_lat, ref_lon)
-    else:
+    elif ref_value is None:
         logger.warning(
-            "No reference point given. Values are RELATIVE - differences within "
-            "the scene are meaningful, absolute magnitudes are not."
+            "No reference applied. Values are RELATIVE - differences within the "
+            "scene are meaningful, absolute magnitudes are not. Use --auto-ref."
         )
 
     return {
@@ -316,6 +418,7 @@ def read_gunw(
         "valid": valid,
         "xs": xs, "ys": ys, "epsg": epsg,
         "wavelength_m": wavelength,
+        "iono_rms_mm": iono_rms_mm,
         "ref_value_mm": ref_value,
         "gates": gates,
     }
@@ -333,6 +436,8 @@ def report(result: dict) -> dict:
     print(f"  wavelength      {result['wavelength_m']:.4f} m")
     if result["epsg"]:
         print(f"  projection      EPSG:{result['epsg']}")
+    if result.get("iono_rms_mm") is not None:
+        print(f"  iono screen     {result['iono_rms_mm']:.1f} mm RMS (subtracted)")
 
     print("\n  quality gates (cumulative):")
     for name, n in result["gates"].items():
@@ -450,6 +555,11 @@ def main() -> int:
     ap.add_argument("--ref-radius", type=int, default=5, help="reference window half-width in pixels")
     ap.add_argument("--no-clip", action="store_true", help="do not clip to the AOI ring")
     ap.add_argument("--flip-sign", action="store_true", help="invert the LOS sign convention")
+    ap.add_argument("--auto-ref", action="store_true",
+                    help="pick the highest-coherence fully-valid block outside the AOI "
+                         "as the reference, instead of guessing a lat/lon")
+    ap.add_argument("--no-iono", action="store_true",
+                    help="do NOT subtract the ionosphere phase screen")
     ap.add_argument("--geotiff", metavar="OUT.tif")
     ap.add_argument("--quicklook", metavar="OUT.png")
     ap.add_argument("--csv", metavar="OUT.csv", help="write per-pair statistics")
@@ -477,6 +587,8 @@ def main() -> int:
                 coherence_threshold=args.coh_threshold,
                 ref_lat=args.ref_lat, ref_lon=args.ref_lon, ref_radius_px=args.ref_radius,
                 clip_aoi=not args.no_clip, flip_sign=args.flip_sign,
+                apply_iono=not args.no_iono,
+                auto_ref=args.auto_ref,
             )
         except Exception as exc:
             logger.error("%s: %s", fp.name, exc)
