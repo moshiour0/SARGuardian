@@ -367,6 +367,59 @@ rests on reported summary figures.
 
 ---
 
+## GOFF: offset tracking
+
+`src/goff_reader.py` reads NISAR L2 pixel offsets. Use it wherever the slope is
+moving too fast for phase.
+
+```bash
+python src/goff_reader.py --inspect FILE.h5
+python src/goff_reader.py --read FILE.h5 --quicklook outputs/goff.png
+python src/goff_reader.py --noise-floor data/nisar_l2/GOFF/2025-12_winter
+```
+
+Products carry `slantRangeOffset` and `alongTrackOffset` in **metres**, plus
+per-pixel variance, `correlationSurfacePeak` and `snr`, across **three** layers
+at different correlation window sizes. NASA labels them *raw, unculled,
+unfiltered*, so gating, deramping and outlier rejection are the caller's job.
+
+Processing chain: correlation and SNR gates, AOI clip, auto-reference on the
+best fully-valid block outside the AOI, **planar deramp** fitted on stable
+ground outside the AOI, then MAD-based culling.
+
+Deramping matters. A stable winter pair showed a -646 mm median before it and
+-146 mm after: residual orbit and coregistration error leaves a tilt across the
+field that a single constant cannot remove.
+
+### Measured noise floor
+
+Winter pairs over a static glacier, so the scatter in the referenced field *is*
+the detection threshold:
+
+| Layer | Range sigma | 3-sigma floor |
+|-------|-------------|---------------|
+| layer1 (fine window) | 171 mm | 43 mm/day |
+| layer2 | 114 mm | 29 mm/day |
+| **layer3 (coarse window)** | **72 mm** | **18 mm/day** |
+
+Best-case pairs reach 18 mm/day; the median across all five winter pairs is
+75 mm/day, so quality varies by a factor of four between acquisitions. Quote
+the median, not the best.
+
+**The blind band is therefore about 5 to 18 mm/day at best, 5 to 75 mm/day
+typically** - above the GUNW phase ceiling, below GOFF sensitivity. That is
+measured, not assumed, and it is much narrower than the 5-125 mm/day I had
+estimated before the data arrived.
+
+### Polarisation
+
+Quad-pol (`QD`) products carry both HH and VV. In these scenes **VV has no
+valid pixels at all** while HH is fine, so layers are keyed by polarisation and
+layer together - keying on the layer alone lets VV silently overwrite HH and
+the whole read collapses to nothing.
+
+---
+
 ## Method notes
 
 Two hazard classes, different physics, different tooling:
