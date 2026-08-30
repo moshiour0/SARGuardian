@@ -420,6 +420,53 @@ the whole read collapses to nothing.
 
 ---
 
+## Inverse-velocity forecasting on measured data
+
+`src/inverse_velocity.py` is the step that turns the pipeline into an alarm.
+Fukuzono's construction: for accelerating creep, `1/v` falls linearly and
+crosses zero at the failure time, so fitting a trailing window and
+extrapolating the x-intercept gives a predicted failure date.
+
+```bash
+python src/inverse_velocity.py --ts outputs/ts_goff_summer.csv     --noise-floor 75 --event-date 2026-08-26 --plot outputs/inverse_velocity.png
+```
+
+It differs from the simulation in `detectability.py` in one decisive way: a
+**significance gate**. Every velocity must exceed a multiple of the *measured*
+noise floor before it may enter a fit. Without that an inverse-velocity fit
+will happily forecast failure from three noise samples. Measure the floor
+first with `goff_reader.py --noise-floor`.
+
+When no alarm fires it reports which gate stopped it and what velocity would
+have been required. A null with that bound attached is publishable; a null
+without it is silence.
+
+### First result on real data
+
+GOFF layer3, both geometries, Lhende Khola box, July-August 2026:
+
+| Geometry | Intervals | Fastest measured | Required | Verdict |
+|----------|-----------|------------------|----------|---------|
+| ASC 98 | 3 | +1.28 mm/day | 75 mm/day | no alarm |
+| DESC 48 | 2 | +1.55 mm/day | 75 mm/day | no alarm |
+
+**Shortfall: 48x.** No motion above 75 mm/day in the six weeks before the
+collapse. That is a bounded non-detection, and the bound is the result.
+
+### The finding that follows from it
+
+Apparent motion is ~1.5 mm/day. That is:
+
+- **below** the GOFF detection floor of 75 mm/day, so offsets cannot see it
+- **below** the GUNW phase ceiling of 5.1 mm/day, so interferometry *can*
+
+So for this site and this period, **GUNW is the correct product and GOFF is
+the wrong one.** The two-regime argument is no longer theoretical: the ground
+here sits squarely in the phase regime, and the offset product was never going
+to resolve it. Prioritise the GUNW summer pairs.
+
+---
+
 ## Method notes
 
 Two hazard classes, different physics, different tooling:
