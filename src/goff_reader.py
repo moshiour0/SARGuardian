@@ -60,7 +60,8 @@ except ImportError:
     raise SystemExit(1)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gunw_reader import AOI_RING, build_aoi_mask, walk, read_pair_dates  # noqa: E402
+import gunw_reader as _g  # noqa: E402
+from gunw_reader import build_aoi_mask, walk, read_pair_dates, set_aoi  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("goff")
@@ -167,7 +168,7 @@ def read_goff(
 
         aoi_mask = None
         if clip_aoi:
-            aoi_mask = build_aoi_mask(L["xs"], L["ys"], AOI_RING, L["epsg"])
+            aoi_mask = build_aoi_mask(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
             if aoi_mask is not None:
                 valid &= aoi_mask
                 gates["inside AOI"] = int(valid.sum())
@@ -428,6 +429,8 @@ def main() -> int:
     m.add_argument("--batch", metavar="DIR")
     m.add_argument("--noise-floor", metavar="DIR",
                    help="measure the detection floor on pairs you believe are stable")
+    ap.add_argument("--aoi", choices=("langtang", "lhende"), default="langtang",
+                    help="which box to clip to; lhende is the 26 Aug source zone")
     ap.add_argument("--layer", default="best", help="layer1, layer2, or best (both)")
     ap.add_argument("--correlation", type=float, default=DEFAULT_CORRELATION)
     ap.add_argument("--snr", type=float, default=DEFAULT_SNR)
@@ -439,6 +442,8 @@ def main() -> int:
     ap.add_argument("--quicklook", metavar="OUT.png")
     ap.add_argument("--csv", metavar="OUT.csv")
     args = ap.parse_args()
+
+    set_aoi(args.aoi)
 
     kw = dict(layer=args.layer, correlation_min=args.correlation, snr_min=args.snr,
               cull_sigma=args.cull_sigma, clip_aoi=not args.no_clip,

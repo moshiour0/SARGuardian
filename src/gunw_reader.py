@@ -66,8 +66,10 @@ SPEED_OF_LIGHT = 299_792_458.0
 NISAR_L_BAND_HZ = 1_257_500_000.0          # fallback if not in the file
 DEFAULT_COHERENCE = 0.3
 
-# Langtang AOI. Replace with LHENDE_RING for the source-zone box.
-AOI_RING = [
+# Areas of interest. Select at runtime with --aoi; do NOT edit this by hand,
+# because the Langtang box does NOT contain the 26 Aug 2026 failure zone -
+# that sits ~9 km north, in the Lhende Khola catchment.
+LANGTANG_RING = [
     (85.46683434336315, 28.324709534140283),
     (85.45910958140026, 28.277704299412660),
     (85.47267083017955, 28.253664665263376),
@@ -81,6 +83,22 @@ AOI_RING = [
     (85.52468159309214, 28.328333765691790),
     (85.50614216438120, 28.329693690212682),
 ]
+
+LHENDE_RING = [
+    (85.44, 28.34), (85.62, 28.34), (85.62, 28.47), (85.44, 28.47),
+]
+
+AOIS = {"langtang": LANGTANG_RING, "lhende": LHENDE_RING}
+
+AOI_RING = LANGTANG_RING          # module default; set_aoi() overrides
+
+
+def set_aoi(name: str) -> None:
+    """Switch the active AOI. Both readers import AOI_RING from here."""
+    global AOI_RING
+    if name not in AOIS:
+        raise SystemExit(f"Unknown AOI '{name}'. Choose from {sorted(AOIS)}")
+    AOI_RING = AOIS[name]
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +342,7 @@ def read_gunw(
 
     aoi_mask = None
     if clip_aoi and xs is not None and ys is not None:
-        aoi_mask = build_aoi_mask(xs, ys, AOI_RING, epsg)
+        aoi_mask = build_aoi_mask(xs, ys, globals()['AOI_RING'], epsg)
         if aoi_mask is not None:
             valid &= aoi_mask
             gates["inside AOI"] = int(valid.sum())
@@ -555,6 +573,8 @@ def main() -> int:
     ap.add_argument("--ref-radius", type=int, default=5, help="reference window half-width in pixels")
     ap.add_argument("--no-clip", action="store_true", help="do not clip to the AOI ring")
     ap.add_argument("--flip-sign", action="store_true", help="invert the LOS sign convention")
+    ap.add_argument("--aoi", choices=("langtang", "lhende"), default="langtang",
+                    help="which box to clip to; lhende is the 26 Aug source zone")
     ap.add_argument("--auto-ref", action="store_true",
                     help="pick the highest-coherence fully-valid block outside the AOI "
                          "as the reference, instead of guessing a lat/lon")
@@ -564,6 +584,8 @@ def main() -> int:
     ap.add_argument("--quicklook", metavar="OUT.png")
     ap.add_argument("--csv", metavar="OUT.csv", help="write per-pair statistics")
     args = ap.parse_args()
+
+    set_aoi(args.aoi)
 
     if args.inspect:
         inspect(Path(args.inspect)); return 0
