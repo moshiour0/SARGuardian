@@ -522,6 +522,70 @@ def write_geotiff(result: dict, out: Path) -> None:
     logger.info("Wrote %s", out)
 
 
+
+def export_clipped(result: dict, outdir: Path) -> dict:
+    """
+    Write only the AOI subset, so a 2.4 GB product becomes a file you can email.
+
+    The full grid is 4275 x 4356; the AOI is a few hundred cells across. Writing
+    the clip rather than the frame is a ~1000x reduction and loses nothing that
+    the analysis uses. Bands: displacement (mm) and coherence.
+    """
+    try:
+        import rasterio
+        from rasterio.transform import from_origin
+    except ImportError:
+        logger.error("rasterio required for --export:  pip install rasterio")
+        return {}
+
+    xs, ys = result["xs"], result["ys"]
+    if xs is None or ys is None:
+        logger.error("No coordinates - cannot export.")
+        return {}
+
+    valid = result["valid"]
+    rows = np.any(valid, axis=1)
+    cols = np.any(valid, axis=0)
+    if not rows.any() or not cols.any():
+        logger.warning("Nothing valid to export for %s", result["file"][:44])
+        return {}
+    r0, r1 = int(np.argmax(rows)), int(len(rows) - np.argmax(rows[::-1]))
+    c0, c1 = int(np.argmax(cols)), int(len(cols) - np.argmax(cols[::-1]))
+
+    disp = np.where(valid, result["displacement_mm"], np.nan)[r0:r1, c0:c1].astype("float32")
+    coh = (np.where(valid, result["coherence"], np.nan)[r0:r1, c0:c1].astype("float32")
+           if result["coherence"] is not None else None)
+    sub_x, sub_y = xs[c0:c1], ys[r0:r1]
+
+    resx = abs(float(xs[1] - xs[0])); resy = abs(float(ys[1] - ys[0]))
+    transform = from_origin(float(sub_x.min()) - resx / 2,
+                            float(sub_y.max()) + resy / 2, resx, resy)
+    if sub_y[0] < sub_y[-1]:
+        disp = np.flipud(disp)
+        if coh is not None:
+            coh = np.flipud(coh)
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    stem = f"{result['reference_date']}_{result['secondary_date']}"
+    target = outdir / f"GUNW_{stem}.tif"
+    count = 2 if coh is not None else 1
+    with rasterio.open(target, "w", driver="GTiff", height=disp.shape[0],
+                       width=disp.shape[1], count=count, dtype="float32",
+                       crs=f"EPSG:{result['epsg'] or 4326}", transform=transform,
+                       nodata=np.nan, compress="deflate", predictor=3) as dst:
+        dst.write(disp, 1); dst.set_band_description(1, "LOS displacement (mm)")
+        if coh is not None:
+            dst.write(coh, 2); dst.set_band_description(2, "coherence")
+        dst.update_tags(reference=result["reference_date"],
+                        secondary=result["secondary_date"],
+                        wavelength_m=str(result["wavelength_m"]),
+                        source=result["file"])
+    mb = target.stat().st_size / 1024 / 1024
+    logger.info("Exported %s  %dx%d  %.2f MB", target.name, disp.shape[0], disp.shape[1], mb)
+    return {"export_file": target.name, "export_mb": round(mb, 3),
+            "export_rows": disp.shape[0], "export_cols": disp.shape[1]}
+
+
 def write_quicklook(result: dict, out: Path) -> None:
     try:
         import matplotlib
@@ -583,6 +647,8 @@ def main() -> int:
     ap.add_argument("--geotiff", metavar="OUT.tif")
     ap.add_argument("--quicklook", metavar="OUT.png")
     ap.add_argument("--csv", metavar="OUT.csv", help="write per-pair statistics")
+    ap.add_argument("--export", metavar="DIR",
+                    help="write AOI-clipped GeoTIFFs (small enough to send back)")
     args = ap.parse_args()
 
     set_aoi(args.aoi)
@@ -594,7 +660,7 @@ def main() -> int:
     if args.read:
         files = [Path(args.read)]
     elif args.batch:
-        files = sorted(p for p in Path(args.batch).glob("*.h5") if "GUNW" in p.name.upper())
+        files = sorted(p for p in Path(args.batch).rglob("*.h5") if "GUNW" in p.name.upper())
         if not files:
             logger.error("No *GUNW*.h5 files in %s", args.batch); return 1
         logger.info("Found %d GUNW files", len(files))
@@ -615,7 +681,10 @@ def main() -> int:
         except Exception as exc:
             logger.error("%s: %s", fp.name, exc)
             continue
-        rows.append(report(result))
+        row = report(result)
+        if args.export:
+            row.update(export_clipped(result, Path(args.export)))
+        rows.append(row)
         if args.geotiff and len(files) == 1:
             write_geotiff(result, Path(args.geotiff))
         if args.quicklook and len(files) == 1:

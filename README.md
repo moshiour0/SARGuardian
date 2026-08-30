@@ -467,6 +467,71 @@ to resolve it. Prioritise the GUNW summer pairs.
 
 ---
 
+## Working with a teammate who holds the data
+
+Products are 1-2.4 GB each. Derived results are not. `--export` writes only the
+AOI clip, so a 2.4 GB GUNW becomes a **0.1-0.2 MB** GeoTIFF carrying LOS
+displacement and coherence, georeferenced and tagged with its pair dates.
+
+Measured on the three winter GUNW: **488 KB total from 6.6 GB of source.**
+Thirteen pairs come to roughly 2 MB - small enough to email.
+
+### What the teammate runs
+
+```bash
+git pull
+pip install -r requirements.txt          # pyproj and rasterio are required
+
+python src/organise.py --src <wherever their files are>
+python src/organise.py --src <wherever their files are> --apply
+
+python src/gunw_reader.py --inspect data/nisar_l2/GUNW/*/NISAR_L2_*GUNW*.h5
+
+python src/gunw_reader.py --batch data/nisar_l2/GUNW     --aoi lhende --auto-ref     --export outputs/export --csv outputs/gunw_stats.csv
+```
+
+Then zip `outputs/` and send it back. That is the whole handoff: **the .h5 files
+never move.**
+
+Run it twice, once per AOI, if both boxes are still in play - change `--aoi` and
+the export directory.
+
+---
+
+## The noise floor is seasonal, and not in the direction you would guess
+
+Same AOI (Lhende), same product, same layer3:
+
+| Season | Range sigma | 3-sigma floor |
+|--------|-------------|---------------|
+| Winter (Nov-Dec) | 189 mm | **47 mm/day** |
+| Monsoon (Jul-Aug) | 38 mm | **7 mm/day** |
+
+**Monsoon is six times better than winter.** Snow, not rain, is what destroys
+offset-tracking correlation in high mountains: fresh cover changes the surface
+texture between passes, while in summer you are tracking bare rock and ice that
+holds its speckle.
+
+This matters twice. It reverses the usual assumption that monsoon acquisitions
+are the poor ones. And it nearly closes the gap between products:
+
+| | Velocity |
+|---|---|
+| GUNW phase ceiling | 5.1 mm/day |
+| GOFF monsoon floor | 7.3 mm/day |
+| **Blind band** | **5.1 - 7.3 mm/day, a factor of 1.4** |
+
+Against the 5-125 mm/day I assumed before any data existed. In monsoon
+conditions the two products very nearly meet, so almost nothing is invisible to
+both - and the earlier winter-based floor of 75 mm/day was pessimistic by an
+order of magnitude because it was measured in the wrong season and on the wrong
+AOI.
+
+Revised bound on the Nepal non-detection: **no motion above 7.3 mm/day** in the
+six weeks before the collapse, a shortfall of 4.7x rather than 48x.
+
+---
+
 ## Method notes
 
 Two hazard classes, different physics, different tooling:
