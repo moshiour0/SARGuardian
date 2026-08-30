@@ -3,10 +3,6 @@
 Multi-hazard Earth intelligence from SAR. Current focus: **glacier and landslide
 deformation in the Nepal Himalaya**, built on NASA NISAR L-band interferometry.
 
-> Folder is still named `Weatherly` from an earlier project. Contents are
-> SARGuardian only. The previous project is archived at
-> `../Weatherly_backup_20260829.zip`.
-
 ---
 
 ## Why NISAR L2
