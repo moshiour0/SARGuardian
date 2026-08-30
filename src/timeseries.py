@@ -121,15 +121,23 @@ def pairs_from_catalogue() -> list[Pair]:
     )
 
 
-def pairs_from_dir(directory: Path) -> list[Pair]:
-    files = sorted(p for p in directory.glob("*.h5") if "GUNW" in p.name.upper())
+def pairs_from_dir(directory: Path, product: str = "GUNW") -> list[Pair]:
+    """
+    Collect pairs from a folder tree. product is GUNW or GOFF.
+
+    Both are interferometric pairs with the same naming, so the network logic
+    is identical - only the reader differs. Searching recursively so the
+    organised layout (GUNW/2025-11_winter/...) works without extra flags.
+    """
+    product = product.upper()
+    files = sorted(p for p in directory.rglob("*.h5") if product in p.name.upper())
     if not files:
-        logger.error("No *GUNW*.h5 in %s", directory)
+        logger.error("No *%s*.h5 under %s", product, directory)
         return []
     out = []
     for fp in files:
         stamps = re.findall(r"_(\d{8})T\d{6}", fp.name)
-        m = re.search(r"_GUNW_\d+_(\d+)_([AD])_", fp.name)
+        m = re.search(rf"_{product}_\d+_(\d+)_([AD])_", fp.name)
         if len(stamps) < 4 or not m:
             logger.warning("Cannot parse %s", fp.name)
             continue
@@ -297,7 +305,8 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
                   ref_lat: float | None, ref_lon: float | None,
                   clip_aoi: bool, flip_sign: bool,
                   target_lat: float | None = None, target_lon: float | None = None,
-                  target_radius_px: int = 5) -> None:
+                  target_radius_px: int = 5, auto_ref: bool = False,
+                  goff_layer: str = "layer2") -> None:
     """
     Fill Pair.value with a displacement measurement from each GUNW.
 
@@ -315,10 +324,25 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
     for p in pairs:
         if not p.source or not Path(p.source).exists():
             continue
+        is_goff = "GOFF" in Path(p.source).name.upper()
         try:
-            r = read_gunw(Path(p.source), coherence_threshold=coh_threshold,
-                          ref_lat=ref_lat, ref_lon=ref_lon,
-                          clip_aoi=clip_aoi, flip_sign=flip_sign)
+            if is_goff:
+                # GOFF has no phase. Slant-range offset IS the LOS component,
+                # so it drops straight into the same inversion - the network
+                # maths does not care which product measured the difference.
+                from goff_reader import read_goff
+                g = read_goff(Path(p.source), layer=goff_layer, clip_aoi=clip_aoi)
+                key = next((k for k in g["layers"] if k.endswith(goff_layer)),
+                           sorted(g["layers"])[0])
+                L = g["layers"][key]
+                r = {"valid": L["valid"],
+                     "displacement_mm": L["range_m"] * 1000.0,
+                     "coherence": L["correlation"],
+                     "xs": L["xs"], "ys": L["ys"], "epsg": L["epsg"]}
+            else:
+                r = read_gunw(Path(p.source), coherence_threshold=coh_threshold,
+                              ref_lat=ref_lat, ref_lon=ref_lon, auto_ref=auto_ref,
+                              clip_aoi=clip_aoi, flip_sign=flip_sign)
         except Exception as exc:
             logger.error("%s: %s", Path(p.source).name, exc)
             continue
@@ -435,6 +459,13 @@ def main() -> int:
                      help="analyse network from ASF without downloading")
     ap.add_argument("--network", action="store_true", help="network structure only")
     ap.add_argument("--invert", action="store_true", help="run the inversion (needs --dir)")
+    ap.add_argument("--product", choices=("GUNW", "GOFF"), default="GUNW",
+                    help="which product to build the series from")
+    ap.add_argument("--goff-layer", default="layer2",
+                    help="GOFF correlation-window layer (layer3 is usually quietest)")
+    ap.add_argument("--aoi", choices=("langtang", "lhende"), default="langtang")
+    ap.add_argument("--auto-ref", action="store_true",
+                    help="pick the reference automatically (recommended)")
     ap.add_argument("--coh-threshold", type=float, default=0.3)
     ap.add_argument("--ref-lat", type=float)
     ap.add_argument("--ref-lon", type=float)
@@ -448,7 +479,11 @@ def main() -> int:
     ap.add_argument("--json", metavar="OUT.json", help="dump the network summary")
     args = ap.parse_args()
 
-    pairs = pairs_from_catalogue() if args.from_catalogue else pairs_from_dir(Path(args.dir))
+    from gunw_reader import set_aoi
+    set_aoi(args.aoi)
+
+    pairs = (pairs_from_catalogue() if args.from_catalogue
+             else pairs_from_dir(Path(args.dir), args.product))
     if not pairs:
         logger.error("No pairs found.")
         return 1
@@ -482,7 +517,8 @@ def main() -> int:
         )
     measure_pairs(pairs, args.coh_threshold, args.ref_lat, args.ref_lon,
                   not args.no_clip, args.flip_sign,
-                  args.target_lat, args.target_lon, args.target_radius)
+                  args.target_lat, args.target_lon, args.target_radius,
+                  auto_ref=args.auto_ref, goff_layer=args.goff_layer)
 
     by_geom = defaultdict(list)
     for p in pairs:
