@@ -134,8 +134,19 @@ def main() -> int:
         src = None
         logger.info("Found %d file(s)", len(files))
 
+    # Skip only what is ALREADY filed in a product/season bucket. The staging
+    # folder data/nisar_l2/_incoming/ lives under dest too, and excluding
+    # everything below dest silently threw away every fresh download - which is
+    # precisely where downloads land.
     dest_resolved = dest.resolve()
-    files = [f for f in files if dest_resolved not in f.resolve().parents]
+    incoming_resolved = (dest / "_incoming").resolve()
+
+    def already_filed(f: Path) -> bool:
+        parents = f.resolve().parents
+        return dest_resolved in parents and incoming_resolved not in parents
+
+    n_filed = sum(1 for f in files if already_filed(f))
+    files = [f for f in files if not already_filed(f)]
 
     recs, skipped = [], []
     for fp in files:
@@ -144,6 +155,21 @@ def main() -> int:
 
     for s in skipped:
         logger.warning("Unparsed, left in place: %s", s)
+
+    if not recs:
+        if n_filed and not files:
+            # Everything is already in a product/season bucket. Normal state,
+            # not a failure - re-running organise.py must always be safe.
+            logger.info("Nothing to do: all %d product(s) are already filed.", n_filed)
+            return 0
+        logger.error("Found %d .h5 file(s) but none are NISAR L2 granules.", len(files))
+        print()
+        print("Expected names like:")
+        print("  NISAR_L2_PR_GUNW_026_048_D_074_028_4000_SH_20260723T...h5")
+        print()
+        print("Downloads belong in data/nisar_l2/_incoming/ (any subfolder is fine).")
+        print(describe_layout())
+        return 1
 
     recs.sort(key=lambda r: (r["product"], r["reference"], r["path"]))
     total_gb = sum(r["size_mb"] for r in recs) / 1024

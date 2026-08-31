@@ -49,10 +49,17 @@ to use — single frame, best geometry.
 ## Setup
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate        # Windows;  source .venv/bin/activate elsewhere
+python3 -m venv .venv
+source .venv/bin/activate     # Linux/macOS;  .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
+
+On most Linux distributions the command is `python3`, not `python`. Substitute
+it throughout, or install `python-is-python3`.
+
+A `.venv` inside the repository is fine — the tools skip virtualenvs when
+searching for data. Without that they would report h5py's own bundled test
+files (`vlen_string_dset.h5` and friends) as NISAR products.
 
 Credentials — either a `.env` from `.env.example`, or `~/.netrc`
 (`~/_netrc` on Windows), which most geospatial tools already expect:

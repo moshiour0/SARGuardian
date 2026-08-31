@@ -48,6 +48,23 @@ SEARCH_ROOTS = [
     ROOT,
 ]
 
+# Directories that must never be walked. A virtualenv inside the repository is
+# the dangerous one: h5py ships test fixtures called things like
+# vlen_string_dset.h5 and compound-dtype-complex.h5, and a naive recursive
+# search happily "finds" them as NISAR products.
+EXCLUDE_DIRS = {
+    ".venv", "venv", "env", ".env",
+    "site-packages", "dist-packages", "node_modules",
+    ".git", "__pycache__", ".ipynb_checkpoints", ".tox", ".mypy_cache",
+}
+
+# A real NISAR L2 granule. Anything not matching this is not our data.
+NISAR_NAME = "NISAR_"
+
+
+def _is_excluded(path: Path) -> bool:
+    return any(part in EXCLUDE_DIRS for part in path.parts)
+
 
 def resolve(p: str | Path) -> Path:
     """
@@ -71,17 +88,27 @@ def resolve(p: str | Path) -> Path:
     return p            # let the caller report a clean "not found"
 
 
-def find_products(product: str | None = None, roots=None) -> list[Path]:
+def find_products(product: str | None = None, roots=None,
+                  strict: bool = True) -> list[Path]:
     """
     Every NISAR .h5 under the repository, deduplicated, newest layout first.
 
     product filters on the granule name (GUNW, GOFF, RSLC...). Case-insensitive.
+
+    strict keeps only files whose name starts with NISAR_, and skips
+    virtualenvs and caches entirely. Without it a repo containing a .venv
+    reports h5py's own test fixtures as products.
     """
     seen: dict[Path, None] = {}
     for root in (roots or SEARCH_ROOTS):
         if not root.exists():
             continue
         for f in sorted(root.rglob("*.h5")):
+            rel = f.relative_to(root) if root in f.parents else f
+            if _is_excluded(rel) or _is_excluded(f):
+                continue
+            if strict and not f.name.upper().startswith(NISAR_NAME):
+                continue
             if product and product.upper() not in f.name.upper():
                 continue
             seen.setdefault(f.resolve(), None)
