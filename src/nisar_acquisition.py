@@ -99,7 +99,12 @@ RESULT_CAP = 2000          # ASF silently truncates here
 
 # Default under data/ so downloads never land inside src/. Override with
 # WORKSPACE_DIR, and run src/organise.py afterwards to sort by product.
-WORKSPACE = Path(os.getenv("WORKSPACE_DIR", "./data"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import DATA, resolve  # noqa: E402
+
+# Anchored to the repository root, so downloads land in <repo>/data no matter
+# which directory the command was run from.
+WORKSPACE = resolve(os.getenv("WORKSPACE_DIR", "")) if os.getenv("WORKSPACE_DIR") else DATA
 
 # NISAR product groups. Filtering server-side is essential: an unfiltered NISAR
 # query over this AOI returns >2000 rows, of which ~1900 are ECMWF_SMST weather

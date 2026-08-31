@@ -61,6 +61,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("timeseries")
 
+from paths import NISAR, resolve  # noqa: E402
+
 EVENT_DATE = date(2026, 8, 26)
 
 
@@ -454,7 +456,8 @@ def plot_series(all_rows: list[dict], out: Path) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="GUNW pairs -> cumulative LOS time series")
     src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--dir", metavar="DIR", help="directory of GUNW .h5 files")
+    src.add_argument("--dir", metavar="DIR", nargs="?", const=str(NISAR),
+                     help="folder of products (default: data/nisar_l2)")
     src.add_argument("--from-catalogue", action="store_true",
                      help="analyse network from ASF without downloading")
     ap.add_argument("--network", action="store_true", help="network structure only")
@@ -483,7 +486,7 @@ def main() -> int:
     set_aoi(args.aoi)
 
     pairs = (pairs_from_catalogue() if args.from_catalogue
-             else pairs_from_dir(Path(args.dir), args.product))
+             else pairs_from_dir(resolve(args.dir), args.product))
     if not pairs:
         logger.error("No pairs found.")
         return 1

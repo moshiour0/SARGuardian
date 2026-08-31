@@ -64,6 +64,9 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("inv-velocity")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import resolve  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 def load_series(path: Path) -> dict[tuple[str, int], list[dict]]:
@@ -265,7 +268,7 @@ def main() -> int:
     args = ap.parse_args()
 
     ev = datetime.strptime(args.event_date, "%Y-%m-%d").date() if args.event_date else None
-    series = load_series(Path(args.ts))
+    series = load_series(resolve(args.ts))
     if not series:
         logger.error("No rows in %s", args.ts); return 1
 

@@ -28,8 +28,8 @@ Moves by default (these files are 1-2 GB; copying wastes disk). Dry-run unless
 
 Usage
 -----
-    python src/organise.py --src src/workspace_langtang/nisar_l2
-    python src/organise.py --src src/workspace_langtang/nisar_l2 --apply
+    python src/organise.py                 # find the files wherever they are
+    python src/organise.py --apply         # then actually move them
 """
 
 from __future__ import annotations
@@ -43,11 +43,14 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import ROOT, NISAR, find_products, resolve, describe_layout  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("organise")
 
 EVENT_DATE = date(2026, 8, 26)
-DEST_DEFAULT = Path("data/nisar_l2")
+DEST_DEFAULT = NISAR
 
 NAME = re.compile(
     r"NISAR_L2_(?P<proc>[A-Z]{2})_(?P<product>[A-Z]{4})_"
@@ -93,22 +96,46 @@ def bucket(rec: dict) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Organise NISAR L2 downloads")
-    ap.add_argument("--src", required=True, help="folder holding the flat .h5 pile")
+    ap.add_argument("--src", help="folder holding the .h5 files. "
+                                  "Omit to search the whole repository.")
     ap.add_argument("--dest", default=str(DEST_DEFAULT))
     ap.add_argument("--apply", action="store_true", help="actually move (default: dry run)")
     ap.add_argument("--copy", action="store_true", help="copy instead of move")
     args = ap.parse_args()
 
-    src = Path(args.src)
-    dest = Path(args.dest)
-    if not src.is_dir():
-        logger.error("No such folder: %s", src)
-        return 1
+    dest = resolve(args.dest)
 
-    files = sorted(src.glob("*.h5"))
-    if not files:
-        logger.error("No .h5 files in %s", src)
-        return 1
+    if args.src:
+        src = resolve(args.src)
+        if not src.is_dir():
+            logger.error("No such folder: %s", src)
+            print()
+            print(describe_layout())
+            return 1
+        # Recursive: files often sit in per-date subfolders, and a
+        # non-recursive glob silently finds nothing.
+        files = sorted(src.rglob("*.h5"))
+        if not files:
+            logger.error("No .h5 files under %s", src)
+            print()
+            print(describe_layout())
+            return 1
+    else:
+        logger.info("No --src given; searching the repository for NISAR products...")
+        files = find_products()
+        if not files:
+            logger.error("No .h5 files found anywhere under %s", ROOT)
+            print()
+            print(describe_layout())
+            print()
+            print("Put the downloads anywhere under the repository and re-run,")
+            print("or pass --src <folder>.")
+            return 1
+        src = None
+        logger.info("Found %d file(s)", len(files))
+
+    dest_resolved = dest.resolve()
+    files = [f for f in files if dest_resolved not in f.resolve().parents]
 
     recs, skipped = [], []
     for fp in files:
@@ -175,9 +202,10 @@ def main() -> int:
                         "reference": str(r["reference"]), "secondary": str(r["secondary"])})
     logger.info("Moved %d files. Manifest: %s", moved, manifest)
 
-    leftovers = list(src.glob("*"))
-    if not leftovers:
-        logger.info("Source folder is empty - safe to delete: %s", src)
+    if src is not None and src.exists() and src.is_dir():
+        leftovers = [f for f in src.rglob("*") if f.is_file()]
+        if not leftovers:
+            logger.info("Source folder is now empty - safe to delete: %s", src)
     return 0
 
 

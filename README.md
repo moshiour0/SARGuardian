@@ -36,7 +36,9 @@ Sentinel-1 C-band.
 | **Lhende Khola** | 85.44–85.62 E, 28.34–28.47 N | Reported source zone of the 26 Aug 2026 collapse, ~9 km north of the Langtang box. |
 
 Both are covered by NISAR paths **48 (descending)** and **98 (ascending)**.
-Switch with `AOI_RING` at the top of each script.
+Select at runtime with `--aoi langtang` or `--aoi lhende`. Never edit the
+polygon in the source: the Langtang box does **not** contain the 26 Aug
+failure zone.
 
 Sentinel-1 tracks over the same ground: ASC 85 (frame 88), DESC 19 (frame 497),
 DESC 121 (frames 498–499). All 12-day repeat. **Track 19 descending** is the one
@@ -65,54 +67,118 @@ Register at <https://urs.earthdata.nasa.gov>. **Never commit either file.**
 
 ## Usage
 
-Catalogue search is stdlib-only and needs no credentials, so recon runs anywhere.
+Every script resolves paths against the **repository root**, not your current
+directory, so the same command works from anywhere:
 
 ```bash
-# What exists over the AOI
+python src/organise.py            # from the repo root
+cd src && python organise.py      # identical
+```
+
+Run `python src/paths.py` at any time to see where the code thinks everything
+is and how many products it can find.
+
+### 1. Find out what exists (no credentials, no downloads)
+
+```bash
 python src/nisar_acquisition.py --recon --sentinel1
-
-# Fetch the interferograms
-python src/nisar_acquisition.py --download GUNW GOFF
-
-# Confirm the HDF5 layout of your first real file
-python src/gunw_reader.py --inspect data/nisar_l2/NISAR_L2_PR_GUNW_*.h5
-
-# One pair → displacement, referenced to stable ground
-python src/gunw_reader.py --read FILE.h5 --ref-lat 28.21 --ref-lon 85.47 \
-    --geotiff outputs/d.tif --quicklook outputs/d.png
-
-# Every pair → statistics table
-python src/gunw_reader.py --batch data/nisar_l2 --ref-lat 28.21 --ref-lon 85.47 \
-    --csv outputs/timeseries.csv
 ```
 
-### Watching for the co-event pair
-
-The 26 Aug 2026 collapse happened between acquisitions. The interferogram
-spanning it publishes on the next 12-day repeat. `--watch` exits **10** when
-something new appears, so cron can alert:
+### 2. Download
 
 ```bash
-0 */6 * * * cd /path/to/sarguardian && python src/nisar_acquisition.py \
-    --watch --new-since 2026-08-27 || notify-send "NISAR co-event pair available"
+python src/nisar_acquisition.py --download GUNW GOFF
 ```
+
+Products land in `data/nisar_l2/_incoming/`.
+
+### 3. Organise
+
+```bash
+python src/organise.py            # dry run: finds files anywhere in the repo
+python src/organise.py --apply    # then move them
+```
+
+`--src` is optional. With no arguments it searches the whole repository
+recursively, so it does not matter where the download ended up. Files already
+in `data/nisar_l2/` are left alone, so re-running is always safe. Writes
+`data/nisar_l2/MANIFEST.csv`.
+
+### 4. Confirm the layout of any new product type
+
+```bash
+python src/gunw_reader.py --inspect data/nisar_l2/GUNW/2025-11_winter/NISAR_L2_PR_GUNW_*.h5
+python src/goff_reader.py --inspect data/nisar_l2/GOFF/co_event/NISAR_L2_UR_GOFF_*.h5
+```
+
+Do this once per product type. Every real-data bug so far was found this way.
+
+### 5. Read
+
+```bash
+# one pair
+python src/gunw_reader.py --read FILE.h5 --aoi lhende --auto-ref     --quicklook outputs/d.png
+
+# every GUNW, with AOI-clipped export small enough to email
+python src/gunw_reader.py --batch --aoi lhende --auto-ref     --export outputs/export --csv outputs/gunw_stats.csv
+
+# offsets, and the measured detection floor
+python src/goff_reader.py --batch --aoi lhende --layer layer3 --csv outputs/goff.csv
+python src/goff_reader.py --noise-floor data/nisar_l2/GOFF/2026-07_summer --aoi lhende
+```
+
+`--batch` defaults to `data/nisar_l2/GUNW` (or `GOFF`) and searches recursively.
+**Always use `--auto-ref`** - see the reference note below.
+
+### 6. Time series, then forecast
+
+```bash
+python src/timeseries.py --dir --product GUNW --network          # structure only
+python src/timeseries.py --dir --product GUNW --aoi lhende --auto-ref --invert     --csv outputs/ts_gunw.csv --plot outputs/ts_gunw.png
+
+python src/inverse_velocity.py --ts outputs/ts_gunw.csv --noise-floor 5.1     --event-date 2026-08-26 --plot outputs/inverse_velocity.png
+```
+
+`--dir` defaults to `data/nisar_l2`. `--invert` is required to do more than
+print the network. The noise floor passed to the detector must be the one you
+**measured** for that product, not a guess.
+
+### 7. Geometry and terrain (no data needed)
+
+```bash
+python src/geometry_merge.py --sensitivity --lat 28.29 --lon 85.51
+python src/detectability.py --sweep --plot outputs/detectability.png
+python src/impoundment.py --api --aoi lhende --rank-by efficiency     --geojson outputs/dam_sites.geojson
+```
+
+### Watching for a new product
+
+```bash
+0 */6 * * * cd /path/to/SARGuardian && python src/nisar_acquisition.py     --watch --new-since 2026-08-28 || notify-send "New NISAR product"
+```
+
+Exit code **10** means something new appeared.
 
 ---
 
-## Two things to verify on real data
+## Three things that will bite you
 
-**Sign convention.** `d_los = -(λ/4π)·φ`, positive = away from satellite.
-Conventions differ between products and versions. Check against a signal whose
-direction you already know before interpreting anything; `--flip-sign` inverts.
+**Unwrapped phase is relative.** Every connected component carries an arbitrary
+constant, so an absolute displacement is meaningless until it is referenced.
+**Use `--auto-ref`.** Hand-picking a reference does not work: on a real winter
+scene all three "obvious" choices had *zero* usable pixels under snow, while a
+block 8 km away sat at 0.95 coherence.
 
-**Layover/shadow polarity.** The reader assumes `0 = good`. If the mask is
-inverted you will gate out everything usable — obvious immediately from the
-gate table.
+**The GUNW `mask` layer is not a layover/shadow flag.** It is a three-digit
+code: hundreds = water, tens = subswath in the reference image, units =
+subswath in the secondary. A usable pixel is dry land inside a real subswath in
+**both** acquisitions. Keeping `mask == 0` keeps exactly the pixels that were
+invalid in both - which took valid coverage from 39.5% down to 0.5% before this
+was found.
 
-Also: **unwrapped phase is relative.** Each connected component carries an
-arbitrary constant, so absolute displacement is meaningless without
-`--ref-lat/--ref-lon` on ground you believe is stable. Pick bedrock outside the
-AOI, away from ice and the valley floor, and check its coherence first.
+**Sign convention.** `d_los = -(lambda/4pi) * phi`, positive = away from the
+satellite. Check it against a signal whose direction you already know before
+interpreting anything; `--flip-sign` inverts it.
 
 ---
 

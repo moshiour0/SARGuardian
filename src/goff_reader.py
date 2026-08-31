@@ -66,6 +66,8 @@ from gunw_reader import build_aoi_mask, walk, read_pair_dates, set_aoi  # noqa: 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("goff")
 
+from paths import NISAR, resolve  # noqa: E402
+
 DEFAULT_CORRELATION = 0.3
 DEFAULT_SNR = 3.0
 MAD_SIGMA = 1.4826          # MAD -> Gaussian sigma
@@ -426,7 +428,8 @@ def main() -> int:
     m = ap.add_mutually_exclusive_group(required=True)
     m.add_argument("--inspect", metavar="FILE")
     m.add_argument("--read", metavar="FILE")
-    m.add_argument("--batch", metavar="DIR")
+    m.add_argument("--batch", metavar="DIR", nargs="?", const=str(NISAR / "GOFF"),
+                   help="folder of GOFF products (default: data/nisar_l2/GOFF)")
     m.add_argument("--noise-floor", metavar="DIR",
                    help="measure the detection floor on pairs you believe are stable")
     ap.add_argument("--aoi", choices=("langtang", "lhende"), default="langtang",
@@ -450,13 +453,13 @@ def main() -> int:
               auto_ref=not args.no_auto_ref, deramp=not args.no_deramp)
 
     if args.inspect:
-        inspect(Path(args.inspect)); return 0
+        inspect(resolve(args.inspect)); return 0
 
     if args.noise_floor:
-        noise_floor(Path(args.noise_floor), **kw); return 0
+        noise_floor(resolve(args.noise_floor), **kw); return 0
 
-    files = [Path(args.read)] if args.read else sorted(
-        p for p in Path(args.batch).rglob("*.h5") if "GOFF" in p.name.upper())
+    files = [resolve(args.read)] if args.read else sorted(
+        p for p in resolve(args.batch).rglob("*.h5") if "GOFF" in p.name.upper())
     if not files:
         logger.error("No GOFF files found"); return 1
 

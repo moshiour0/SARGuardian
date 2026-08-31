@@ -62,6 +62,9 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("gunw")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import NISAR, OUTPUTS, resolve  # noqa: E402
+
 SPEED_OF_LIGHT = 299_792_458.0
 NISAR_L_BAND_HZ = 1_257_500_000.0          # fallback if not in the file
 DEFAULT_COHERENCE = 0.3
@@ -630,7 +633,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="NISAR GUNW -> LOS displacement")
     ap.add_argument("--inspect", metavar="FILE", help="dump the HDF5 layout and exit")
     ap.add_argument("--read", metavar="FILE", help="read one GUNW")
-    ap.add_argument("--batch", metavar="DIR", help="read every *GUNW*.h5 in a directory")
+    ap.add_argument("--batch", metavar="DIR", nargs="?", const=str(NISAR / "GUNW"),
+                    help="folder of GUNW products (default: data/nisar_l2/GUNW)")
     ap.add_argument("--coh-threshold", type=float, default=DEFAULT_COHERENCE)
     ap.add_argument("--ref-lat", type=float, help="reference point latitude (stable ground)")
     ap.add_argument("--ref-lon", type=float, help="reference point longitude")
@@ -654,13 +658,13 @@ def main() -> int:
     set_aoi(args.aoi)
 
     if args.inspect:
-        inspect(Path(args.inspect)); return 0
+        inspect(resolve(args.inspect)); return 0
 
     files: list[Path] = []
     if args.read:
-        files = [Path(args.read)]
+        files = [resolve(args.read)]
     elif args.batch:
-        files = sorted(p for p in Path(args.batch).rglob("*.h5") if "GUNW" in p.name.upper())
+        files = sorted(p for p in resolve(args.batch).rglob("*.h5") if "GUNW" in p.name.upper())
         if not files:
             logger.error("No *GUNW*.h5 files in %s", args.batch); return 1
         logger.info("Found %d GUNW files", len(files))
@@ -683,7 +687,7 @@ def main() -> int:
             continue
         row = report(result)
         if args.export:
-            row.update(export_clipped(result, Path(args.export)))
+            row.update(export_clipped(result, resolve(args.export)))
         rows.append(row)
         if args.geotiff and len(files) == 1:
             write_geotiff(result, Path(args.geotiff))
