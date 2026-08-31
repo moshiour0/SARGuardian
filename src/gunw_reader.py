@@ -362,22 +362,68 @@ def read_gunw(
         if by and bx:
             cut_v = quality_valid[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
             full = cut_v.all(axis=(1, 3))
+
+            # The reference MUST sit in the same connected component as the
+            # target. Each component carries its own arbitrary phase constant,
+            # so subtracting a value measured in a different one injects a
+            # whole-fringe offset - which is exactly what produced medians of
+            # 2 to 4 fringes (248, 285, 473 mm at lambda/2 = 122 mm) in the
+            # summer pairs, and why the same pair processed twice differed by
+            # 265 mm.
+            target_comp = None
+            if components is not None and aoi_mask is not None:
+                inside = components[quality_valid & aoi_mask]
+                if inside.size:
+                    ids, counts = np.unique(inside, return_counts=True)
+                    target_comp = int(ids[int(np.argmax(counts))])
+                    frac = float(counts.max() / inside.size)
+                    logger.info("AOI dominant connected component: %d (%.0f%% of AOI)",
+                                target_comp, 100 * frac)
+                    if frac < 0.8:
+                        logger.warning(
+                            "AOI spans %d components; only %.0f%% is in the dominant "
+                            "one. Displacements across component boundaries are not "
+                            "comparable.", len(ids), 100 * frac)
+                    cut_c = components[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+                    full &= (cut_c == target_comp).all(axis=(1, 3))
+
             if aoi_mask is not None:
                 cut_a = aoi_mask[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
                 full &= ~cut_a.any(axis=(1, 3))       # keep blocks clear of the AOI
+
             if coherence is not None:
-                cut_c = coherence[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
-                score = np.where(full, cut_c.mean(axis=(1, 3)), -1.0)
+                cut_h = coherence[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+                score = np.where(full, cut_h.mean(axis=(1, 3)), -1.0)
             else:
                 score = full.astype(float) - (~full)
+
             if score.max() > 0:
                 bi, bj = np.unravel_index(int(np.argmax(score)), score.shape)
                 i = bi * blk + blk // 2
                 j = bj * blk + blk // 2
                 ref_lon, ref_lat = float(xs[j]), float(ys[i])   # grid units here
-                logger.info("Auto reference: grid (%d, %d), mean coherence %.2f",
-                            i, j, float(score[bi, bj]))
+                logger.info("Auto reference: grid (%d, %d), coherence %.2f, component %s",
+                            i, j, float(score[bi, bj]),
+                            components[i, j] if components is not None else "n/a")
                 _auto_grid_ref = (i, j)
+            elif target_comp is not None:
+                # No clean block of that component outside the AOI. Referencing
+                # anywhere else would be wrong, so reference INSIDE the AOI and
+                # say so - relative motion within the AOI stays meaningful.
+                sel = quality_valid & aoi_mask & (components == target_comp)
+                if sel.any():
+                    ii, jj = np.nonzero(sel)
+                    k = int(np.argmax(coherence[sel])) if coherence is not None else 0
+                    i, j = int(ii[k]), int(jj[k])
+                    logger.warning(
+                        "No stable block of component %d outside the AOI. "
+                        "Referencing INSIDE the AOI at (%d, %d) - values are "
+                        "relative to that point, not to stable ground.",
+                        target_comp, i, j)
+                    _auto_grid_ref = (i, j)
+                else:
+                    logger.warning("Auto reference found no usable block.")
+                    _auto_grid_ref = None
             else:
                 logger.warning("Auto reference found no fully-valid block.")
                 _auto_grid_ref = None
