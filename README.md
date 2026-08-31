@@ -117,10 +117,12 @@ Do this once per product type. Every real-data bug so far was found this way.
 
 ```bash
 # one pair
-python src/gunw_reader.py --read FILE.h5 --aoi lhende --auto-ref     --quicklook outputs/d.png
+python src/gunw_reader.py --read FILE.h5 --aoi lhende --auto-ref \
+    --quicklook outputs/d.png
 
 # every GUNW, with AOI-clipped export small enough to email
-python src/gunw_reader.py --batch --aoi lhende --auto-ref     --export outputs/export --csv outputs/gunw_stats.csv
+python src/gunw_reader.py --batch --aoi lhende --auto-ref \
+    --export outputs/export --csv outputs/gunw_stats.csv
 
 # offsets, and the measured detection floor
 python src/goff_reader.py --batch --aoi lhende --layer layer3 --csv outputs/goff.csv
@@ -134,9 +136,11 @@ python src/goff_reader.py --noise-floor data/nisar_l2/GOFF/2026-07_summer --aoi 
 
 ```bash
 python src/timeseries.py --dir --product GUNW --network          # structure only
-python src/timeseries.py --dir --product GUNW --aoi lhende --auto-ref --invert     --csv outputs/ts_gunw.csv --plot outputs/ts_gunw.png
+python src/timeseries.py --dir --product GUNW --aoi lhende --auto-ref --invert \
+    --csv outputs/ts_gunw.csv --plot outputs/ts_gunw.png
 
-python src/inverse_velocity.py --ts outputs/ts_gunw.csv --noise-floor 5.1     --event-date 2026-08-26 --plot outputs/inverse_velocity.png
+python src/inverse_velocity.py --ts outputs/ts_gunw.csv --noise-floor 5.1 \
+    --event-date 2026-08-26 --plot outputs/inverse_velocity.png
 ```
 
 `--dir` defaults to `data/nisar_l2`. `--invert` is required to do more than
@@ -148,13 +152,15 @@ print the network. The noise floor passed to the detector must be the one you
 ```bash
 python src/geometry_merge.py --sensitivity --lat 28.29 --lon 85.51
 python src/detectability.py --sweep --plot outputs/detectability.png
-python src/impoundment.py --api --aoi lhende --rank-by efficiency     --geojson outputs/dam_sites.geojson
+python src/impoundment.py --api --aoi lhende --rank-by efficiency \
+    --geojson outputs/dam_sites.geojson
 ```
 
 ### Watching for a new product
 
 ```bash
-0 */6 * * * cd /path/to/SARGuardian && python src/nisar_acquisition.py     --watch --new-since 2026-08-28 || notify-send "New NISAR product"
+0 */6 * * * cd /path/to/SARGuardian && python src/nisar_acquisition.py \
+    --watch --new-since 2026-08-28 || notify-send "New NISAR product"
 ```
 
 Exit code **10** means something new appeared.
@@ -247,7 +253,8 @@ to a range of dam heights -> rank, with non-maximum suppression so one valley
 reach cannot fill the table.
 
 ```bash
-python src/impoundment.py --api --aoi lhende --heights 25 50 100 150     --rank-by efficiency --geojson outputs/dam_sites_lhende.geojson
+python src/impoundment.py --api --aoi lhende --heights 25 50 100 150 \
+    --rank-by efficiency --geojson outputs/dam_sites_lhende.geojson
 ```
 
 Default ranking is **volume per metre of blockage**, not maximum volume. Ranking
@@ -308,7 +315,8 @@ plan.
 python src/geometry_merge.py --sensitivity --lat 28.29 --lon 85.51
 
 # Merge the per-geometry series from timeseries.py
-python src/geometry_merge.py --merge --ts outputs/ts.csv     --lat 28.29 --lon 85.51 --csv outputs/merged.csv --plot outputs/merged.png
+python src/geometry_merge.py --merge --ts outputs/ts.csv \
+    --lat 28.29 --lon 85.51 --csv outputs/merged.csv --plot outputs/merged.png
 ```
 
 Example, a north-facing 17-degree slope at 28.29 N 85.51 E:
@@ -416,10 +424,12 @@ second regime, which no free mission currently provides.
 
 ```bash
 # Blatten calibrated, phase-limited
-python src/detectability.py --sweep --precursor 7 --creep 27000     --noise 5 --wavelength 0.2384 --revisit 1 2 4 6 12
+python src/detectability.py --sweep --precursor 7 --creep 27000 \
+    --noise 5 --wavelength 0.2384 --revisit 1 2 4 6 12
 
 # same event, offset tracking
-python src/detectability.py --sweep --precursor 7 --creep 27000     --noise 300 --revisit 1 2 4 6 12
+python src/detectability.py --sweep --precursor 7 --creep 27000 \
+    --noise 300 --revisit 1 2 4 6 12
 ```
 
 Sources: published velocity timeline via Swiss cantonal reporting; long-term
@@ -490,7 +500,8 @@ crosses zero at the failure time, so fitting a trailing window and
 extrapolating the x-intercept gives a predicted failure date.
 
 ```bash
-python src/inverse_velocity.py --ts outputs/ts_goff_summer.csv     --noise-floor 75 --event-date 2026-08-26 --plot outputs/inverse_velocity.png
+python src/inverse_velocity.py --ts outputs/ts_goff_summer.csv \
+    --noise-floor 7.3 --event-date 2026-08-26 --plot outputs/inverse_velocity.png
 ```
 
 It differs from the simulation in `detectability.py` in one decisive way: a
@@ -549,7 +560,8 @@ python src/organise.py --src <wherever their files are> --apply
 
 python src/gunw_reader.py --inspect data/nisar_l2/GUNW/*/NISAR_L2_*GUNW*.h5
 
-python src/gunw_reader.py --batch data/nisar_l2/GUNW     --aoi lhende --auto-ref     --export outputs/export --csv outputs/gunw_stats.csv
+python src/gunw_reader.py --batch --aoi lhende --auto-ref \
+    --export outputs/export --csv outputs/gunw_stats.csv
 ```
 
 Then zip `outputs/` and send it back. That is the whole handoff: **the .h5 files
