@@ -615,7 +615,13 @@ def export_clipped(result: dict, outdir: Path) -> dict:
             coh = np.flipud(coh)
 
     outdir.mkdir(parents=True, exist_ok=True)
-    stem = f"{result['reference_date']}_{result['secondary_date']}"
+    # Include the processing type. NASA publishes a routine (PR) and an urgent
+    # (UR) product for the same pair of acquisitions, and naming by dates alone
+    # made the second silently overwrite the first - 15 pairs processed, 14
+    # files on disk, and no warning that one had vanished.
+    proc = re.search(r"NISAR_L2_([A-Z]{2})_", Path(result["file"]).name)
+    tag = f"_{proc.group(1)}" if proc else ""
+    stem = f"{result['reference_date']}_{result['secondary_date']}{tag}"
     target = outdir / f"GUNW_{stem}.tif"
     count = 2 if coh is not None else 1
     with rasterio.open(target, "w", driver="GTiff", height=disp.shape[0],
@@ -633,6 +639,68 @@ def export_clipped(result: dict, outdir: Path) -> dict:
     logger.info("Exported %s  %dx%d  %.2f MB", target.name, disp.shape[0], disp.shape[1], mb)
     return {"export_file": target.name, "export_mb": round(mb, 3),
             "export_rows": disp.shape[0], "export_cols": disp.shape[1]}
+
+
+def check_consistency(rows: list[dict]) -> list[dict]:
+    """
+    Cross-check pairs that share both acquisition dates.
+
+    NASA publishes a routine (PR) and an urgent-response (UR) product for the
+    same two images. The images are identical, so the measured displacement
+    must be identical too - any disagreement is processing, not ground motion.
+    That makes duplicate pairs a free, absolute validation of the whole chain,
+    and the strongest evidence available that a number is trustworthy.
+
+    Unwrapping recovers phase only up to a whole number of cycles per connected
+    component, so the failure mode has a signature: the disagreement lands on a
+    near-integer multiple of lambda/2. Anything else is ordinary noise.
+    """
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        groups.setdefault((r["reference_date"], r["secondary_date"]), []).append(r)
+    dupes = {k: v for k, v in groups.items() if len(v) > 1}
+    if not dupes:
+        return []
+
+    print(f"\n{'='*74}")
+    print("CONSISTENCY CHECK - same acquisitions processed more than once")
+    print("=" * 74)
+
+    suspect = []
+    for (ref, sec), group in sorted(dupes.items()):
+        lam = group[0].get("wavelength_m") or 0.2439
+        fringe_mm = float(lam) / 2 * 1000
+        meds = [float(g["median"]) for g in group]
+        spread = max(meds) - min(meds)
+        n_fringes = spread / fringe_mm
+
+        print(f"\n  {ref} -> {sec}   ({len(group)} products, "
+              f"one fringe = {fringe_mm:.1f} mm)")
+        for g in group:
+            proc = re.search(r"NISAR_L2_([A-Z]{2})_", Path(g["file"]).name)
+            print(f"    {proc.group(1) if proc else '??'}  median "
+                  f"{float(g['median']):>9.2f} mm   coherence "
+                  f"{float(g['mean_coherence']):.2f}")
+        print(f"    disagreement: {spread:.2f} mm = {n_fringes:.2f} fringes")
+
+        if abs(n_fringes - round(n_fringes)) < 0.25 and round(n_fringes) >= 1:
+            print(f"    UNWRAPPING AMBIGUITY. The same two images cannot move "
+                  f"differently,\n"
+                  f"    and the gap is {round(n_fringes)} whole fringe(s) - one run "
+                  f"resolved a cycle\n"
+                  f"    the other did not. Keep the product that agrees with the "
+                  f"rest of the\n"
+                  f"    stack; discard the outlier. Do NOT average them.")
+            suspect.append({"reference": ref, "secondary": sec,
+                            "spread_mm": spread, "fringes": n_fringes})
+        elif spread > 0.5 * fringe_mm:
+            print("    Large disagreement that is NOT a whole fringe - suspect "
+                  "the reference\n    point or the coherence gate, not the "
+                  "unwrapper.")
+        else:
+            print("    Consistent. This pair is independently validated.")
+
+    return suspect
 
 
 def write_quicklook(result: dict, out: Path) -> None:
@@ -739,6 +807,9 @@ def main() -> int:
             write_geotiff(result, Path(args.geotiff))
         if args.quicklook and len(files) == 1:
             write_quicklook(result, Path(args.quicklook))
+
+    if rows:
+        check_consistency(rows)
 
     if args.csv and rows:
         keys = sorted({k for r in rows for k in r})
