@@ -271,6 +271,84 @@ def read_goff(
 
 
 # ---------------------------------------------------------------------------
+def export_clipped(res: dict, outdir: Path) -> list[dict]:
+    """
+    Write the AOI window of each layer as a 3-band GeoTIFF.
+
+    A GOFF product is about 1 GB; the AOI window is a fraction of a megabyte.
+    Without this the only way to free the disk is to delete the products, and
+    with them every per-pixel value - the summary CSV keeps medians and
+    percentiles but cannot give back a map. Anything spatial (where inside the
+    AOI moved, how the offset field is shaped, whether a signal is coherent or
+    speckle) would then need a re-download.
+
+    Bands: slant-range offset (mm), along-track offset (mm), correlation. Range
+    is the line-of-sight component and drops straight into the same inversion
+    as GUNW phase; azimuth is kept because it carries the across-track motion
+    that no single interferogram can see.
+    """
+    try:
+        import rasterio
+        from rasterio.transform import from_origin
+    except ImportError:
+        logger.error("rasterio required for --export:  pip install rasterio")
+        return []
+
+    out = []
+    proc = re.search(r"NISAR_L2_([A-Z]{2})_", Path(res["file"]).name)
+    tag = f"_{proc.group(1)}" if proc else ""
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for name, L in sorted(res["layers"].items()):
+        valid = L["valid"]
+        if not valid.any() or L["xs"] is None:
+            continue
+        rows_any = valid.any(axis=1)
+        cols_any = valid.any(axis=0)
+        r0, r1 = int(np.argmax(rows_any)), int(len(rows_any) - np.argmax(rows_any[::-1]))
+        c0, c1 = int(np.argmax(cols_any)), int(len(cols_any) - np.argmax(cols_any[::-1]))
+
+        def band(key, scale=1.0):
+            if L.get(key) is None:
+                return None
+            return np.where(valid, L[key] * scale, np.nan)[r0:r1, c0:c1].astype("float32")
+
+        bands = [(band("range_m", 1000.0), "slant-range offset (mm)"),
+                 (band("azimuth_m", 1000.0), "along-track offset (mm)"),
+                 (band("correlation"), "correlation")]
+        bands = [(a, d) for a, d in bands if a is not None]
+        if not bands:
+            continue
+
+        xs, ys = L["xs"][c0:c1], L["ys"][r0:r1]
+        resx, resy = abs(float(L["xs"][1] - L["xs"][0])), abs(float(L["ys"][1] - L["ys"][0]))
+        transform = from_origin(float(xs.min()) - resx / 2,
+                                float(ys.max()) + resy / 2, resx, resy)
+        if ys[0] < ys[-1]:
+            bands = [(np.flipud(a), d) for a, d in bands]
+
+        safe = name.replace("/", "-")
+        target = outdir / (f"GOFF_{res['reference_date']}_{res['secondary_date']}"
+                           f"{tag}_{safe}.tif")
+        with rasterio.open(target, "w", driver="GTiff",
+                           height=bands[0][0].shape[0], width=bands[0][0].shape[1],
+                           count=len(bands), dtype="float32",
+                           crs=f"EPSG:{L['epsg'] or 4326}", transform=transform,
+                           nodata=np.nan, compress="deflate", predictor=3) as dst:
+            for k, (arr, desc) in enumerate(bands, 1):
+                dst.write(arr, k)
+                dst.set_band_description(k, desc)
+            dst.update_tags(reference=res["reference_date"],
+                            secondary=res["secondary_date"],
+                            layer=name, source=res["file"])
+        mb = target.stat().st_size / 1024 / 1024
+        logger.info("Exported %s  %dx%d  %.2f MB", target.name,
+                    bands[0][0].shape[0], bands[0][0].shape[1], mb)
+        out.append({"layer": name, "export_file": target.name,
+                    "export_mb": round(mb, 3)})
+    return out
+
+
 def report(res: dict, span_days: float | None = None) -> list[dict]:
     print(f"\n=== {res['file']}")
     print(f"  pair  {res['reference_date']} -> {res['secondary_date']}"
@@ -443,6 +521,9 @@ def main() -> int:
     ap.add_argument("--no-deramp", action="store_true",
                     help="keep the planar orbital ramp (default: remove it)")
     ap.add_argument("--quicklook", metavar="OUT.png")
+    ap.add_argument("--export", metavar="DIR",
+                    help="write AOI-clipped GeoTIFFs. Do this BEFORE deleting "
+                         "products - the CSV keeps statistics, not maps.")
     ap.add_argument("--csv", metavar="OUT.csv")
     args = ap.parse_args()
 
@@ -469,7 +550,13 @@ def main() -> int:
             res = read_goff(fp, **kw)
         except Exception as exc:
             logger.error("%s: %s", fp.name, exc); continue
-        rows += report(res, span_days=span_of(fp.name))
+        new = report(res, span_days=span_of(fp.name))
+        if args.export:
+            exp = {e["layer"]: e for e in export_clipped(res, resolve(args.export))}
+            for r in new:
+                r.update({k: v for k, v in exp.get(r.get("layer"), {}).items()
+                          if k != "layer"})
+        rows += new
         if args.quicklook and len(files) == 1:
             quicklook(res, Path(args.quicklook))
 
