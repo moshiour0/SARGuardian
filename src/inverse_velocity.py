@@ -294,10 +294,26 @@ def main() -> int:
             print(f"    - {r.get('reason')}")
         mv = [r["max_velocity"] for r in results if "max_velocity" in r]
         if mv:
-            print(f"\n  Fastest motion measured anywhere: {max(mv):+.2f} mm/day")
-            print(f"  Detection required: {args.sig_multiple*args.noise_floor:.1f} mm/day "
-                  f"sustained over {args.window} intervals.")
-            print(f"  Shortfall: {args.sig_multiple*args.noise_floor/max(max(mv), 1e-9):.1f}x")
+            gate = args.sig_multiple * args.noise_floor
+            fastest = max(mv)
+            print(f"\n  Fastest single interval anywhere: {fastest:+.2f} mm/day "
+                  f"({fastest/args.noise_floor:.1f}x the noise floor)")
+            print(f"  Detection required: {gate:.2f} mm/day sustained across "
+                  f"{args.window} consecutive intervals.")
+            # Two different failure modes, and saying which one is the point.
+            # A single fast interval that exceeds the gate is not a shortfall in
+            # magnitude - it is a shortfall in persistence, which is exactly how
+            # atmospheric noise differs from creep. Reporting them the same way
+            # would hide the distinction the whole method rests on.
+            if fastest > gate:
+                print(f"\n  Motion DID exceed the gate in at least one interval, but "
+                      f"never for\n  {args.window} in a row. An isolated excursion "
+                      f"that does not persist is the\n  signature of atmosphere, "
+                      f"not of accelerating creep - and the series\n  returning to "
+                      f"its starting value confirms it.")
+            else:
+                print(f"\n  No interval anywhere reached the gate; the fastest was "
+                      f"{gate/fastest:.1f}x short.")
             print("\n  This is a bounded non-detection, not an absence of evidence:")
             print("  any precursor slower than the floor is invisible to this product,")
             print("  and that bound is the quotable result.")

@@ -123,6 +123,78 @@ def pairs_from_catalogue() -> list[Pair]:
     )
 
 
+def pairs_from_stats(path: Path, fringe_mm: float = 121.95) -> list[Pair]:
+    """
+    Build the network from a gunw_reader --csv summary instead of the products.
+
+    A GUNW is 2.4 GB; the row describing it is 200 bytes. Once the AOI median
+    has been measured there is nothing else in the file the inversion needs, so
+    a teammate with the disk space can process the stack and send back a CSV
+    that reproduces the whole time series. That is the difference between a
+    pipeline one machine can run and one a team can.
+
+    Duplicate acquisitions
+    ----------------------
+    NASA ships a routine (PR) and an urgent (UR) product for the same images.
+    Both are valid interferograms; they can differ by a whole number of fringes
+    because unwrapping is only unique up to a cycle. Averaging them is
+    meaningless. Instead, keep the branch consistent with the rest of that
+    geometry - the surrounding pairs already say what magnitude is plausible,
+    which is temporal unwrapping applied to the ambiguity.
+    """
+    rows = list(csv.DictReader(open(path, newline="")))
+    if not rows:
+        logger.error("No rows in %s", path)
+        return []
+
+    parsed = []
+    for r in rows:
+        name = r.get("file", "")
+        m = re.search(r"NISAR_L2_([A-Z]{2})_[A-Z]{4}_\d+_(\d+)_([AD])_", name)
+        stamps = re.findall(r"_(\d{8})T\d{6}", name)
+        if not m or len(stamps) < 4:
+            logger.warning("Cannot parse %s", name or "<blank>")
+            continue
+        parsed.append((m.group(1), Pair(
+            path=int(m.group(2)), direction=m.group(3),
+            ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
+            sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
+            value=float(r["median"]), n_px=int(float(r.get("valid_px") or 0)),
+            coherence=float(r["mean_coherence"]) if r.get("mean_coherence") else None,
+            source=name)))
+
+    groups: dict[tuple, list] = defaultdict(list)
+    for proc, p in parsed:
+        groups[(p.direction, p.path, p.ref, p.sec)].append((proc, p))
+
+    out, dropped = [], []
+    for key, cands in groups.items():
+        if len(cands) == 1:
+            out.append(cands[0][1])
+            continue
+        # Scale expected from every OTHER pair in the same geometry.
+        others = [q.value for k, c in groups.items() for _, q in c
+                  if k[:2] == key[:2] and k != key and q.value is not None]
+        expect = float(np.median(np.abs(others))) if others else 0.0
+        best = min(cands, key=lambda pc: (abs(abs(pc[1].value) - expect),
+                                          0 if pc[0] == "PR" else 1))
+        for proc, p in cands:
+            if p is not best[1]:
+                gap = abs(p.value - best[1].value)
+                dropped.append((key, proc, p.value, gap, gap / fringe_mm))
+        logger.warning("%s -> %s: %d products, keeping %s (%+.1f mm)",
+                       key[2], key[3], len(cands), best[0], best[1].value)
+        out.append(best[1])
+
+    for key, proc, val, gap, fr in dropped:
+        logger.warning("  dropped %s (%+.1f mm), %.1f mm from the kept value "
+                       "= %.2f fringes", proc, val, gap, fr)
+
+    logger.info("Loaded %d pairs from %s (%d duplicate product(s) dropped)",
+                len(out), path.name, len(dropped))
+    return out
+
+
 def pairs_from_dir(directory: Path, product: str = "GUNW") -> list[Pair]:
     """
     Collect pairs from a folder tree. product is GUNW or GOFF.
@@ -460,6 +532,9 @@ def main() -> int:
                      help="folder of products (default: data/nisar_l2)")
     src.add_argument("--from-catalogue", action="store_true",
                      help="analyse network from ASF without downloading")
+    src.add_argument("--from-stats", metavar="STATS.csv",
+                     help="invert from a gunw_reader --csv summary, no products "
+                          "needed (implies --invert)")
     ap.add_argument("--network", action="store_true", help="network structure only")
     ap.add_argument("--invert", action="store_true", help="run the inversion (needs --dir)")
     ap.add_argument("--product", choices=("GUNW", "GOFF"), default="GUNW",
@@ -485,8 +560,13 @@ def main() -> int:
     from gunw_reader import set_aoi
     set_aoi(args.aoi)
 
-    pairs = (pairs_from_catalogue() if args.from_catalogue
-             else pairs_from_dir(resolve(args.dir), args.product))
+    if args.from_stats:
+        pairs = pairs_from_stats(resolve(args.from_stats))
+        args.invert = True          # the values are already in the CSV
+    elif args.from_catalogue:
+        pairs = pairs_from_catalogue()
+    else:
+        pairs = pairs_from_dir(resolve(args.dir), args.product)
     if not pairs:
         logger.error("No pairs found.")
         return 1
@@ -506,22 +586,23 @@ def main() -> int:
         logger.error("--invert needs local files. Use --dir.")
         return 1
 
-    if args.ref_lat is None or args.ref_lon is None:
-        logger.warning(
-            "No --ref-lat/--ref-lon. Each interferogram keeps its own arbitrary "
-            "offset, so the assembled series will be meaningless. Strongly advised."
-        )
+    if not args.from_stats:
+        if args.ref_lat is None or args.ref_lon is None:
+            logger.warning(
+                "No --ref-lat/--ref-lon. Each interferogram keeps its own arbitrary "
+                "offset, so the assembled series will be meaningless. Strongly advised."
+            )
 
-    logger.info("Measuring displacement for %d pairs...", len(pairs))
-    if args.target_lat is None:
-        logger.warning(
-            "No --target-lat/--target-lon: using the median over the whole AOI. "
-            "A localised signal will be averaged away. Give a target for hazard work."
-        )
-    measure_pairs(pairs, args.coh_threshold, args.ref_lat, args.ref_lon,
-                  not args.no_clip, args.flip_sign,
-                  args.target_lat, args.target_lon, args.target_radius,
-                  auto_ref=args.auto_ref, goff_layer=args.goff_layer)
+        logger.info("Measuring displacement for %d pairs...", len(pairs))
+        if args.target_lat is None:
+            logger.warning(
+                "No --target-lat/--target-lon: using the median over the whole AOI. "
+                "A localised signal will be averaged away. Give a target for hazard work."
+            )
+        measure_pairs(pairs, args.coh_threshold, args.ref_lat, args.ref_lon,
+                      not args.no_clip, args.flip_sign,
+                      args.target_lat, args.target_lon, args.target_radius,
+                      auto_ref=args.auto_ref, goff_layer=args.goff_layer)
 
     by_geom = defaultdict(list)
     for p in pairs:
