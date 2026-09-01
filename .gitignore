@@ -12,6 +12,15 @@ data/slc/*
 # Outputs
 outputs/*
 !outputs/.gitkeep
+
+# ...except the derived measurements. These are a few kilobytes each and
+# they are the scientific result: every statistic, time series and noise
+# floor the analysis rests on. Regenerating one means re-downloading a
+# gigabyte per pair, so they belong in version control even though the
+# products they came from never can.
+!outputs/*stats*.csv
+!outputs/ts_*.csv
+!outputs/detectability.csv
 *.png
 *.csv
 
