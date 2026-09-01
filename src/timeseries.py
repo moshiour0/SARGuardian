@@ -375,6 +375,83 @@ def invert_component(pairs: list[Pair], epochs: list[date]) -> dict:
     }
 
 
+def jackknife(label: str, comp_index: int, pairs: list[Pair],
+              epochs: list[date]) -> dict | None:
+    """
+    Refit the linear velocity with each pair left out in turn.
+
+    A network with no redundancy fits every observation exactly, so the formal
+    error bars are undefined and a trend can look significant while resting
+    entirely on one interferogram. Leave-one-out is the cheapest honest test
+    available: if dropping a single pair changes the sign of the velocity, the
+    trend is that pair, not the ground.
+
+    This is not a refinement. On the current stack it is the step that
+    separates a real signal from three artefacts.
+    """
+    usable = [p for p in pairs if p.value is not None]
+    if len(usable) < 4:
+        return None
+
+    full = invert_component(usable, epochs)
+    v0 = full.get("velocity_mm_per_day")
+    if v0 is None or not np.isfinite(v0):
+        return None
+
+    print(f"\n  jackknife ({len(usable)} pairs, full fit {v0:+.3f} mm/day)")
+    vs, flips, load_bearing = [], [], []
+    for k, p in enumerate(usable):
+        sub = usable[:k] + usable[k + 1:]
+        # Removing a link from a chain splits it. The two halves then have
+        # independent zeros and lstsq, handed a rank-deficient system, returns
+        # a minimum-norm solution that silently bridges the break. Refitting
+        # that number and calling it a jackknife would be worse than not
+        # testing at all - it invents agreement or disagreement at random.
+        if len(connected_components(sub)) > len(connected_components(usable)):
+            load_bearing.append(p)
+            print(f"    without {p.ref} -> {p.sec}   network splits - "
+                  f"no trend can be fitted")
+            continue
+        eps = sorted({e for q in sub for e in (q.ref, q.sec)})
+        r = invert_component(sub, eps)
+        v = r.get("velocity_mm_per_day")
+        if v is None or not np.isfinite(v):
+            continue
+        vs.append(v)
+        flip = v * v0 < 0
+        if flip:
+            flips.append(p)
+        print(f"    without {p.ref} -> {p.sec}   {v:+.3f} mm/day"
+              + ("   <- SIGN FLIPS" if flip else ""))
+
+    if load_bearing:
+        print(f"\n    {len(load_bearing)} of {len(usable)} pairs are load-bearing: "
+              f"removing any one\n    disconnects the network. This block is a "
+              f"chain with redundancy 0, so\n    leave-one-out cannot test it - "
+              f"there is nothing to leave out.")
+        print(f"    The trend {v0:+.3f} mm/day is UNTESTED, not confirmed.")
+        print(f"    To make it testable, add pairs that close loops: a 24-day\n"
+              f"    interferogram spanning two existing 12-day steps gives\n"
+              f"    redundancy 1 and a real residual. Those products already\n"
+              f"    exist in the archive.")
+
+    if not vs:
+        return {"geometry": label, "component": comp_index,
+                "velocity_mm_per_day": v0, "testable": False}
+    robust = min(vs) * max(vs) > 0
+    print(f"    range {min(vs):+.3f} to {max(vs):+.3f} mm/day   ", end="")
+    if robust:
+        print("ROBUST - every subset agrees in sign")
+    else:
+        who = ", ".join(f"{p.ref}->{p.sec}" for p in flips)
+        print(f"NOT ROBUST\n    the sign depends on a single pair ({who}). "
+              f"Treat the trend as\n    undetermined until another pair or the "
+              f"other geometry supports it.")
+    return {"geometry": label, "component": comp_index, "velocity_mm_per_day": v0,
+            "jackknife_min": min(vs), "jackknife_max": max(vs),
+            "robust": robust, "testable": True}
+
+
 def measure_pairs(pairs: list[Pair], coh_threshold: float,
                   ref_lat: float | None, ref_lon: float | None,
                   clip_aoi: bool, flip_sign: bool,
@@ -536,6 +613,9 @@ def main() -> int:
                      help="invert from a gunw_reader --csv summary, no products "
                           "needed (implies --invert)")
     ap.add_argument("--network", action="store_true", help="network structure only")
+    ap.add_argument("--jackknife", action="store_true",
+                    help="refit leaving each pair out; flags trends that rest "
+                         "on a single interferogram")
     ap.add_argument("--invert", action="store_true", help="run the inversion (needs --dir)")
     ap.add_argument("--product", choices=("GUNW", "GOFF"), default="GUNW",
                     help="which product to build the series from")
@@ -614,6 +694,8 @@ def main() -> int:
         for k, comp in enumerate(connected_components(group), 1):
             inside = [p for p in group if p.ref in comp and p.sec in comp]
             all_rows += report_series(label, k, invert_component(inside, comp))
+            if args.jackknife:
+                jackknife(label, k, inside, comp)
 
     if args.csv and all_rows:
         keys = ["geometry", "component", "epoch", "days_from_start", "cumulative_mm", "error_mm"]
