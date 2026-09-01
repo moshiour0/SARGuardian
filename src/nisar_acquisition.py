@@ -365,6 +365,12 @@ def main() -> int:
     parser.add_argument("--watch", action="store_true", help="cron mode: exit 10 if new products appeared")
     parser.add_argument("--new-since", metavar="YYYY-MM-DD", help="treat secondary dates after this as new")
     parser.add_argument("--start", default="2025-01-01")
+    parser.add_argument("--span", type=int, metavar="DAYS",
+                        help="only pairs with this temporal baseline, e.g. 24. "
+                             "A 24-day pair spanning two existing 12-day steps "
+                             "closes a loop and gives the network redundancy.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="list what --download would fetch, and its size")
     args = parser.parse_args()
 
     if not (args.recon or args.download or args.watch):
@@ -383,7 +389,30 @@ def main() -> int:
     if args.sentinel1:
         recon_sentinel1(start=args.start)
 
+    if args.span:
+        before = len(records)
+        records = [r for r in records if r["span_days"] == args.span]
+        print(f"\n--span {args.span}: {len(records)} of {before} products have a "
+              f"{args.span}-day baseline")
+        if not records:
+            print("  Nothing at that baseline. Run --recon to see what exists.")
+            return 1
+
     if args.download:
+        wanted = [r for r in records
+                  if r["productType"] in [t.upper() for t in args.download]]
+        if args.dry_run:
+            mb = sum(r.get("size_mb") or 0 for r in wanted)
+            print(f"\nDRY RUN - {len(wanted)} product(s), ~{mb/1024:.1f} GB\n")
+            print(f"  {'PRODUCT':<8}{'DIR':>4}{'PATH':>6}  {'REFERENCE':<12}"
+                  f"{'SECONDARY':<12}{'SPAN':>6}{'MB':>8}")
+            print("  " + "-" * 58)
+            for r in sorted(wanted, key=lambda r: (r["reference"], r["path"])):
+                print(f"  {r['productType']:<8}{r['direction'][0]:>4}{r['path']:>6}  "
+                      f"{str(r['reference']):<12}{str(r['secondary']):<12}"
+                      f"{r['span_days']:>4} d{r.get('size_mb') or 0:>8.0f}")
+            print("\nRe-run without --dry-run to fetch these.")
+            return 0
         download([t.upper() for t in args.download], records)
 
     if args.watch and args.new_since:
