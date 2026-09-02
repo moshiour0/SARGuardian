@@ -122,12 +122,106 @@ def heading_deg(inclination_deg: float, lat_deg: float, ascending: bool) -> floa
     return asc % 360.0 if ascending else (180.0 - asc) % 360.0
 
 
-def los_unit(heading: float, incidence: float) -> np.ndarray:
-    """Unit vector from the ground target toward the satellite, in ENU."""
+def los_unit(heading: float, incidence: float, left_looking: bool = True) -> np.ndarray:
+    """
+    Unit vector from the ground target toward the satellite, in ENU.
+
+    The look side matters and is easy to get wrong. This formula was written
+    for a right-looking sensor; NISAR looks LEFT, and its products say so in
+    identification/lookDirection. Using the right-looking form on NISAR
+    reverses both horizontal components while leaving the vertical untouched -
+    so an AOI median, which is dominated by the vertical term, looks entirely
+    reasonable while every east-west inference is backwards.
+
+    Checked against the products' own losUnitVectorX/Y at 28.275 N:
+
+        ASC 98   derived right-looking  E -0.6261  N -0.1053  U +0.7726
+                 product                E +0.6161  N +0.1531  U +0.7727
+
+    Prefer los_from_product() when a granule is at hand; this is the fallback
+    for planning before anything is downloaded.
+    """
     h, t = math.radians(heading), math.radians(incidence)
-    return np.array([-math.sin(t) * math.cos(h),
-                      math.sin(t) * math.sin(h),
-                      math.cos(t)])
+    side = -1.0 if left_looking else 1.0
+    return np.array([side * -math.sin(t) * math.cos(h),
+                     side * math.sin(t) * math.sin(h),
+                     math.cos(t)])
+
+
+def los_from_product(path, lat: float, lon: float) -> dict | None:
+    """
+    Read the look geometry the product itself carries, at one location.
+
+    NISAR L2 ships losUnitVectorX/Y and incidenceAngle on a metadata cube, so
+    the true geometry never has to be reconstructed from orbital elements at
+    all. Z follows from the unit-length constraint, and the result is checked
+    against cos(incidence) before being returned - if those disagree the
+    convention is not what we think it is and guessing would be worse than
+    failing.
+    """
+    try:
+        import h5py
+        from pyproj import Transformer
+    except ImportError:
+        logger.warning("h5py and pyproj are needed to read look geometry.")
+        return None
+
+    rg = "science/LSAR/GUNW/metadata/radarGrid"
+    with h5py.File(path, "r") as f:
+        if f"{rg}/losUnitVectorX" not in f:
+            return None
+        xs = np.asarray(f[f"{rg}/xCoordinates"][()])
+        ys = np.asarray(f[f"{rg}/yCoordinates"][()])
+        epsg = int(np.ravel(f[f"{rg}/projection"][()])[0]) if f"{rg}/projection" in f else 4326
+        tx, ty = Transformer.from_crs(4326, epsg, always_xy=True).transform(lon, lat)
+        j = int(np.argmin(np.abs(xs - tx)))
+        i = int(np.argmin(np.abs(ys - ty)))
+
+        def col(name):
+            a = np.asarray(f[f"{rg}/{name}"][:, i, j], dtype=float)
+            a = a[np.isfinite(a)]
+            return float(a.mean()) if a.size else float("nan")
+
+        lx, ly, inc = col("losUnitVectorX"), col("losUnitVectorY"), col("incidenceAngle")
+        look = f["science/LSAR/identification/lookDirection"][()]
+        look = look.decode() if isinstance(look, bytes) else str(look)
+
+    if not all(np.isfinite([lx, ly, inc])):
+        return None
+    lz = math.sqrt(max(0.0, 1.0 - lx * lx - ly * ly))
+    if abs(lz - math.cos(math.radians(inc))) > 0.02:
+        logger.warning("losUnitVector Z (%.4f) disagrees with cos(incidence) "
+                       "(%.4f) - convention unclear, not using it.",
+                       lz, math.cos(math.radians(inc)))
+        return None
+    return {"los": np.array([lx, ly, lz]), "incidence": inc, "look": look}
+
+
+def decompose(d_asc: float, d_desc: float, los_asc: np.ndarray,
+              los_desc: np.ndarray) -> dict:
+    """
+    Two line-of-sight rates into east and vertical, assuming no north motion.
+
+    Both geometries are nearly blind to north - the N components here are
+    +0.15 and +0.18 against E of +0.62 and -0.59 - so solving for it would
+    divide by almost nothing. Setting u_N = 0 is the standard reduction and
+    the honest one.
+
+    The reason to bother is that a path delay is not a vector. A delay changes
+    both geometries by the same LOS amount, and because U is the largest
+    component of both look vectors (0.77 and 0.79) it decomposes to almost
+    pure vertical. So the vertical fraction is a diagnostic: a slope creeps
+    parallel to its own surface, and a plunge steeper than the terrain is a
+    delay wearing a vector's clothes.
+    """
+    M = np.array([[los_asc[0], los_asc[2]], [los_desc[0], los_desc[2]]])
+    if abs(np.linalg.det(M)) < 1e-6:
+        raise ValueError("The two geometries are too similar to separate.")
+    u_e, u_u = np.linalg.solve(M, [d_asc, d_desc])
+    mag = float(math.hypot(u_e, u_u))
+    return {"east": float(u_e), "up": float(u_u), "magnitude": mag,
+            "plunge_deg": float(math.degrees(math.atan2(-u_u, abs(u_e)))) if mag else 0.0,
+            "vertical_fraction": float(abs(u_u) / mag) if mag else 0.0}
 
 
 def downslope_unit(slope_deg: float, aspect_deg: float) -> np.ndarray:
