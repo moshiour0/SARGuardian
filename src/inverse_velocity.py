@@ -106,7 +106,13 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
     propagation from the covariance of (a, b).
     """
     t = np.array([(w["mid"] - win[0]["mid"]).days for w in win], dtype=float)
-    v = np.array([w["v_mm_day"] for w in win], dtype=float)
+    # SPEED, not signed velocity. Fukuzono was written for an extensometer
+    # aligned with the movement, where velocity is positive by construction.
+    # A line-of-sight velocity is signed, and which sign means downslope
+    # depends entirely on the look geometry - so 1/v built from the signed
+    # value is negative for half the world's slopes, rises toward zero instead
+    # of falling to it, and is rejected by the slope test below.
+    v = np.abs(np.array([w["v_mm_day"] for w in win], dtype=float))
     inv = 1.0 / v
 
     n = len(t)
@@ -159,13 +165,38 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     print(f"  {'INTERVAL':<26}{'DAYS':>6}{'v mm/day':>11}{'1/v':>10}   STATUS")
     print("  " + "-" * 66)
     for w in vs:
-        sig = w["v_mm_day"] > threshold
-        iv = f"{1/w['v_mm_day']:.4f}" if w["v_mm_day"] > 0 else "-"
+        sig = abs(w["v_mm_day"]) > threshold
+        iv = f"{1/abs(w['v_mm_day']):.4f}" if w["v_mm_day"] else "-"
         status = "above floor" if sig else "below floor"
         print(f"  {str(w['t0'])+' -> '+str(w['t1']):<26}{w['days']:>6}"
               f"{w['v_mm_day']:>11.2f}{iv:>10}   {status}")
 
-    usable = [w for w in vs if w["v_mm_day"] > threshold]
+    # Magnitude, not sign. Downslope motion projects NEGATIVE into the line of
+    # sight on a west-facing slope viewed from ascending - the dominant
+    # configuration at this site, where sensitivity is -0.908. Gating on
+    # `v > threshold` discarded precisely the signal the detector exists to
+    # find, and did it silently: on null data a detector that cannot alarm and
+    # one that correctly finds nothing produce identical output.
+    usable = [w for w in vs if abs(w["v_mm_day"]) > threshold]
+
+    # A failing slope does not reverse. Mixing signs inside one fit window
+    # would let noise either side of zero masquerade as acceleration, so keep
+    # the longest run of consistent direction.
+    if usable:
+        runs, cur = [], [usable[0]]
+        for a, b in zip(usable, usable[1:]):
+            if (a["v_mm_day"] > 0) == (b["v_mm_day"] > 0):
+                cur.append(b)
+            else:
+                runs.append(cur); cur = [b]
+        runs.append(cur)
+        longest = max(runs, key=len)
+        if len(longest) < len(usable):
+            print(f"\n  {len(usable)} intervals clear the floor but change direction; "
+                  f"keeping the longest\n  consistent run of {len(longest)}. A slope "
+                  f"approaching failure does not reverse.")
+        usable = longest
+
     print(f"\n  {len(usable)} of {len(vs)} intervals clear the floor")
 
     # ---- gates, in order, each with a stated reason -----------------------
@@ -173,9 +204,9 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
         need = window - len(usable)
         print(f"\n  NO ALARM - only {len(usable)} usable velocities, the fit needs "
               f"{window}. Short by {need}.")
-        vmax = max(w["v_mm_day"] for w in vs)
+        vmax = max((w["v_mm_day"] for w in vs), key=abs)
         print(f"  fastest interval measured: {vmax:+.2f} mm/day "
-              f"({vmax/noise_floor:.2f} x the noise floor)")
+              f"({abs(vmax)/noise_floor:.2f} x the noise floor)")
         print(f"  a detection here would have needed sustained motion above "
               f"{threshold:.0f} mm/day across {window} consecutive intervals.")
         return {"alarm": False, "reason": "insufficient velocities above noise floor",
@@ -295,9 +326,9 @@ def main() -> int:
         mv = [r["max_velocity"] for r in results if "max_velocity" in r]
         if mv:
             gate = args.sig_multiple * args.noise_floor
-            fastest = max(mv)
+            fastest = max(mv, key=abs)
             print(f"\n  Fastest single interval anywhere: {fastest:+.2f} mm/day "
-                  f"({fastest/args.noise_floor:.1f}x the noise floor)")
+                  f"({abs(fastest)/args.noise_floor:.1f}x the noise floor)")
             print(f"  Detection required: {gate:.2f} mm/day sustained across "
                   f"{args.window} consecutive intervals.")
             # Two different failure modes, and saying which one is the point.
@@ -305,7 +336,7 @@ def main() -> int:
             # magnitude - it is a shortfall in persistence, which is exactly how
             # atmospheric noise differs from creep. Reporting them the same way
             # would hide the distinction the whole method rests on.
-            if fastest > gate:
+            if abs(fastest) > gate:
                 print(f"\n  Motion DID exceed the gate in at least one interval, but "
                       f"never for\n  {args.window} in a row. An isolated excursion "
                       f"that does not persist is the\n  signature of atmosphere, "
@@ -313,7 +344,7 @@ def main() -> int:
                       f"its starting value confirms it.")
             else:
                 print(f"\n  No interval anywhere reached the gate; the fastest was "
-                      f"{gate/fastest:.1f}x short.")
+                      f"{gate/abs(fastest):.1f}x short.")
             print("\n  This is a bounded non-detection, not an absence of evidence:")
             print("  any precursor slower than the floor is invisible to this product,")
             print("  and that bound is the quotable result.")

@@ -71,6 +71,24 @@ MUTATIONS = [
      "            good.append(f)\n        except Exception:\n            good.append(f)",
      "test_truncated_product_is_reported_not_skipped"),
 
+    ("velocity gate reads sign, not magnitude",
+     "inverse_velocity.py",
+     'usable = [w for w in vs if abs(w["v_mm_day"]) > threshold]',
+     'usable = [w for w in vs if w["v_mm_day"] > threshold]',
+     "test_alarm_does_not_depend_on_look_direction"),
+
+    ("inverse-velocity fit uses signed velocity",
+     "inverse_velocity.py",
+     'v = np.abs(np.array([w["v_mm_day"] for w in win], dtype=float))',
+     'v = np.array([w["v_mm_day"] for w in win], dtype=float)',
+     "test_inverse_velocity_fit_uses_speed_not_signed_velocity"),
+
+    ("reported peak is the signed maximum",
+     "inverse_velocity.py",
+     'vmax = max((w["v_mm_day"] for w in vs), key=abs)',
+     'vmax = max(w["v_mm_day"] for w in vs)',
+     "test_reported_peak_is_the_largest_magnitude"),
+
     ("duplicate products averaged instead of resolved",
      "timeseries.py",
      "out.append(best[1])",
