@@ -361,6 +361,7 @@ def read_gunw(
         by, bx = ny // blk, nx // blk
         if by and bx:
             cut_v = quality_valid[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+            frac_valid = cut_v.mean(axis=(1, 3))
             full = cut_v.all(axis=(1, 3))
 
             # The reference MUST sit in the same connected component as the
@@ -371,6 +372,7 @@ def read_gunw(
             # summer pairs, and why the same pair processed twice differed by
             # 265 mm.
             target_comp = None
+            comp_ok = np.ones_like(full)
             if components is not None and aoi_mask is not None:
                 inside = components[quality_valid & aoi_mask]
                 if inside.size:
@@ -384,27 +386,58 @@ def read_gunw(
                             "AOI spans %d components; only %.0f%% is in the dominant "
                             "one. Displacements across component boundaries are not "
                             "comparable.", len(ids), 100 * frac)
+                    # Every VALID pixel in the block must belong to the target
+                    # component. Invalid pixels carry no phase and no component,
+                    # so requiring them to match would reject blocks for having
+                    # holes rather than for being in the wrong component.
                     cut_c = components[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
-                    full &= (cut_c == target_comp).all(axis=(1, 3))
+                    comp_ok = (~cut_v | (cut_c == target_comp)).all(axis=(1, 3))
 
             if aoi_mask is not None:
                 cut_a = aoi_mask[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
-                full &= ~cut_a.any(axis=(1, 3))       # keep blocks clear of the AOI
+                outside = ~cut_a.any(axis=(1, 3))     # keep blocks clear of the AOI
+            else:
+                outside = np.ones_like(full)
 
+            # Demanding a block where EVERY pixel is valid is too strict in
+            # summer: six of the fifteen pairs found none and fell back to
+            # referencing inside the AOI, which subtracts part of the very
+            # thing being measured and drives any AOI-wide motion toward zero.
+            # A non-detection produced that way is an artefact of the
+            # reference, not a result.
+            #
+            # So relax the fullness requirement in steps and take the first
+            # level that finds anything. A block that is 80% valid, entirely
+            # outside the AOI and entirely within the target component is a
+            # far better reference than a perfect block inside it.
             if coherence is not None:
                 cut_h = coherence[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
-                score = np.where(full, cut_h.mean(axis=(1, 3)), -1.0)
+                mean_coh = np.where(cut_v, cut_h, 0.0).sum(axis=(1, 3)) / np.maximum(
+                    cut_v.sum(axis=(1, 3)), 1)
             else:
-                score = full.astype(float) - (~full)
+                mean_coh = np.ones_like(frac_valid)
 
-            if score.max() > 0:
+            chosen_level = None
+            score = None
+            for level in (1.0, 0.8, 0.6, 0.4):
+                ok = (frac_valid >= level) & outside & comp_ok
+                if level >= 1.0:
+                    ok &= full
+                if ok.any():
+                    score = np.where(ok, mean_coh, -1.0)
+                    chosen_level = level
+                    break
+
+            if score is not None and score.max() > 0:
                 bi, bj = np.unravel_index(int(np.argmax(score)), score.shape)
                 i = bi * blk + blk // 2
                 j = bj * blk + blk // 2
                 ref_lon, ref_lat = float(xs[j]), float(ys[i])   # grid units here
-                logger.info("Auto reference: grid (%d, %d), coherence %.2f, component %s",
+                logger.info("Auto reference: grid (%d, %d), coherence %.2f, "
+                            "component %s, block %.0f%% valid",
                             i, j, float(score[bi, bj]),
-                            components[i, j] if components is not None else "n/a")
+                            components[i, j] if components is not None else "n/a",
+                            100 * chosen_level)
                 _auto_grid_ref = (i, j)
             elif target_comp is not None:
                 # No clean block of that component outside the AOI. Referencing
@@ -641,6 +674,46 @@ def export_clipped(result: dict, outdir: Path) -> dict:
             "export_rows": disp.shape[0], "export_cols": disp.shape[1]}
 
 
+def verify_products(files: list[Path]) -> tuple[list[Path], list[tuple[Path, str]]]:
+    """
+    Open every product before processing any of them, and report the broken
+    ones up front.
+
+    A truncated download does not announce itself. HDF5 raises only when the
+    file is opened, so in a batch the failure appears as one ERROR line among
+    hundreds of INFO lines, the loop continues, and the run finishes with an
+    exit code of zero and a time series quietly missing an epoch. That is the
+    worst possible failure mode: the analysis still produces numbers, and the
+    numbers are wrong by omission.
+
+    Checking first turns it into a stated precondition. One of fifteen
+    downloads arrived 195 MB short and would otherwise have removed
+    2026-06-29 -> 2026-07-11 from the descending network without comment.
+    """
+    good, bad = [], []
+    for f in files:
+        try:
+            with h5py.File(f, "r") as h:
+                h.visititems(lambda name, obj: None)
+            good.append(f)
+        except Exception as exc:
+            bad.append((f, str(exc)[:120]))
+
+    if bad:
+        logger.error("%d of %d products failed to open:", len(bad), len(files))
+        for f, msg in bad:
+            gb = f.stat().st_size / 2**30
+            logger.error("  %s  (%.2f GB)", f.name, gb)
+            logger.error("     %s", msg)
+        print("\nThese are almost certainly incomplete downloads. Delete and")
+        print("re-fetch them; a short file is not recoverable by any reader.")
+        print("Processing continues with the %d that opened, but the network"
+              % len(good))
+        print("will be missing their epochs - check --network before trusting")
+        print("any time series built from this run.\n")
+    return good, bad
+
+
 def check_consistency(rows: list[dict]) -> list[dict]:
     """
     Cross-check pairs that share both acquisition dates.
@@ -657,7 +730,7 @@ def check_consistency(rows: list[dict]) -> list[dict]:
     """
     groups: dict[tuple[str, str], list[dict]] = {}
     for r in rows:
-        groups.setdefault((r["reference_date"], r["secondary_date"]), []).append(r)
+        groups.setdefault((r["reference"], r["secondary"]), []).append(r)
     dupes = {k: v for k, v in groups.items() if len(v) > 1}
     if not dupes:
         return []
@@ -782,6 +855,10 @@ def main() -> int:
         if not files:
             logger.error("No *GUNW*.h5 files in %s", args.batch); return 1
         logger.info("Found %d GUNW files", len(files))
+        files, broken = verify_products(files)
+        if not files:
+            logger.error("No readable products.")
+            return 1
     else:
         ap.print_help(); return 0
 
