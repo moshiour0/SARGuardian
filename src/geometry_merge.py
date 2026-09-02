@@ -240,6 +240,50 @@ def downslope_unit(slope_deg: float, aspect_deg: float) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Terrain
 # ---------------------------------------------------------------------------
+def elevation_grid(lats, lons, batch: int = 100):
+    """
+    One elevation raster for the whole AOI, in batched requests.
+
+    slope_aspect() costs a request per point, which is fine for one location
+    and hopeless for a map. OpenTopoData takes 100 locations per call, so a
+    40x36 grid is fifteen requests instead of fourteen hundred.
+    """
+    pts = [(a, b) for a in lats for b in lons]
+    out = []
+    for k in range(0, len(pts), batch):
+        chunk = pts[k:k + batch]
+        loc = "|".join(f"{a:.6f},{b:.6f}" for a, b in chunk)
+        url = "https://api.opentopodata.org/v1/srtm30m?locations=" + urllib.parse.quote(loc)
+        for attempt in range(4):
+            try:
+                d = json.loads(urllib.request.urlopen(url, timeout=120).read().decode())
+                break
+            except Exception as exc:
+                if attempt == 3:
+                    raise
+                logger.warning("retry (%s)", exc)
+                time.sleep(4)
+        out += [r["elevation"] if r["elevation"] is not None else np.nan
+                for r in d["results"]]
+        time.sleep(1.1)                      # the public endpoint allows 1/sec
+        logger.info("elevation %d/%d", min(k + batch, len(pts)), len(pts))
+    return np.array(out, dtype=float).reshape(len(lats), len(lons))
+
+
+def slope_aspect_grid(z: np.ndarray, lats, lons):
+    """Horn's method across a whole grid. Row 0 is north."""
+    dy = abs(lats[1] - lats[0]) * 110570.0
+    dx = abs(lons[1] - lons[0]) * 111320.0 * math.cos(math.radians(float(np.mean(lats))))
+    zp = np.pad(z, 1, mode="edge")
+    dzdx = ((zp[:-2, 2:] + 2 * zp[1:-1, 2:] + zp[2:, 2:])
+            - (zp[:-2, :-2] + 2 * zp[1:-1, :-2] + zp[2:, :-2])) / (8 * dx)
+    dzdy = ((zp[:-2, :-2] + 2 * zp[:-2, 1:-1] + zp[:-2, 2:])
+            - (zp[2:, :-2] + 2 * zp[2:, 1:-1] + zp[2:, 2:])) / (8 * dy)
+    slope = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
+    aspect = np.degrees(np.arctan2(-dzdx, -dzdy)) % 360.0
+    return slope, aspect
+
+
 def slope_aspect(lat: float, lon: float, spacing_m: float = 90.0) -> tuple[float, float, float]:
     """Slope, aspect and elevation at a point, from SRTM via OpenTopoData."""
     dlat = spacing_m / 110570.0
@@ -436,14 +480,93 @@ def plot_merged(rows, out: Path):
     logger.info("Wrote %s", out)
 
 
+def coverage_map(aoi: str, step: float, min_sens: float, out_csv=None) -> int:
+    """
+    How much of an AOI could each geometry actually have seen?
+
+    A non-detection is only as strong as the ground it covers. Quoting one
+    sensitivity at one point says nothing about a valley whose aspect swings
+    through every direction, and this is the number that qualifies the null:
+    motion is invisible wherever the slope happens to lie across the look
+    direction, however good the interferogram is.
+
+    It also separates two different questions. One usable geometry gives a
+    line-of-sight rate and nothing more; only where BOTH are usable can
+    vertical be told from horizontal, and that is a much smaller area.
+    """
+    import gunw_reader as _g
+    ring = _g.AOIS[aoi]
+    lons = [p[0] for p in ring]
+    lats = [p[1] for p in ring]
+    LO = np.arange(min(lons), max(lons) + 1e-9, step)
+    LA = np.arange(max(lats), min(lats) - 1e-9, -step)
+    logger.info("%s: %d x %d grid at ~%.0f m", aoi, len(LA), len(LO), step * 111000)
+
+    z = elevation_grid(LA, LO)
+    slope, aspect = slope_aspect_grid(z, LA, LO)
+    inside = np.array([[_g.point_in_ring(b, a, ring) for b in LO] for a in LA])
+    ok = inside & np.isfinite(z)
+
+    print(f"\n{'=' * 68}")
+    print(f"{aoi.upper()}   {int(ok.sum())} cells inside the AOI")
+    print("=" * 68)
+    print(f"  elevation      {np.nanmin(z[ok]):.0f} - {np.nanmax(z[ok]):.0f} m")
+    print(f"  slope          median {np.median(slope[ok]):.1f} deg, "
+          f"{100 * np.mean(slope[ok] > 20):.0f}% steeper than 20 deg")
+
+    sens = {}
+    for label, ascending, inc in (("NISAR ASC 98", True, 39.4),
+                                  ("NISAR DESC 48", False, 37.7)):
+        h = heading_deg(98.4, float(np.mean(LA)), ascending)
+        L = los_unit(h, inc)
+        S = np.zeros_like(slope)
+        for i in range(slope.shape[0]):
+            for j in range(slope.shape[1]):
+                if ok[i, j]:
+                    S[i, j] = float(np.dot(downslope_unit(slope[i, j], aspect[i, j]), L))
+        sens[label] = S
+        steep = ok & (slope > 20)
+        print(f"  {label:<15} usable over {100 * (np.abs(S[ok]) >= min_sens).mean():5.1f}% "
+              f"of the AOI, {100 * (np.abs(S[steep]) >= min_sens).mean():5.1f}% of "
+              f"slopes >20 deg")
+
+    A, D = sens["NISAR ASC 98"], sens["NISAR DESC 48"]
+    either = (np.abs(A) >= min_sens) | (np.abs(D) >= min_sens)
+    both = (np.abs(A) >= min_sens) & (np.abs(D) >= min_sens)
+    print(f"\n  EITHER geometry usable   {100 * either[ok].mean():5.1f}%  "
+          f"<- the area a non-detection actually covers")
+    print(f"  BOTH usable              {100 * both[ok].mean():5.1f}%  "
+          f"<- the only area where vertical can be separated from horizontal")
+    print(f"  NEITHER                  {100 * (~either[ok]).mean():5.1f}%  "
+          f"<- blind, whatever the interferogram says")
+
+    if out_csv:
+        with open(out_csv, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["lat", "lon", "elev_m", "slope_deg", "aspect_deg",
+                        "sens_asc", "sens_desc"])
+            for i, a in enumerate(LA):
+                for j, b in enumerate(LO):
+                    if ok[i, j]:
+                        w.writerow([f"{a:.5f}", f"{b:.5f}", f"{z[i,j]:.0f}",
+                                    f"{slope[i,j]:.1f}", f"{aspect[i,j]:.0f}",
+                                    f"{A[i,j]:.3f}", f"{D[i,j]:.3f}"])
+        logger.info("Wrote %s", out_csv)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Merge ascending and descending LOS series")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--sensitivity", action="store_true",
                       help="which tracks can see motion here (needs no data)")
     mode.add_argument("--merge", action="store_true", help="merge a timeseries.py CSV")
-    ap.add_argument("--lat", type=float, required=True)
-    ap.add_argument("--lon", type=float, required=True)
+    mode.add_argument("--map", metavar="AOI", choices=("langtang", "lhende"),
+                      help="what fraction of an AOI each geometry can actually see")
+    ap.add_argument("--lat", type=float)
+    ap.add_argument("--lon", type=float)
+    ap.add_argument("--step", type=float, default=0.003,
+                    help="map grid spacing in degrees (0.003 ~ 333 m)")
     ap.add_argument("--ts", metavar="TS.csv", help="output of timeseries.py --csv")
     ap.add_argument("--min-sensitivity", type=float, default=0.3,
                     help="reject tracks below this |slope_hat . los_hat|")
@@ -451,7 +574,12 @@ def main() -> int:
     ap.add_argument("--plot", metavar="OUT.png")
     args = ap.parse_args()
 
+    if args.map:
+        return coverage_map(args.map, args.step, args.min_sensitivity, args.csv)
+
     if args.sensitivity:
+        if args.lat is None or args.lon is None:
+            ap.error("--sensitivity needs --lat and --lon")
         slope, aspect, elev = slope_aspect(args.lat, args.lon)
         rows = sensitivities(args.lat, args.lon, slope, aspect, args.min_sensitivity)
         report_sensitivity(args.lat, args.lon, slope, aspect, elev, rows, args.min_sensitivity)
