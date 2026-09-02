@@ -520,6 +520,11 @@ def read_gunw(
         "wavelength_m": wavelength,
         "iono_rms_mm": iono_rms_mm,
         "ref_value_mm": ref_value,
+        # Where the reference was taken, in grid indices. Exposed so a caller
+        # can check it landed on stable ground outside the AOI rather than
+        # inside the thing being measured - a distinction that changes the
+        # answer and is invisible in the returned displacement.
+        "ref_grid": _auto_grid_ref,
         "gates": gates,
     }
 
