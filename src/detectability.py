@@ -170,7 +170,8 @@ class Detector:
 # ---------------------------------------------------------------------------
 def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
              noise_mm: float, n_trials: int, rng: np.random.Generator,
-             lead_in_days: float = 30.0, wavelength_m: float | None = None) -> dict:
+             lead_in_days: float = 30.0, wavelength_m: float | None = None,
+             n_null: int = 1000) -> dict:
     """
     One (precursor, revisit) cell of the sweep.
 
@@ -187,7 +188,7 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
     """
     T = precursor.duration_days
     ceiling_mm = (wavelength_m / 4.0) * 1000.0 if wavelength_m else None
-    warnings, errors, alarms, saturated = [], [], 0, 0
+    warnings, errors, alarms, saturated, premature = [], [], 0, 0, 0
 
     for _ in range(n_trials):
         # acquisitions on a fixed cadence with a random phase relative to onset
@@ -215,27 +216,53 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
 
         result = detector.run(t, obs, failure_day=T)
         if result["alarm"]:
-            alarms += 1
-            warnings.append(result["warning_days"])
-            errors.append(result["prediction_error_days"])
+            # An alarm inside the stable lead-in is a FALSE alarm, whatever the
+            # trial contains later. The detector scans from the earliest window
+            # and returns the first qualifying trend, and the earliest windows
+            # sit before onset where the truth is identically zero. Counting
+            # those as detections inflates the rate AND the warning time, since
+            # warning is scored as T - now and `now` is negative. The tell is a
+            # sweep where warning time RISES as detection collapses.
+            if result["alarm_day"] < 0.0:
+                premature += 1
+            else:
+                alarms += 1
+                warnings.append(result["warning_days"])
+                errors.append(result["prediction_error_days"])
+
+    # A detection rate with no false-alarm rate is not a performance figure: a
+    # detector that always fires scores 100%. The null costs almost nothing to
+    # measure, because every trial already carries a stable lead-in - so run
+    # the same detector, same cadence, same noise, on a slope that never moves.
+    false_alarms = 0
+    for _ in range(n_null):
+        offset = rng.uniform(0, revisit_days)
+        t = np.arange(-lead_in_days + offset, T, revisit_days)
+        t = t[t < T]
+        if len(t) < detector.window + 1:
+            continue
+        obs = rng.normal(0.0, noise_mm, size=len(t))
+        if detector.run(t, obs, failure_day=T)["alarm"]:
+            false_alarms += 1
 
     sat_rate = saturated / n_trials
+    far = false_alarms / n_null if n_null else float("nan")
+    base = {"revisit_days": revisit_days, "saturation_rate": sat_rate,
+            "n_trials": n_trials, "false_alarm_rate": far, "n_null": n_null,
+            "premature_rate": premature / n_trials}
     if alarms == 0:
-        return {"revisit_days": revisit_days, "detection_rate": 0.0,
-                "warning_median": float("nan"), "warning_p25": float("nan"),
-                "warning_p75": float("nan"), "abs_pred_error_median": float("nan"),
-                "saturation_rate": sat_rate, "n_trials": n_trials}
+        return {**base, "detection_rate": 0.0, "warning_median": float("nan"),
+                "warning_p25": float("nan"), "warning_p75": float("nan"),
+                "abs_pred_error_median": float("nan")}
 
     w = np.array(warnings)
     return {
-        "revisit_days": revisit_days,
+        **base,
         "detection_rate": alarms / n_trials,
         "warning_median": float(np.median(w)),
         "warning_p25": float(np.percentile(w, 25)),
         "warning_p75": float(np.percentile(w, 75)),
         "abs_pred_error_median": float(np.median(np.abs(errors))),
-        "saturation_rate": sat_rate,
-        "n_trials": n_trials,
     }
 
 
@@ -244,7 +271,7 @@ REVISITS = [1, 2, 3, 4, 6, 8, 12, 16, 24]
 
 def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
           creep_mm: float, detector: Detector, n_trials: int, seed: int,
-          wavelength_m: float | None = None) -> list[dict]:
+          wavelength_m: float | None = None, n_null: int = 1000) -> list[dict]:
     rng = np.random.default_rng(seed)
     rows = []
     for T in precursor_days:
@@ -256,12 +283,14 @@ def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
               f"noise {noise_mm:g} mm)")
         print(f"MEASUREMENT: {mode}")
         print(f"{'='*74}")
-        print(f"{'REVISIT':>8}{'SAMPLES':>9}{'SATUR':>8}{'DETECT':>9}{'WARNING (days)':>24}{'|PRED ERR|':>11}")
-        print(f"{'days':>8}{'in T':>9}{'rate':>8}{'rate':>9}{'median [p25-p75]':>24}{'days':>11}")
-        print("-" * 74)
+        print(f"{'REVISIT':>8}{'SAMPLES':>8}{'SATUR':>7}{'DETECT':>8}{'FALSE':>7}"
+              f"{'EARLY':>7}{'WARNING (days)':>22}{'|ERR|':>8}")
+        print(f"{'days':>8}{'in T':>8}{'rate':>7}{'rate':>8}{'ALARM':>7}"
+              f"{'rej.':>7}{'median [p25-p75]':>22}{'days':>8}")
+        print("-" * 82)
         for dt in revisits:
             r = simulate(p, detector, dt, noise_mm, n_trials, rng,
-                         wavelength_m=wavelength_m)
+                         wavelength_m=wavelength_m, n_null=n_null)
             r["precursor_days"] = T
             r["noise_mm"] = noise_mm
             r["creep_mm"] = creep_mm
@@ -269,17 +298,31 @@ def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
             n_in = int(T // dt)
             rate = r["detection_rate"]
             sat = f"{r.get('saturation_rate', 0):.0%}"
+            far = f"{r['false_alarm_rate']:.1%}"
+            early = f"{r['premature_rate']:.0%}"
             if rate == 0:
-                print(f"{dt:>8g}{n_in:>9}{sat:>8}{'never':>9}{'-':>24}{'-':>11}")
+                print(f"{dt:>8g}{n_in:>8}{sat:>7}{'never':>8}{far:>7}{early:>7}"
+                      f"{'-':>22}{'-':>8}")
             else:
                 # a handful of lucky alarms is not detection - do not round it to 0%
                 shown = "<1%" if rate < 0.005 else f"{rate:.0%}"
                 band = f"{r['warning_median']:.1f} [{r['warning_p25']:.1f}-{r['warning_p75']:.1f}]"
-                print(f"{dt:>8g}{n_in:>9}{sat:>8}{shown:>9}"
-                      f"{band:>24}{r['abs_pred_error_median']:>11.1f}")
+                print(f"{dt:>8g}{n_in:>8}{sat:>7}{shown:>8}{far:>7}{early:>7}"
+                      f"{band:>22}{r['abs_pred_error_median']:>8.1f}")
         # where does it stop working
-        dead = [r["revisit_days"] for r in rows
-                if r["precursor_days"] == T and r["detection_rate"] < 0.5]
+        # Detection is only real when it beats its own false-alarm rate. A cell
+        # detecting 10% against an 11.9% null has found nothing, however
+        # respectable 10% looks in isolation.
+        cells = [r for r in rows if r["precursor_days"] == T]
+        useless = [r for r in cells
+                   if r["detection_rate"] <= r["false_alarm_rate"]]
+        if useless:
+            print("\n  Detection at or below the false-alarm rate - no signal at all:")
+            for r in useless:
+                print(f"    revisit {r['revisit_days']:g} d: "
+                      f"{r['detection_rate']:.0%} detection vs "
+                      f"{r['false_alarm_rate']:.1%} false alarm")
+        dead = [r["revisit_days"] for r in cells if r["detection_rate"] < 0.5]
         if dead:
             limit = min(dead)
             print(f"\n  Detection collapses at revisit >= {limit:g} days "
@@ -390,6 +433,8 @@ def main() -> int:
     ap.add_argument("--window", type=int, default=3, help="velocity samples in the fit")
     ap.add_argument("--r2-min", type=float, default=0.70)
     ap.add_argument("--trials", type=int, default=400)
+    ap.add_argument("--null-trials", type=int, default=1000,
+                    help="zero-signal trials per cell, for the false-alarm rate")
     ap.add_argument("--seed", type=int, default=20260829)
     ap.add_argument("--wavelength", type=float, default=None,
                     help="radar wavelength in m; imposes the lambda/4 phase ceiling. "
@@ -409,7 +454,8 @@ def main() -> int:
         return 0
 
     rows = sweep(args.precursor, args.revisit, args.noise, args.creep,
-                 det, args.trials, args.seed, args.wavelength)
+                 det, args.trials, args.seed, args.wavelength,
+                 n_null=args.null_trials)
 
     print("\n" + "=" * 74)
     print("These are MODEL results. Absolute warning times depend on the assumed")
@@ -418,7 +464,8 @@ def main() -> int:
     print("=" * 74)
 
     if args.csv:
-        keys = ["precursor_days", "revisit_days", "detection_rate", "warning_median",
+        keys = ["precursor_days", "revisit_days", "detection_rate",
+                "false_alarm_rate", "premature_rate", "warning_median",
                 "warning_p25", "warning_p75", "abs_pred_error_median",
                 "noise_mm", "creep_mm", "n_trials"]
         with open(args.csv, "w", newline="") as fh:

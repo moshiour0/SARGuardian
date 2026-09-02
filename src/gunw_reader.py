@@ -679,6 +679,127 @@ def export_clipped(result: dict, outdir: Path) -> dict:
             "export_rows": disp.shape[0], "export_cols": disp.shape[1]}
 
 
+def find_common_reference(files: list[Path], coherence_threshold: float,
+                          ref_radius_px: int = 5) -> tuple[float, float] | None:
+    """
+    One reference point for the whole stack, valid in every pair.
+
+    Why this is not optional
+    ========================
+    --auto-ref picks the best block independently for each interferogram, and
+    the inversion then sums those differences as though they shared a datum.
+    They do not. Pair A may be referenced 8 km north-west and pair B 5 km
+    south-east, so any differential atmosphere, residual ramp or real motion
+    between those two blocks enters the time series as a step at that epoch -
+    an artefact of bookkeeping that looks exactly like ground moving.
+
+    SBAS requires a common reference across the stack. That is the whole
+    reason the technique works: the arbitrary constant cancels only if it is
+    the same constant every time.
+
+    How
+    ===
+    A first pass reads only the quality layers - mask, coherence, components -
+    never the phase, which is the expensive array. It intersects validity
+    across every pair and scores blocks by mean coherence, so the chosen point
+    is one that survives in all of them rather than one that happened to be
+    good in the first. The second pass processes normally with that point
+    fixed.
+
+    Returns (lat, lon), or None if no block is valid in every pair - which is
+    itself worth knowing, and means the stack cannot be inverted as one.
+    """
+    always = None
+    coh_sum = None
+    xs = ys = None
+    epsg = None
+
+    for k, fp in enumerate(files, 1):
+        with h5py.File(fp, "r") as f:
+            datasets = walk(f)
+            p_phase = find(datasets, "unwrappedphase", ndim=2)
+            if not p_phase:
+                continue
+            grp = p_phase.rsplit("/", 1)[0]
+            shape = datasets[p_phase][0]
+
+            def sib(*names, ndim=2):
+                for n in names:
+                    for base in (grp, grp.rsplit("/", 1)[0]):
+                        key = f"{base}/{n}"
+                        if key in datasets and datasets[key][0] == shape:
+                            return key
+                return None
+
+            p_coh = sib("coherenceMagnitude")
+            p_conn = sib("connectedComponents")
+            p_mask = sib("mask", "layoverShadowMask")
+            coh = np.asarray(f[p_coh][()], dtype=np.float32) if p_coh else None
+            conn = np.asarray(f[p_conn][()]) if p_conn else None
+            msk = np.asarray(f[p_mask][()]) if p_mask else None
+
+            gx = np.asarray(f[f"{grp}/xCoordinates"][()], dtype=np.float64)
+            gy = np.asarray(f[f"{grp}/yCoordinates"][()], dtype=np.float64)
+            if xs is None:
+                xs, ys = gx, gy
+                try:
+                    epsg = int(np.ravel(f[f"{grp}/projection"][()])[0])
+                except Exception:
+                    epsg = None
+            elif gx.shape != xs.shape or not np.allclose(gx, xs):
+                logger.error("Products are on different grids - a common reference "
+                             "only exists within one geometry. Run per path.")
+                return None
+
+        v = np.ones(shape, dtype=bool)
+        if coh is not None:
+            v &= coh >= coherence_threshold
+        if conn is not None:
+            v &= conn > 0
+        if msk is not None and msk.shape == shape:
+            m = msk.astype(np.int32)
+            v &= (m // 100 == 0) & ((m // 10) % 10 > 0) & (m % 10 > 0) & (msk != 255)
+
+        always = v if always is None else (always & v)
+        c = np.nan_to_num(coh, nan=0.0) if coh is not None else np.zeros(shape, np.float32)
+        coh_sum = c.copy() if coh_sum is None else (coh_sum + c)
+        logger.info("common-ref pass 1: %d/%d, %d px valid in all so far",
+                    k, len(files), int(always.sum()))
+
+    if always is None or not always.any():
+        logger.error("No pixel is valid in every pair - no common reference exists.")
+        return None
+
+    aoi = build_aoi_mask(xs, ys, globals()["AOI_RING"], epsg)
+    blk = max(3, 2 * ref_radius_px + 1)
+    ny, nx = always.shape
+    by, bx = ny // blk, nx // blk
+    cut = always[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+    ok = cut.all(axis=(1, 3))
+    if aoi is not None:
+        ca = aoi[:by * blk, :bx * blk].reshape(by, blk, bx, blk)
+        ok &= ~ca.any(axis=(1, 3))
+    if not ok.any():
+        logger.error("No block is valid in every pair AND outside the AOI.")
+        return None
+
+    cc = coh_sum[:by * blk, :bx * blk].reshape(by, blk, bx, blk).mean(axis=(1, 3))
+    score = np.where(ok, cc, -1.0)
+    bi, bj = np.unravel_index(int(np.argmax(score)), score.shape)
+    i, j = bi * blk + blk // 2, bj * blk + blk // 2
+    lon, lat = float(xs[j]), float(ys[i])
+    if epsg and epsg != 4326:
+        try:
+            from pyproj import Transformer
+            lon, lat = Transformer.from_crs(epsg, 4326, always_xy=True).transform(lon, lat)
+        except ImportError:
+            logger.warning("pyproj missing - reference reported in grid units.")
+    logger.info("Common reference for all %d pairs: %.5f N %.5f E "
+                "(grid %d,%d, mean coherence %.2f)",
+                len(files), lat, lon, i, j, float(score[bi, bj]) / len(files))
+    return lat, lon
+
+
 def verify_products(files: list[Path]) -> tuple[list[Path], list[tuple[Path, str]]]:
     """
     Open every product before processing any of them, and report the broken
@@ -843,6 +964,10 @@ def main() -> int:
     ap.add_argument("--geotiff", metavar="OUT.tif")
     ap.add_argument("--quicklook", metavar="OUT.png")
     ap.add_argument("--csv", metavar="OUT.csv", help="write per-pair statistics")
+    ap.add_argument("--common-ref", action="store_true",
+                    help="one reference point for the whole batch, valid in every "
+                         "pair. SBAS requires this; --auto-ref alone does not "
+                         "give it.")
     ap.add_argument("--export", metavar="DIR",
                     help="write AOI-clipped GeoTIFFs (small enough to send back)")
     args = ap.parse_args()
@@ -864,6 +989,16 @@ def main() -> int:
         if not files:
             logger.error("No readable products.")
             return 1
+        if args.common_ref:
+            if args.ref_lat is not None or args.ref_lon is not None:
+                logger.warning("--common-ref overrides --ref-lat/--ref-lon.")
+            found = find_common_reference(files, args.coh_threshold, args.ref_radius)
+            if not found:
+                logger.error("Cannot establish a common reference; refusing to "
+                             "invert pairs on different datums.")
+                return 1
+            args.ref_lat, args.ref_lon = found
+            args.auto_ref = False
     else:
         ap.print_help(); return 0
 
