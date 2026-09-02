@@ -252,15 +252,28 @@ def report(res: dict, label: str) -> None:
         print("  sigma is itself uncertain by roughly half, so the per-fit")
         print("  significance count above is inflated and means little.")
 
+    # A cluster faster than lambda/4 per pair is not a fast measurement, it is
+    # an unmeasurable one. Above that the phase has wrapped and the unwrapper
+    # has guessed; the value is as likely to be its mistake as the ground's.
+    ceiling = 0.2439 / 4 * 1000 / 12.0
+    if count and abs(float(np.nanmean(v[lab]))) > ceiling:
+        print(f"\n  WARNING: cluster mean exceeds lambda/4 per 12-day pair "
+              f"({ceiling:.2f} mm/day).")
+        print("  Phase cannot represent motion this fast. These pixels are at least")
+        print("  as likely to be an unwrapping error as a measurement, and cannot")
+        print("  support a detection on their own.")
+
     if count <= p95:
         print("\n  VERDICT: NO DETECTION. The largest cluster is within what this")
         print("  scene's own correlation length produces from noise with no")
         print("  signal present. Cluster size is not evidence here.")
+        return False
     else:
         print("\n  VERDICT: cluster exceeds the noise-only 95th percentile. That is")
         print("  necessary, not sufficient. Before calling it anything: check it")
         print("  appears in the other geometry, in a different time window, and")
         print("  moves consistently in one direction.")
+        return True
 
 
 def _correlation_length_km(v: np.ndarray, ok: np.ndarray, geo: dict) -> float:
@@ -455,10 +468,17 @@ def main() -> int:
     found = {}
     for k, run in enumerate(runs, 1):
         res = stack(run, remove_common_mode=not args.keep_common_mode)
-        report(res, f"{run[0]['geom']}  chain {k}")
+        survived = report(res, f"{run[0]['geom']}  chain {k}")
         fp = cluster_footprint(res)
-        if fp:
+        # Only a cluster that beat its OWN noise null is worth cross-checking.
+        # Confirming one blob against another that its own test already called
+        # noise is not corroboration - it is two random blobs, and with enough
+        # of them some pair will always overlap.
+        if fp and survived:
             found.setdefault(run[0]["geom"], fp)
+        elif fp:
+            logger.info("%s cluster did not beat its own noise null - excluded "
+                        "from the cross-geometry check.", run[0]["geom"])
         if args.geotiff and len(runs) == 1:
             write_geotiff(res, Path(args.geotiff))
 
