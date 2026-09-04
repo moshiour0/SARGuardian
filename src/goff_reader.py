@@ -6,7 +6,7 @@ Read NISAR L2 GOFF (geocoded pixel offsets) into ground displacement.
 Why GOFF and not GUNW
 =====================
 Interferometric phase is ambiguous once displacement between passes exceeds
-lambda/4 - about 61 mm per 12-day pair at NISAR's 0.2439 m wavelength, i.e.
+lambda/4 - about 59.6 mm per 12-day pair at NISAR's 0.2384 m wavelength, i.e.
 5 mm/day. Blatten was moving at 650 mm/day six days before it failed. Phase
 cannot measure a slope that is actually failing; offset tracking can, because
 it cross-correlates image patches and never wraps.
@@ -303,6 +303,10 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         valid = L["valid"]
         if not valid.any() or L["xs"] is None:
             continue
+        # Fixed AOI grid, so two layers or two pairs over the same ground come
+        # out the same size and can be differenced. See gunw_reader.aoi_grid.
+        grid = _g.aoi_grid(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
+
         rows_any = valid.any(axis=1)
         cols_any = valid.any(axis=0)
         r0, r1 = int(np.argmax(rows_any)), int(len(rows_any) - np.argmax(rows_any[::-1]))
@@ -311,7 +315,10 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         def band(key, scale=1.0):
             if L.get(key) is None:
                 return None
-            return np.where(valid, L[key] * scale, np.nan)[r0:r1, c0:c1].astype("float32")
+            full = np.where(valid, L[key] * scale, np.nan)
+            if grid is not None:
+                return _g.place_on_grid(full, grid)
+            return full[r0:r1, c0:c1].astype("float32")
 
         bands = [(band("range_m", 1000.0), "slant-range offset (mm)"),
                  (band("azimuth_m", 1000.0), "along-track offset (mm)"),
@@ -320,12 +327,16 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         if not bands:
             continue
 
-        xs, ys = L["xs"][c0:c1], L["ys"][r0:r1]
-        resx, resy = abs(float(L["xs"][1] - L["xs"][0])), abs(float(L["ys"][1] - L["ys"][0]))
-        transform = from_origin(float(xs.min()) - resx / 2,
-                                float(ys.max()) + resy / 2, resx, resy)
-        if ys[0] < ys[-1]:
-            bands = [(np.flipud(a), d) for a, d in bands]
+        if grid is not None:
+            transform = grid["transform"]
+        else:
+            xs, ys = L["xs"][c0:c1], L["ys"][r0:r1]
+            resx = abs(float(L["xs"][1] - L["xs"][0]))
+            resy = abs(float(L["ys"][1] - L["ys"][0]))
+            transform = from_origin(float(xs.min()) - resx / 2,
+                                    float(ys.max()) + resy / 2, resx, resy)
+            if ys[0] < ys[-1]:
+                bands = [(np.flipud(a), d) for a, d in bands]
 
         safe = name.replace("/", "-")
         target = outdir / (f"GOFF_{res['reference_date']}_{res['secondary_date']}"
@@ -456,7 +467,10 @@ def noise_floor(directory: Path, **kw) -> None:
                   f"range {good.min():.1f} - {good.max():.1f}")
             print(f"    -> GOFF cannot see motion slower than ~{np.median(good):.0f} mm/day "
                   f"on a 12-day pair")
-    print("\n  GUNW phase ceiling for comparison: 61 mm per 12-day pair = 5.1 mm/day")
+    from gunw_reader import NISAR_LAMBDA_M
+    ceil_mm = NISAR_LAMBDA_M / 4 * 1000.0
+    print(f"\n  GUNW phase ceiling for comparison: {ceil_mm:.1f} mm per 12-day "
+          f"pair = {ceil_mm/12:.2f} mm/day")
     print("  Anything between those two numbers is invisible to both products.")
 
 
@@ -510,7 +524,7 @@ def main() -> int:
                    help="folder of GOFF products (default: data/nisar_l2/GOFF)")
     m.add_argument("--noise-floor", metavar="DIR",
                    help="measure the detection floor on pairs you believe are stable")
-    ap.add_argument("--aoi", choices=("langtang", "lhende"), default="langtang",
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="langtang",
                     help="which box to clip to; lhende is the 26 Aug source zone")
     ap.add_argument("--layer", default="best", help="layer1, layer2, or best (both)")
     ap.add_argument("--correlation", type=float, default=DEFAULT_CORRELATION)

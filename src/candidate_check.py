@@ -54,7 +54,7 @@ logger = logging.getLogger("candidate")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import resolve  # noqa: E402
 
-WAVELENGTH_M = 0.2439
+from gunw_reader import NISAR_LAMBDA_M as WAVELENGTH_M  # noqa: E402
 MIN_PX = 20                    # below this a target window is not measured
 MONSOON = (6, 7, 8, 9)
 
@@ -90,6 +90,171 @@ def span_days(k) -> int:
     a = datetime.strptime(k[0], "%Y%m%d")
     b = datetime.strptime(k[1], "%Y%m%d")
     return (b - a).days
+
+
+MIN_SENS = 0.25            # below this a track is blind and the ratio is unstable
+RATIO_MARGIN = 0.15        # predictions closer than this cannot be told apart
+MIN_SLOPE_DEG = 10.0       # below this the aspect, and so the sensitivity, is noise
+
+
+def classify_geometry(sens_asc: float, sens_desc: float,
+                      v_asc: float, v_desc: float,
+                      slope_deg: float | None = None) -> dict:
+    """
+    Does the pair of line-of-sight rates look like downslope motion, or like a
+    path delay?
+
+    Downslope motion has ONE magnitude D. Each track sees D projected onto its
+    own line of sight, so
+
+        v_asc = sens_asc * D        v_desc = sens_desc * D
+
+    and the ratio v_desc/v_asc is fixed by geometry alone at sens_desc/sens_asc.
+    Where the two sensitivities have opposite signs - which is most of this
+    terrain - real motion MUST appear with opposite LOS signs.
+
+    A path delay is not a vector. Atmosphere, or a snowpack, adds the same
+    extra path length whichever direction the radar looks from, so it arrives
+    with the SAME sign in both geometries and a ratio near +1.
+
+    The previous version of this test had it backwards: it required matching
+    signs before declaring a signal real, which is the signature of the thing
+    it was meant to exclude. On the Langtang candidate (sens_asc -0.732,
+    sens_desc +0.472) both rates are negative, so the old rule called a phase
+    artefact "a real phase signal". The verdict there survived only because the
+    seasonality test caught it afterwards.
+
+    Returns a dict rather than printing, so the decision can be tested without
+    a network round trip for terrain.
+    """
+    out = {"sens_asc": sens_asc, "sens_desc": sens_desc,
+           "ratio_motion": None, "ratio_measured": None, "verdict": None,
+           "reason": None, "conclusive": False}
+
+    # Sensitivity is a projection onto the downslope direction, and that
+    # direction comes from the DEM aspect. On gentle ground the aspect is
+    # whichever way the DEM noise happens to tilt, so the sensitivity inherits
+    # that and is not determined at all - measured here at this candidate, the
+    # aspect moves 74 degrees and sens_asc runs from +0.020 to -0.642 as the
+    # stencil widens from 60 m to 300 m, while a 62-degree slope 3 km away holds
+    # its aspect to 4 degrees over the same range. A sensitivity quoted to three
+    # decimals on a 5-degree slope is three decimals of nothing.
+    if slope_deg is not None and slope_deg < MIN_SLOPE_DEG:
+        out["verdict"] = "undetermined"
+        out["reason"] = (f"the slope is {slope_deg:.1f} deg, below {MIN_SLOPE_DEG:.0f} deg. "
+                         f"Aspect on ground this gentle is dominated by DEM noise, so the "
+                         f"sensitivity it produces - and any ratio built on it - is not "
+                         f"determined. Widen or narrow the DEM stencil and the answer "
+                         f"changes sign.")
+        return out
+
+    if abs(sens_asc) < MIN_SENS or abs(sens_desc) < MIN_SENS:
+        out["verdict"] = "undetermined"
+        out["reason"] = (f"a track is blind here (|sensitivity| < {MIN_SENS}): "
+                         f"asc {sens_asc:+.3f}, desc {sens_desc:+.3f}. Dividing by "
+                         f"a near-zero sensitivity amplifies noise without limit.")
+        return out
+
+    ratio_motion = sens_desc / sens_asc
+    out["ratio_motion"] = ratio_motion
+
+    # If the geometry happens to predict a motion ratio near +1, the two
+    # hypotheses make the same prediction and no measurement can separate them.
+    # Saying so is the only honest option.
+    if abs(ratio_motion - 1.0) < RATIO_MARGIN:
+        out["verdict"] = "undetermined"
+        out["reason"] = (f"the geometry predicts a motion ratio of {ratio_motion:+.3f}, "
+                         f"indistinguishable from the +1.000 a path delay gives. "
+                         f"These two tracks cannot separate the hypotheses at this "
+                         f"location.")
+        return out
+
+    if v_asc == 0.0:
+        out["verdict"] = "undetermined"
+        out["reason"] = "the ascending rate is exactly zero; the ratio is undefined."
+        return out
+
+    ratio = v_desc / v_asc
+    out["ratio_measured"] = ratio
+    d_motion = abs(ratio - ratio_motion)
+    d_delay = abs(ratio - 1.0)
+    out["d_motion"], out["d_delay"] = d_motion, d_delay
+
+    if d_motion < d_delay:
+        out["verdict"] = "motion"
+        out["implied_downslope_mm_day"] = v_asc / sens_asc
+        out["reason"] = (f"measured ratio {ratio:+.3f} is closer to the "
+                         f"downslope-motion prediction {ratio_motion:+.3f} "
+                         f"(distance {d_motion:.3f}) than to the +1.000 of a "
+                         f"path delay (distance {d_delay:.3f}).")
+    else:
+        out["verdict"] = "delay"
+        out["reason"] = (f"measured ratio {ratio:+.3f} is closer to the +1.000 of a "
+                         f"geometry-independent path delay (distance {d_delay:.3f}) "
+                         f"than to the downslope-motion prediction {ratio_motion:+.3f} "
+                         f"(distance {d_motion:.3f}).")
+    out["conclusive"] = True
+    return out
+
+
+def geometry_test(lat, lon, dry: dict, problems: list) -> None:
+    """
+    Run classify_geometry on the dry-season rates and report it.
+
+    Needs terrain, so it needs --lat/--lon and a network round trip. Without
+    them the test is SKIPPED and says so - silently falling back to a sign
+    comparison is what produced the original bug.
+    """
+    if lat is None or lon is None:
+        print("\n  GEOMETRY TEST SKIPPED: needs --lat/--lon to look up slope and")
+        print("  aspect. Without terrain there is no sensitivity, and without")
+        print("  sensitivity the LOS signs mean nothing.")
+        return
+
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from geometry_merge import slope_aspect, sensitivities
+        slope, aspect, elev = slope_aspect(lat, lon)
+        rows = sensitivities(lat, lon, slope, aspect, MIN_SENS)
+    except Exception as exc:
+        print(f"\n  GEOMETRY TEST SKIPPED: could not obtain terrain ({exc}).")
+        return
+
+    nisar = {r["ascending"]: r["sensitivity"] for r in rows if r["track"].startswith("NISAR")}
+    if True not in nisar or False not in nisar:
+        print("\n  GEOMETRY TEST SKIPPED: no NISAR ascending/descending pair in TRACKS.")
+        return
+    if "A" not in dry or "D" not in dry:
+        print("\n  GEOMETRY TEST SKIPPED: needs a dry-season rate in both geometries.")
+        return
+
+    res = classify_geometry(nisar[True], nisar[False], dry["A"], dry["D"],
+                            slope_deg=slope)
+    print(f"\n  GEOMETRY  slope {slope:.1f} deg, aspect {aspect:.0f} deg, "
+          f"elevation {elev:.0f} m")
+    print(f"            sensitivity  ASC {res['sens_asc']:+.3f}   "
+          f"DESC {res['sens_desc']:+.3f}"
+          f"   ({'opposite' if res['sens_asc'] * res['sens_desc'] < 0 else 'same'} sign)")
+    print(f"            measured     ASC {dry['A']:+.2f}   DESC {dry['D']:+.2f} mm/day")
+
+    if res["verdict"] == "undetermined":
+        print(f"\n  GEOMETRY TEST UNDETERMINED: {res['reason']}")
+        return
+
+    if res["verdict"] == "motion":
+        print(f"\n  Consistent with DOWNSLOPE MOTION.")
+        print(f"  {res['reason']}")
+        print(f"  Implied downslope rate {res['implied_downslope_mm_day']:+.2f} mm/day.")
+        print("  This is necessary, not sufficient: it says the two geometries are")
+        print("  consistent with one moving surface, not that the surface moved.")
+    else:
+        problems.append("geometry")
+        print(f"\n  GEOMETRY SAYS PATH DELAY, NOT MOTION.")
+        print(f"  {res['reason']}")
+        print("  A path delay is not a vector. Atmosphere and snow add the same extra")
+        print("  path length whichever direction the radar looks from, so they arrive")
+        print("  with the same sign in both geometries. One downslope rate cannot,")
+        print("  where the sensitivities are opposed.")
 
 
 def main() -> int:
@@ -152,11 +317,8 @@ def main() -> int:
     mon = {g: v for (g, s), v in rates.items() if s == "monsoon"}
 
     problems = []
-    if len(dry) >= 2 and all(v < 0 for v in dry.values()) or \
-       len(dry) >= 2 and all(v > 0 for v in dry.values()):
-        print(f"  Both geometries agree in the dry season "
-              f"({', '.join(f'{g} {v:+.2f}' for g, v in sorted(dry.items()))} mm/day).")
-        print("  A geometry-specific artefact is ruled out: this is a real phase signal.")
+    if len(dry) >= 2:
+        geometry_test(args.lat, args.lon, dry, problems)
 
     if dry and mon:
         d = max(abs(v) for v in dry.values())

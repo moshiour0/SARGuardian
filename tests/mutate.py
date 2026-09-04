@@ -73,8 +73,8 @@ MUTATIONS = [
 
     ("velocity gate reads sign, not magnitude",
      "inverse_velocity.py",
-     'usable = [w for w in vs if abs(w["v_mm_day"]) > threshold]',
-     'usable = [w for w in vs if w["v_mm_day"] > threshold]',
+     'usable = [w for w in vs if abs(w["v_mm_day"]) > w["gate"]]',
+     'usable = [w for w in vs if w["v_mm_day"] > w["gate"]]',
      "test_alarm_does_not_depend_on_look_direction"),
 
     ("inverse-velocity fit uses signed velocity",
@@ -85,8 +85,8 @@ MUTATIONS = [
 
     ("reported peak is the signed maximum",
      "inverse_velocity.py",
-     'vmax = max((w["v_mm_day"] for w in vs), key=abs)',
-     'vmax = max(w["v_mm_day"] for w in vs)',
+     'wmax = max(vs, key=lambda w: abs(w["v_mm_day"]))',
+     'wmax = max(vs, key=lambda w: w["v_mm_day"])',
      "test_reported_peak_is_the_largest_magnitude"),
 
     ("duplicate products averaged instead of resolved",
@@ -94,6 +94,54 @@ MUTATIONS = [
      "out.append(best[1])",
      "best[1].value = sum(p.value for _, p in cands) / len(cands)\n        out.append(best[1])",
      "test_duplicate_products_are_resolved_not_averaged"),
+
+    ("export grid clipped to valid pixels, not to the AOI",
+     "gunw_reader.py",
+     "    if col_off > 0.01 or row_off > 0.01:",
+     "    if False:",
+     "test_a_product_off_the_lattice_is_refused_not_resampled"),
+
+    ("AOI grid not anchored to the absolute lattice",
+     "gunw_reader.py",
+     "    x0 = math.floor(min(rx) / res_x) * res_x - pad_px * res_x",
+     "    x0 = min(rx) - pad_px * res_x",
+     "test_two_products_covering_different_ground_get_the_same_grid"),
+
+    ("per-pair floor dropped, gate falls back to the scalar",
+     "inverse_velocity.py",
+     '"floor": (floors or {}).get((a["epoch"], b["epoch"])),',
+     '"floor": None,',
+     "test_each_interval_carries_the_floor_of_the_pair_that_produced_it"),
+
+    ("duplicate processing improves the bound",
+     "inverse_velocity.py",
+     "floors[(a, b)] = max(f, floors.get((a, b), 0.0))",
+     "floors[(a, b)] = f",
+     "test_duplicate_processings_keep_the_larger_floor"),
+
+    ("geometry test decides the wrong way round",
+     "candidate_check.py",
+     "    if d_motion < d_delay:",
+     "    if d_delay < d_motion:",
+     "test_same_signed_rates_are_a_path_delay_where_sensitivities_oppose"),
+
+    ("blind track still gets a verdict",
+     "candidate_check.py",
+     "    if abs(sens_asc) < MIN_SENS or abs(sens_desc) < MIN_SENS:",
+     "    if False:",
+     "test_a_blind_track_yields_no_verdict"),
+
+    ("gentle terrain still gets a verdict",
+     "candidate_check.py",
+     "    if slope_deg is not None and slope_deg < MIN_SLOPE_DEG:",
+     "    if False:",
+     "test_gentle_terrain_yields_no_verdict"),
+
+    ("indistinguishable geometry still gets a verdict",
+     "candidate_check.py",
+     "    if abs(ratio_motion - 1.0) < RATIO_MARGIN:",
+     "    if False:",
+     "test_no_verdict_when_the_two_hypotheses_predict_the_same_ratio"),
 ]
 
 

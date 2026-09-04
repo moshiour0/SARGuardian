@@ -67,11 +67,27 @@ from paths import NISAR, OUTPUTS, resolve  # noqa: E402
 
 SPEED_OF_LIGHT = 299_792_458.0
 NISAR_L_BAND_HZ = 1_257_500_000.0          # fallback if not in the file
+# One wavelength for the whole project. Every module that needs a phase
+# ceiling imports this rather than hardcoding its own - three different values
+# were in circulation (0.2384 and 0.2439, 2.3% apart) and the headline ceiling
+# depends on it. Products carry their own centre frequency; read_wavelength()
+# uses it when present and falls back here when not.
+NISAR_LAMBDA_M = SPEED_OF_LIGHT / NISAR_L_BAND_HZ      # 0.23840 m
 DEFAULT_COHERENCE = 0.3
 
-# Areas of interest. Select at runtime with --aoi; do NOT edit this by hand,
-# because the Langtang box does NOT contain the 26 Aug 2026 failure zone -
-# that sits ~9 km north, in the Lhende Khola catchment.
+# Areas of interest. Select at runtime with --aoi.
+#
+# CORRECTION (4 Sep 2026). The note that used to stand here said the Langtang
+# box does not contain the 26 Aug 2026 failure zone, and that the source sat
+# ~9 km north in the Lhende Khola catchment. That was wrong. The Lhende extent
+# came from a report published immediately after the collapse and was never
+# checked. The confirmed source zone is SOURCE_RING below: it contains
+# 28.28771 N 85.52809 E, lies inside the Langtang box, and is 5.8 km SOUTH of
+# the southern edge of the Lhende box.
+#
+# Every result computed with --aoi lhende therefore describes ground that does
+# not contain the failure. LHENDE_RING is kept only as a labelled control
+# region where nothing happened; it is no longer the analysis AOI.
 LANGTANG_RING = [
     (85.46683434336315, 28.324709534140283),
     (85.45910958140026, 28.277704299412660),
@@ -91,7 +107,23 @@ LHENDE_RING = [
     (85.44, 28.34), (85.62, 28.34), (85.62, 28.47), (85.44, 28.47),
 ]
 
-AOIS = {"langtang": LANGTANG_RING, "lhende": LHENDE_RING}
+# The confirmed 26 Aug 2026 source zone. Reported failure point sits at
+# 28.28771 N 85.52809 E (28d17'15.76"N 85d31'41.13"E), 0.94 km from the
+# centroid of the co-event decorrelation footprint measured on both geometries.
+SOURCE_RING = [
+    (85.46451876449485, 28.345047192655944),
+    (85.46623537826439, 28.277644183693493),
+    (85.48958132553001, 28.247707190492925),
+    (85.53558657455345, 28.245287672353218),
+    (85.55618593978782, 28.260106359331573),
+    (85.55069277572532, 28.290342185190823),
+    (85.54931948470970, 28.311199899644855),
+    (85.53558657455345, 28.330240328302096),
+    (85.51018069076439, 28.340212525080158),
+    (85.49644778060814, 28.352903058100104),
+]
+
+AOIS = {"source": SOURCE_RING, "langtang": LANGTANG_RING, "lhende": LHENDE_RING}
 
 AOI_RING = LANGTANG_RING          # module default; set_aoi() overrides
 
@@ -610,6 +642,102 @@ def write_geotiff(result: dict, out: Path) -> None:
 
 
 
+def aoi_grid(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None,
+             pad_px: int = 2) -> dict | None:
+    """
+    The fixed output grid for this AOI at this product's posting.
+
+    Why exports were not differenceable
+    ===================================
+    Each export used to be clipped to the bounding box of its own VALID pixels,
+    which is a different rectangle in every product - 179x220 for one GUNW pair
+    over this AOI and 181x142 for the next. Two rasters of the same ground at
+    different sizes cannot be subtracted, so coherence-change mapping, the
+    standard way to map a landslide after the fact and the method this project's
+    own method notes recommend for it, was unreachable from the pipeline. Every
+    comparison in the analysis had to crop to a common extent by hand, which is
+    an invitation to a half-pixel error nobody would notice.
+
+    So the grid is defined by the AOI, not by the data. Cell edges are anchored
+    to absolute multiples of the pixel size in the projected CRS, and the AOI
+    bounds are snapped outward onto them. Any two products in the same CRS at
+    the same posting therefore produce byte-for-byte comparable rasters: same
+    origin, same size, same pixel centres, with nodata wherever a particular
+    product had nothing.
+
+    The anchoring is what makes it work. Snapping to the AOI bounds alone would
+    still drift, because the AOI corner is not generally a whole number of
+    pixels from anywhere. Anchoring to multiples of `res` gives every product
+    the same lattice to land on.
+
+    Returns None when the product grid is not itself aligned to that lattice,
+    because the only ways forward from there are to resample - which invents
+    values - or to stop. Stopping, loudly, is the better one.
+    """
+    if xs is None or ys is None or len(xs) < 2 or len(ys) < 2:
+        return None
+    res_x = abs(float(xs[1] - xs[0]))
+    res_y = abs(float(ys[1] - ys[0]))
+    if res_x <= 0 or res_y <= 0:
+        return None
+
+    ring_xy = ring
+    if epsg and epsg != 4326:
+        try:
+            from pyproj import Transformer
+            tf = Transformer.from_crs(4326, epsg, always_xy=True)
+            ring_xy = [tf.transform(lon, lat) for lon, lat in ring]
+        except ImportError:
+            logger.warning("pyproj missing - cannot place the AOI on a fixed grid")
+            return None
+    rx = [p[0] for p in ring_xy]
+    ry = [p[1] for p in ring_xy]
+
+    # Snap outward onto the absolute lattice, then pad so a clipped signal at
+    # the AOI edge is not cut flush against it.
+    x0 = math.floor(min(rx) / res_x) * res_x - pad_px * res_x
+    x1 = math.ceil(max(rx) / res_x) * res_x + pad_px * res_x
+    y0 = math.floor(min(ry) / res_y) * res_y - pad_px * res_y
+    y1 = math.ceil(max(ry) / res_y) * res_y + pad_px * res_y
+    width = int(round((x1 - x0) / res_x))
+    height = int(round((y1 - y0) / res_y))
+    if width <= 0 or height <= 0:
+        return None
+
+    # Where each product pixel centre lands. Half a pixel of tolerance: the
+    # product must share the lattice, not merely overlap it.
+    col_f = (np.asarray(xs, dtype=float) - (x0 + res_x / 2.0)) / res_x
+    row_f = ((y1 - res_y / 2.0) - np.asarray(ys, dtype=float)) / res_y
+    col_off = np.abs(col_f - np.round(col_f)).max()
+    row_off = np.abs(row_f - np.round(row_f)).max()
+    if col_off > 0.01 or row_off > 0.01:
+        logger.warning(
+            "Product grid is off the AOI lattice by %.3f px in x and %.3f px in y. "
+            "Exporting on the product's own grid instead; this file will NOT align "
+            "with the others and cannot be differenced.", col_off, row_off)
+        return None
+
+    from rasterio.transform import from_origin
+    return {"transform": from_origin(x0, y1, res_x, res_y),
+            "height": height, "width": width,
+            "cols": np.round(col_f).astype(int),
+            "rows": np.round(row_f).astype(int),
+            "res_x": res_x, "res_y": res_y}
+
+
+def place_on_grid(arr: np.ndarray, grid: dict) -> np.ndarray:
+    """Drop a product-shaped array onto the fixed AOI grid, nodata elsewhere."""
+    out = np.full((grid["height"], grid["width"]), np.nan, dtype="float32")
+    rows, cols = grid["rows"], grid["cols"]
+    rok = (rows >= 0) & (rows < grid["height"])
+    cok = (cols >= 0) & (cols < grid["width"])
+    if not rok.any() or not cok.any():
+        return out
+    sub = arr[np.ix_(rok, cok)]
+    out[np.ix_(rows[rok], cols[cok])] = sub.astype("float32")
+    return out
+
+
 def export_clipped(result: dict, outdir: Path) -> dict:
     """
     Write only the AOI subset, so a 2.4 GB product becomes a file you can email.
@@ -631,26 +759,38 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         return {}
 
     valid = result["valid"]
-    rows = np.any(valid, axis=1)
-    cols = np.any(valid, axis=0)
-    if not rows.any() or not cols.any():
+    if not valid.any():
         logger.warning("Nothing valid to export for %s", result["file"][:44])
         return {}
-    r0, r1 = int(np.argmax(rows)), int(len(rows) - np.argmax(rows[::-1]))
-    c0, c1 = int(np.argmax(cols)), int(len(cols) - np.argmax(cols[::-1]))
 
-    disp = np.where(valid, result["displacement_mm"], np.nan)[r0:r1, c0:c1].astype("float32")
-    coh = (np.where(valid, result["coherence"], np.nan)[r0:r1, c0:c1].astype("float32")
-           if result["coherence"] is not None else None)
-    sub_x, sub_y = xs[c0:c1], ys[r0:r1]
+    full_disp = np.where(valid, result["displacement_mm"], np.nan)
+    full_coh = (np.where(valid, result["coherence"], np.nan)
+                if result["coherence"] is not None else None)
 
-    resx = abs(float(xs[1] - xs[0])); resy = abs(float(ys[1] - ys[0]))
-    transform = from_origin(float(sub_x.min()) - resx / 2,
-                            float(sub_y.max()) + resy / 2, resx, resy)
-    if sub_y[0] < sub_y[-1]:
-        disp = np.flipud(disp)
-        if coh is not None:
-            coh = np.flipud(coh)
+    grid = aoi_grid(xs, ys, globals()["AOI_RING"], result["epsg"])
+    if grid is not None:
+        # Fixed AOI grid: every export over this AOI at this posting comes out
+        # the same size, on the same lattice, and can be differenced directly.
+        disp = place_on_grid(full_disp, grid)
+        coh = place_on_grid(full_coh, grid) if full_coh is not None else None
+        transform = grid["transform"]
+    else:
+        # Fall back to the old per-product clip, and the caller has already been
+        # warned that this file will not align with the others.
+        rows = np.any(valid, axis=1)
+        cols = np.any(valid, axis=0)
+        r0, r1 = int(np.argmax(rows)), int(len(rows) - np.argmax(rows[::-1]))
+        c0, c1 = int(np.argmax(cols)), int(len(cols) - np.argmax(cols[::-1]))
+        disp = full_disp[r0:r1, c0:c1].astype("float32")
+        coh = full_coh[r0:r1, c0:c1].astype("float32") if full_coh is not None else None
+        sub_x, sub_y = xs[c0:c1], ys[r0:r1]
+        resx = abs(float(xs[1] - xs[0])); resy = abs(float(ys[1] - ys[0]))
+        transform = from_origin(float(sub_x.min()) - resx / 2,
+                                float(sub_y.max()) + resy / 2, resx, resy)
+        if sub_y[0] < sub_y[-1]:
+            disp = np.flipud(disp)
+            if coh is not None:
+                coh = np.flipud(coh)
 
     outdir.mkdir(parents=True, exist_ok=True)
     # Include the processing type. NASA publishes a routine (PR) and an urgent
@@ -867,7 +1007,7 @@ def check_consistency(rows: list[dict]) -> list[dict]:
 
     suspect = []
     for (ref, sec), group in sorted(dupes.items()):
-        lam = group[0].get("wavelength_m") or 0.2439
+        lam = group[0].get("wavelength_m") or NISAR_LAMBDA_M
         fringe_mm = float(lam) / 2 * 1000
         meds = [float(g["median"]) for g in group]
         spread = max(meds) - min(meds)
@@ -954,7 +1094,7 @@ def main() -> int:
     ap.add_argument("--ref-radius", type=int, default=5, help="reference window half-width in pixels")
     ap.add_argument("--no-clip", action="store_true", help="do not clip to the AOI ring")
     ap.add_argument("--flip-sign", action="store_true", help="invert the LOS sign convention")
-    ap.add_argument("--aoi", choices=("langtang", "lhende"), default="langtang",
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="langtang",
                     help="which box to clip to; lhende is the 26 Aug source zone")
     ap.add_argument("--auto-ref", action="store_true",
                     help="pick the highest-coherence fully-valid block outside the AOI "
