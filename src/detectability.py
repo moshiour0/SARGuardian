@@ -181,7 +181,7 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
     wavelength_m, if given, imposes the PHASE UNWRAPPING CEILING. Interferometric
     phase is ambiguous once displacement between passes exceeds lambda/4, so the
     measurement is lost exactly when the slope accelerates hardest. Blatten
-    reached 0.65 m/day six days before failure, which is 100x above even the
+    reached 0.65 m/day six days before failure, which is 11x above even the
     1-day L-band ceiling - so phase saturates long before failure and only
     offset tracking survives. Pass None to model offset tracking (no ceiling,
     but use a much larger noise_mm).

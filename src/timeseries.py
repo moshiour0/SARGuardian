@@ -123,7 +123,8 @@ def pairs_from_catalogue() -> list[Pair]:
     )
 
 
-def pairs_from_stats(path: Path, fringe_mm: float = 121.95) -> list[Pair]:
+def pairs_from_stats(path: Path, fringe_mm: float = 121.95,
+                     layer: str | None = None) -> list[Pair]:
     """
     Build the network from a gunw_reader --csv summary instead of the products.
 
@@ -147,6 +148,36 @@ def pairs_from_stats(path: Path, fringe_mm: float = 121.95) -> list[Pair]:
         logger.error("No rows in %s", path)
         return []
 
+    # GOFF writes one row per product PER LAYER, so without a filter every pair
+    # arrives three times and the duplicate resolver reports three products for
+    # a single acquisition pair. Layers are different measurements at different
+    # correlation window sizes, not duplicates, so pick one.
+    if layer and rows and "layer" in rows[0]:
+        before = len(rows)
+        rows = [r for r in rows if layer in (r.get("layer") or "")]
+        logger.info("Layer filter '%s': %d of %d rows", layer, len(rows), before)
+        if not rows:
+            logger.error("No rows match layer '%s'", layer)
+            return []
+
+    # The two readers write different column names for the same quantity, and
+    # this used to read only the GUNW one - so --from-stats with --product GOFF
+    # died on KeyError: 'median' rather than saying what was wrong.
+    #
+    # The fringe reasoning below applies to phase only. Pixel offsets are not
+    # wrapped, so a PR/UR disagreement in GOFF is a processing difference and
+    # not a cycle ambiguity; quoting it in fringes would invent a mechanism.
+    head = rows[0]
+    if "median" in head:
+        value_col, coh_col, wrapped = "median", "mean_coherence", True
+    elif "range_median_mm" in head:
+        value_col, coh_col, wrapped = "range_median_mm", "mean_correlation", False
+    else:
+        logger.error("%s has neither 'median' (GUNW) nor 'range_median_mm' (GOFF). "
+                     "Columns present: %s", path, ", ".join(sorted(head)))
+        return []
+    logger.info("Reading displacement from column '%s'", value_col)
+
     parsed = []
     for r in rows:
         name = r.get("file", "")
@@ -159,8 +190,8 @@ def pairs_from_stats(path: Path, fringe_mm: float = 121.95) -> list[Pair]:
             path=int(m.group(2)), direction=m.group(3),
             ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
             sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
-            value=float(r["median"]), n_px=int(float(r.get("valid_px") or 0)),
-            coherence=float(r["mean_coherence"]) if r.get("mean_coherence") else None,
+            value=float(r[value_col]), n_px=int(float(r.get("valid_px") or 0)),
+            coherence=float(r[coh_col]) if r.get(coh_col) else None,
             source=name)))
 
     groups: dict[tuple, list] = defaultdict(list)
@@ -187,8 +218,13 @@ def pairs_from_stats(path: Path, fringe_mm: float = 121.95) -> list[Pair]:
         out.append(best[1])
 
     for key, proc, val, gap, fr in dropped:
-        logger.warning("  dropped %s (%+.1f mm), %.1f mm from the kept value "
-                       "= %.2f fringes", proc, val, gap, fr)
+        if wrapped:
+            logger.warning("  dropped %s (%+.1f mm), %.1f mm from the kept value "
+                           "= %.2f fringes", proc, val, gap, fr)
+        else:
+            logger.warning("  dropped %s (%+.1f mm), %.1f mm from the kept value "
+                           "(offsets are not wrapped - this is a processing "
+                           "difference, not a cycle)", proc, val, gap)
 
     logger.info("Loaded %d pairs from %s (%d duplicate product(s) dropped)",
                 len(out), path.name, len(dropped))
@@ -621,7 +657,7 @@ def main() -> int:
                     help="which product to build the series from")
     ap.add_argument("--goff-layer", default="layer2",
                     help="GOFF correlation-window layer (layer3 is usually quietest)")
-    ap.add_argument("--aoi", choices=("langtang", "lhende"), default="langtang")
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="langtang")
     ap.add_argument("--auto-ref", action="store_true",
                     help="pick the reference automatically (recommended)")
     ap.add_argument("--coh-threshold", type=float, default=0.3)
@@ -641,7 +677,9 @@ def main() -> int:
     set_aoi(args.aoi)
 
     if args.from_stats:
-        pairs = pairs_from_stats(resolve(args.from_stats))
+        pairs = pairs_from_stats(resolve(args.from_stats),
+                                 layer=args.goff_layer
+                                 if args.product == "GOFF" else None)
         args.invert = True          # the values are already in the CSV
     elif args.from_catalogue:
         pairs = pairs_from_catalogue()

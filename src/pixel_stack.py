@@ -255,7 +255,8 @@ def report(res: dict, label: str) -> None:
     # A cluster faster than lambda/4 per pair is not a fast measurement, it is
     # an unmeasurable one. Above that the phase has wrapped and the unwrapper
     # has guessed; the value is as likely to be its mistake as the ground's.
-    ceiling = 0.2439 / 4 * 1000 / 12.0
+    from gunw_reader import NISAR_LAMBDA_M
+    ceiling = NISAR_LAMBDA_M / 4 * 1000 / 12.0
     if count and abs(float(np.nanmean(v[lab]))) > ceiling:
         print(f"\n  WARNING: cluster mean exceeds lambda/4 per 12-day pair "
               f"({ceiling:.2f} mm/day).")

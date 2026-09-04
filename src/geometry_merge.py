@@ -98,6 +98,15 @@ class Track:
 # Tracks covering the Langtang / Lhende AOIs. Incidence angles are nominal
 # mid-swath values - read the incidenceAngle layer from the GUNW for the real
 # per-pixel number when you have the products.
+# Below this slope the aspect - and therefore the sensitivity, which is a
+# projection onto the downslope direction - is dominated by DEM noise rather
+# than by terrain. Measured at 28.27484 N 85.47405 E: widening the SRTM stencil
+# from 60 m to 300 m moves the aspect 74 degrees and takes the NISAR ascending
+# sensitivity from +0.020 to -0.642, sign included. A 62-degree slope 3 km away
+# holds its aspect to 4 degrees over the same range. Sensitivity on gentle
+# ground is not a small number; it is an undetermined one.
+MIN_SLOPE_DEG = 10.0
+
 TRACKS = [
     Track("NISAR ASC 98", "NISAR", True, 98.4, 37.0, 12),
     Track("NISAR DESC 48", "NISAR", False, 98.4, 37.0, 12),
@@ -334,6 +343,13 @@ def report_sensitivity(lat, lon, slope, aspect, elev, rows, min_sensitivity):
     print(f"\nPoint {lat:.4f} N, {lon:.4f} E   elevation {elev:.0f} m")
     print(f"Slope {slope:.1f} deg, aspect {aspect:.0f} deg "
           f"({compass(aspect)}-facing) - from SRTM at 90 m spacing")
+    if slope < MIN_SLOPE_DEG:
+        print(f"\n  *** SENSITIVITY NOT DETERMINED AT THIS POINT ***")
+        print(f"  The slope is {slope:.1f} deg, below {MIN_SLOPE_DEG:.0f} deg. Aspect on")
+        print(f"  ground this gentle is set by DEM noise, not by terrain, so every")
+        print(f"  number below inherits that. Run --stencil-sweep to see the spread")
+        print(f"  before quoting any of them, and do not report three decimals.")
+
     print(f"\nAssuming pure downslope motion. Sensitivity = slope_hat . los_hat;")
     print(f"a track needs |sensitivity| >= {min_sensitivity} to be usable.\n")
     print(f"{'TRACK':<16}{'HEADING':>9}{'INCID':>7}{'SENSITIVITY':>13}{'NOISE x':>9}  VERDICT")
@@ -358,6 +374,57 @@ def report_sensitivity(lat, lon, slope, aspect, elev, rows, min_sensitivity):
     else:
         print("  All usable tracks share the same sign - no sign-based cross-check")
         print("  available at this point.")
+
+
+def stencil_sweep(lat: float, lon: float, min_sensitivity: float,
+                  spacings=(60.0, 90.0, 150.0, 210.0, 300.0)) -> None:
+    """
+    Sensitivity across DEM stencil widths.
+
+    A point estimate hides how much of the answer is the choice of scale. On
+    steep ground the spread is small and the value is real; on gentle ground the
+    sign itself moves. Report the range, not the point.
+    """
+    print(f"\nSENSITIVITY ACROSS DEM STENCIL WIDTHS at {lat:.5f} N {lon:.5f} E")
+    print(f"{'stencil':>9}{'slope':>8}{'aspect':>9}", end="")
+    names = [t.name for t in TRACKS]
+    for n in names:
+        print(f"{n:>16}", end="")
+    print()
+    got = {n: [] for n in names}
+    slopes = []
+    for sp in spacings:
+        try:
+            sl, asp, _ = slope_aspect(lat, lon, spacing_m=sp)
+        except Exception as exc:
+            print(f"{sp:>8.0f}m   failed: {exc}")
+            continue
+        slopes.append(sl)
+        rows = {r["track"]: r["sensitivity"]
+                for r in sensitivities(lat, lon, sl, asp, min_sensitivity)}
+        print(f"{sp:>8.0f}m{sl:>8.1f}{asp:>9.0f}", end="")
+        for n in names:
+            got[n].append(rows[n])
+            print(f"{rows[n]:>16.3f}", end="")
+        print()
+    if not slopes:
+        return
+    print(f"\n{'':>26}", end="")
+    for n in names:
+        v = got[n]
+        print(f"{min(v):+.2f}..{max(v):+.2f}".rjust(16), end="")
+    print("   <- range")
+    unstable = [n for n in names if got[n] and min(got[n]) * max(got[n]) < 0]
+    print(f"\n  slope over the sweep: {min(slopes):.1f} to {max(slopes):.1f} deg")
+    if unstable:
+        print(f"  SIGN IS NOT STABLE for: {', '.join(unstable)}")
+        print("  A track whose sensitivity changes sign with the stencil cannot")
+        print("  support a geometry cross-check, and its downslope magnitudes")
+        print("  (which divide by sensitivity) are not meaningful either.")
+    elif max(slopes) < MIN_SLOPE_DEG:
+        print(f"  All below {MIN_SLOPE_DEG:.0f} deg - treat every value as indicative only.")
+    else:
+        print("  Sign is stable across the sweep. Quote the range, not a point value.")
 
 
 def compass(azimuth: float) -> str:
@@ -428,7 +495,11 @@ def merge(ts_path: Path, lat: float, lon: float, min_sensitivity: float):
                 "los_mm": r["cumulative_mm"],
                 "downslope_mm": r["cumulative_mm"] / sens,
                 "sensitivity": sens,
-                "weight": abs(sens),
+                # Inverse-variance weight. d_downslope = d_los / s, so its
+                # variance scales as sigma^2 / s^2 and the optimal weight is
+                # s^2, not |s|. Weighting by |s| under-weights the geometry
+                # that actually sees the motion.
+                "weight": sens ** 2,
                 "error_mm": (abs(r["error_mm"] / sens) if r["error_mm"] else None),
             })
 
@@ -568,6 +639,10 @@ def main() -> int:
     ap.add_argument("--step", type=float, default=0.003,
                     help="map grid spacing in degrees (0.003 ~ 333 m)")
     ap.add_argument("--ts", metavar="TS.csv", help="output of timeseries.py --csv")
+    ap.add_argument("--stencil-sweep", action="store_true",
+                    help="report sensitivity across DEM stencil widths rather "
+                         "than at one scale. Slower (one SRTM query per width) "
+                         "and the honest way to quote it")
     ap.add_argument("--min-sensitivity", type=float, default=0.3,
                     help="reject tracks below this |slope_hat . los_hat|")
     ap.add_argument("--csv", metavar="OUT.csv")
@@ -583,6 +658,8 @@ def main() -> int:
         slope, aspect, elev = slope_aspect(args.lat, args.lon)
         rows = sensitivities(args.lat, args.lon, slope, aspect, args.min_sensitivity)
         report_sensitivity(args.lat, args.lon, slope, aspect, elev, rows, args.min_sensitivity)
+        if args.stencil_sweep:
+            stencil_sweep(args.lat, args.lon, args.min_sensitivity)
         if args.csv:
             with open(args.csv, "w", newline="") as fh:
                 w = csv.DictWriter(fh, fieldnames=list(rows[0]))

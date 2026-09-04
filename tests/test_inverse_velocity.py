@@ -142,3 +142,66 @@ def test_cli_runs_end_to_end(tmp_path):
                          capture_output=True, text=True, cwd=ROOT)
     assert out.returncode == 0, out.stderr[-500:]
     assert "ALARM" in out.stdout
+
+
+# ---------------------------------------------------------------------------
+# Per-pair gating.
+#
+# One scalar floor across a stack whose per-pair floors vary twelvefold is not a
+# threshold, it is an average of thresholds. Measured on the source zone, the
+# descending interval 2026-06-29 -> 2026-07-11 reads +19.60 mm/day and clears a
+# global 18.6 mm/day gate at 1.05x, while that pair's own 3-sigma floor is
+# 114.3 mm/day - against which the same number is 0.17x, plainly inside the
+# noise. A gate that manufactures excursions on the noisy geometry is worse
+# than no gate, because it looks like a measurement.
+# ---------------------------------------------------------------------------
+import csv as _csv
+from datetime import date as _date
+
+from inverse_velocity import load_floors, velocities
+
+
+def _series(pairs):
+    """[(epoch, cumulative_mm), ...] -> rows in load_series shape."""
+    return [{"epoch": e, "cumulative_mm": v, "error_mm": None} for e, v in pairs]
+
+
+def test_each_interval_carries_the_floor_of_the_pair_that_produced_it():
+    rows = _series([(_date(2026, 6, 29), 0.0),
+                    (_date(2026, 7, 11), 235.1),
+                    (_date(2026, 7, 23), 138.8)])
+    floors = {(_date(2026, 6, 29), _date(2026, 7, 11)): 114.3,
+              (_date(2026, 7, 11), _date(2026, 7, 23)): 86.2}
+    vs = velocities(rows, floors)
+    assert [w["floor"] for w in vs] == [114.3, 86.2]
+    # and the first interval, which clears a 18.6 global gate, does not clear
+    # its own
+    assert abs(vs[0]["v_mm_day"]) > 18.6
+    assert abs(vs[0]["v_mm_day"]) < vs[0]["floor"]
+
+
+def test_an_interval_with_no_measured_floor_reports_none():
+    rows = _series([(_date(2026, 6, 29), 0.0), (_date(2026, 7, 11), 10.0)])
+    assert velocities(rows, {})[0]["floor"] is None
+    assert velocities(rows)[0]["floor"] is None
+
+
+def test_duplicate_processings_keep_the_larger_floor(tmp_path):
+    """
+    Routine and urgent processing of the same acquisitions both appear in the
+    stats CSV. A bound must not be improved by reprocessing the same data, so
+    the pessimistic floor wins.
+    """
+    p = tmp_path / "goff.csv"
+    with open(p, "w", newline="") as fh:
+        w = _csv.DictWriter(fh, fieldnames=["file", "layer", "reference",
+                                            "secondary", "detect_floor_mm_day"])
+        w.writeheader()
+        w.writerow({"file": "..._PR_...", "layer": "HH/layer2",
+                    "reference": "20260816", "secondary": "20260828",
+                    "detect_floor_mm_day": "85.6"})
+        w.writerow({"file": "..._UR_...", "layer": "HH/layer2",
+                    "reference": "20260816", "secondary": "20260828",
+                    "detect_floor_mm_day": "44.6"})
+    got = load_floors(p)
+    assert got[(_date(2026, 8, 16), _date(2026, 8, 28))] == 85.6

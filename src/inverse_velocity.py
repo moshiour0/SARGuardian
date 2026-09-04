@@ -83,7 +83,48 @@ def load_series(path: Path) -> dict[tuple[str, int], list[dict]]:
     return dict(series)
 
 
-def velocities(rows: list[dict]) -> list[dict]:
+def load_floors(path: Path, layer: str | None = None) -> dict[tuple[date, date], float]:
+    """
+    Per-pair detection floors from a goff_reader --csv summary.
+
+    Why this exists
+    ---------------
+    One scalar floor across a stack whose per-pair floors vary twelvefold is not
+    a threshold, it is an average of thresholds, and it is wrong in both
+    directions at once. Measured over the source zone, layer2 floors run from
+    8.5 to 117.9 mm/day. Gating every interval against the median manufactures
+    excursions on the noisy geometry and hides real ones on the quiet geometry.
+
+    The concrete failure: descending 2026-06-29 -> 2026-07-11 reads +19.60
+    mm/day and clears a global 18.6 mm/day gate at 1.05x - while that pair's own
+    3-sigma floor is 114.3 mm/day, against which the same velocity is 0.17x and
+    plainly inside the noise.
+
+    Keyed by (reference, secondary) so it joins straight onto a velocity
+    interval, whose endpoints are the two acquisition dates.
+    """
+    floors: dict[tuple[date, date], float] = {}
+    with open(path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            if layer and row.get("layer") and layer not in row["layer"]:
+                continue
+            raw = row.get("detect_floor_mm_day")
+            if not raw or raw in ("nan", "inf"):
+                continue
+            try:
+                a = datetime.strptime(row["reference"], "%Y%m%d").date()
+                b = datetime.strptime(row["secondary"], "%Y%m%d").date()
+            except (KeyError, ValueError):
+                continue
+            f = float(raw)
+            # A pair can appear twice - routine and urgent processing of the
+            # same acquisitions. Keep the larger floor: a bound must not be
+            # improved by reprocessing the same data.
+            floors[(a, b)] = max(f, floors.get((a, b), 0.0))
+    return floors
+
+
+def velocities(rows: list[dict], floors: dict | None = None) -> list[dict]:
     """Mid-interval velocity between consecutive epochs."""
     out = []
     for a, b in zip(rows, rows[1:]):
@@ -94,6 +135,7 @@ def velocities(rows: list[dict]) -> list[dict]:
             "t0": a["epoch"], "t1": b["epoch"], "days": dt,
             "mid": a["epoch"] + timedelta(days=dt / 2),
             "v_mm_day": (b["cumulative_mm"] - a["cumulative_mm"]) / dt,
+            "floor": (floors or {}).get((a["epoch"], b["epoch"])),
         })
     return out
 
@@ -148,28 +190,46 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
                   window: int, r2_min: float, horizon_days: float,
-                  sig_multiple: float, event_date: date | None) -> dict:
+                  sig_multiple: float, event_date: date | None,
+                  floors: dict | None = None) -> dict:
     print(f"\n{'='*74}")
     print(f"{label}  block {comp}   {rows[0]['epoch']} .. {rows[-1]['epoch']}  "
           f"({len(rows)} epochs)")
     print("=" * 74)
 
-    vs = velocities(rows)
+    vs = velocities(rows, floors)
     if not vs:
         print("  no velocity estimates possible")
         return {"alarm": False, "reason": "no intervals"}
 
-    threshold = sig_multiple * noise_floor
-    print(f"\n  significance gate: |v| must exceed {sig_multiple:g} x {noise_floor:g} "
-          f"= {threshold:.1f} mm/day\n")
-    print(f"  {'INTERVAL':<26}{'DAYS':>6}{'v mm/day':>11}{'1/v':>10}   STATUS")
-    print("  " + "-" * 66)
+    # Each interval is gated against the floor of the pair that produced it.
+    # Where no per-pair floor is available the scalar falls back in, and the
+    # output says so rather than pretending otherwise.
     for w in vs:
-        sig = abs(w["v_mm_day"]) > threshold
-        iv = f"{1/abs(w['v_mm_day']):.4f}" if w["v_mm_day"] else "-"
-        status = "above floor" if sig else "below floor"
+        w["gate"] = sig_multiple * (w["floor"] if w["floor"] is not None else noise_floor)
+        w["gate_is_own"] = w["floor"] is not None
+
+    n_own = sum(1 for w in vs if w["gate_is_own"])
+    if n_own:
+        gates = [w["gate"] for w in vs if w["gate_is_own"]]
+        print(f"\n  significance gate: per pair, {sig_multiple:g} x that pair's own "
+              f"measured floor")
+        print(f"  {n_own} of {len(vs)} intervals have one; gates run "
+              f"{min(gates):.1f} to {max(gates):.1f} mm/day"
+              + (f", the rest fall back to {sig_multiple * noise_floor:.1f}"
+                 if n_own < len(vs) else "") + "\n")
+    else:
+        print(f"\n  significance gate: |v| must exceed {sig_multiple:g} x {noise_floor:g} "
+              f"= {sig_multiple * noise_floor:.1f} mm/day  (no per-pair floors given)\n")
+
+    print(f"  {'INTERVAL':<26}{'DAYS':>6}{'v mm/day':>11}{'GATE':>9}{'x GATE':>8}   STATUS")
+    print("  " + "-" * 72)
+    for w in vs:
+        sig = abs(w["v_mm_day"]) > w["gate"]
+        ratio = abs(w["v_mm_day"]) / w["gate"] if w["gate"] else float("inf")
+        status = ("above floor" if sig else "below floor") + ("" if w["gate_is_own"] else "  (fallback)")
         print(f"  {str(w['t0'])+' -> '+str(w['t1']):<26}{w['days']:>6}"
-              f"{w['v_mm_day']:>11.2f}{iv:>10}   {status}")
+              f"{w['v_mm_day']:>11.2f}{w['gate']:>9.1f}{ratio:>8.2f}   {status}")
 
     # Magnitude, not sign. Downslope motion projects NEGATIVE into the line of
     # sight on a west-facing slope viewed from ascending - the dominant
@@ -177,7 +237,7 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     # `v > threshold` discarded precisely the signal the detector exists to
     # find, and did it silently: on null data a detector that cannot alarm and
     # one that correctly finds nothing produce identical output.
-    usable = [w for w in vs if abs(w["v_mm_day"]) > threshold]
+    usable = [w for w in vs if abs(w["v_mm_day"]) > w["gate"]]
 
     # A failing slope does not reverse. Mixing signs inside one fit window
     # would let noise either side of zero masquerade as acceleration, so keep
@@ -204,13 +264,16 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
         need = window - len(usable)
         print(f"\n  NO ALARM - only {len(usable)} usable velocities, the fit needs "
               f"{window}. Short by {need}.")
-        vmax = max((w["v_mm_day"] for w in vs), key=abs)
+        wmax = max(vs, key=lambda w: abs(w["v_mm_day"]))
+        vmax = wmax["v_mm_day"]
         print(f"  fastest interval measured: {vmax:+.2f} mm/day "
-              f"({abs(vmax)/noise_floor:.2f} x the noise floor)")
-        print(f"  a detection here would have needed sustained motion above "
-              f"{threshold:.0f} mm/day across {window} consecutive intervals.")
+              f"({abs(vmax)/wmax['gate']:.2f} x its own gate of "
+              f"{wmax['gate']:.1f} mm/day)")
+        print(f"  a detection here would have needed {window} consecutive intervals "
+              f"each above their own gate.")
         return {"alarm": False, "reason": "insufficient velocities above noise floor",
-                "max_velocity": vmax, "required": threshold}
+                "max_velocity": vmax, "required": wmax["gate"],
+                "gate_is_own": wmax["gate_is_own"]}
 
     best = None
     for k in range(window, len(usable) + 1):
@@ -288,7 +351,14 @@ def main() -> int:
     ap.add_argument("--ts", required=True, help="CSV from timeseries.py --csv")
     ap.add_argument("--noise-floor", type=float, required=True,
                     help="mm/day, from goff_reader.py --noise-floor (GOFF) "
-                         "or the phase ceiling analysis (GUNW)")
+                         "or the phase ceiling analysis (GUNW). Used only for "
+                         "intervals with no per-pair floor - see --floors")
+    ap.add_argument("--floors", metavar="STATS.csv",
+                    help="goff_reader --csv summary. Gates each interval against "
+                         "the floor of the pair that produced it, which is what "
+                         "you want whenever per-pair floors vary")
+    ap.add_argument("--floors-layer", default=None,
+                    help="restrict --floors to one layer, e.g. layer2")
     ap.add_argument("--sig-multiple", type=float, default=1.0,
                     help="velocity must exceed this many times the floor")
     ap.add_argument("--window", type=int, default=3)
@@ -303,15 +373,26 @@ def main() -> int:
     if not series:
         logger.error("No rows in %s", args.ts); return 1
 
+    floors: dict = {}
+    if args.floors:
+        floors = load_floors(resolve(args.floors), args.floors_layer)
+        logger.info("Loaded %d per-pair floors from %s", len(floors), args.floors)
+
     print(f"\n{len(series)} independent block(s) from {args.ts}")
-    print(f"Noise floor {args.noise_floor:g} mm/day, "
-          f"significance gate {args.sig_multiple:g}x")
+    if floors:
+        print(f"Per-pair floors from {args.floors}"
+              + (f" (layer {args.floors_layer})" if args.floors_layer else "")
+              + f", significance gate {args.sig_multiple:g}x")
+        print(f"Fallback floor {args.noise_floor:g} mm/day where a pair has none")
+    else:
+        print(f"Noise floor {args.noise_floor:g} mm/day, "
+              f"significance gate {args.sig_multiple:g}x  (no --floors given)")
 
     results = []
     for (geom, comp), rows in sorted(series.items()):
         results.append(analyse_block(geom, comp, rows, args.noise_floor,
                                      args.window, args.r2_min, args.horizon,
-                                     args.sig_multiple, ev))
+                                     args.sig_multiple, ev, floors))
 
     print(f"\n{'='*74}\nSUMMARY\n{'='*74}")
     fired = [r for r in results if r.get("alarm")]

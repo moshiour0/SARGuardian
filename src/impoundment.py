@@ -70,8 +70,18 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("impoundment")
 
 AOIS = {
+    # The confirmed 26 Aug 2026 source zone. Bounding box of SOURCE_RING in
+    # gunw_reader; the failure point is at 28.28771 N, 85.52809 E.
+    "source": (85.46452, 28.24529, 85.55619, 28.35290),
     "langtang": (85.45911, 28.24474, 85.56485, 28.32969),
     "lhende": (85.44, 28.34, 85.62, 28.47),
+    # A second range, a second continent, and an outcome already on the record.
+    # The Birch Glacier collapsed into the Loetschental on 28 May 2025, and the
+    # deposit obstructed the Lonza and impounded a lake - a documented landslide
+    # dam. Everything else here is calibrated against that event, so running the
+    # susceptibility map over it is the one available test of whether this
+    # travels beyond the Himalaya. Blatten village sits at 46.42028 N 7.81972 E.
+    "blatten": (7.75, 46.38, 7.90, 46.46),
 }
 
 # D8 neighbour offsets (row, col) and their relative distances
