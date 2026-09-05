@@ -410,25 +410,74 @@ never asked whether there was any phase to measure.
 
 ### The stratified troposphere
 
-LOS displacement regressed against DEM elevation, per pair, on 698 samples
-inside the source polygon spanning 3,075-7,166 m.
+LOS displacement regressed against DEM elevation, one fit per pair, over every
+valid pixel on the fixed export lattice. The fit clips residuals at 3 MADs and
+refits - see below for why that is not optional.
 
 | Product | Pairs | \|r\| median | Variance explained | p<0.001 |
 |---------|-------|-------------|--------------------|---------|
-| GUNW - phase | 7 | **0.40** | **16.0%** | 5 / 7 |
-| GOFF - offsets | 14 | **0.10** | **1.0%** | 3 / 14 |
+| GUNW - phase | 15 | **0.46** | **21.1%** | 13 / 15 |
+| GOFF - offsets | 18 | **0.12** | **1.5%** | 15 / 18 |
 
-The four best-sampled winter GUNW pairs give r = -0.49, +0.47, +0.40, -0.43 -
-**alternating sign on consecutive 12-day pairs.** Ground does not reverse
-direction every twelve days; a water-vapour field does. Over the 4,091 m of
-relief the GUNW term reaches **+/-78 to +/-116 mm**, larger than the
-quarter-wavelength ceiling of 59.5 mm per 12-day pair.
+The fitted slope **alternates sign on consecutive 12-day pairs** - 6 reversals
+in 15 phase pairs, 10 in 18 offset pairs. Ground does not reverse direction
+every twelve days; a water-vapour field does. Over the relief each pair actually
+spans, the phase term reaches a median of **33 mm and a maximum of 77 mm**,
+against a quarter-wavelength ceiling of 59.5 mm per 12-day pair.
 
-The sixteenfold difference between products is what the physics predicts. Phase
-measures optical path length and is perturbed directly by stratified water
-vapour; offset tracking measures a geometric pixel shift and is affected only at
-second order. **The bounded null rests on GOFF, which is the product that
-carries 1% of this.**
+**Read the variance column, not the slope column.** The GOFF slopes are the
+larger of the two in absolute terms - median 19.1 mm/km against 8.8 for phase -
+and that is not a contradiction. Offset fields are one to two orders of
+magnitude noisier (MAD 34-470 mm against 8-49 mm), so a steeper line accounts
+for a smaller share of what is there. A slope quoted without the scatter it sits
+in says nothing. The fourteenfold difference in *variance* is what the physics
+predicts: phase measures optical path length and is perturbed directly; offset
+tracking measures a geometric pixel shift and is affected only at second order.
+**The bounded null rests on GOFF, which is the product that carries 1.5% of
+this.**
+
+#### Why the fit is robust, and how we found out
+
+The first version used plain least squares. On one winter pair it reported
+-23.6 mm/km, removed it, and cut the standard deviation from 39.4 to 34.3 -
+exactly what least squares is built to do. At the same time the MAD scatter of
+the core rose from **13.8 to 22.2**. The correction was pulling the bulk of the
+field apart to serve a minority of gross outliers, and the summary line called
+it a success.
+
+The fit was optimising a statistic nothing else in this project uses. Every
+noise floor here is MAD-based, because unculled SAR products are full of gross
+outliers. Clipping residuals at 3 MADs and refitting halved that slope to -11.4
+mm/km and *raised* the median correlation across the stack from 0.33 to 0.46 -
+the elevation relation was real in the core and being diluted by the tails.
+
+`troposphere.py` now prints **both** statistics, before and after, on every
+pair. They disagree on 6 of 15 phase pairs, and the disagreement is the
+information: least squares can only reduce the standard deviation, so a rise in
+MAD means the core was moved apart to pull in the tails.
+
+#### Why it is measured and not removed
+
+The valid pixels are not spread evenly over the relief. They sit in a band about
+1.1 km wide inside a 4.0 km range, so the line is extrapolated across roughly
+**3.4x the interquartile range** on a typical pair - set by a minority of pixels
+and applied to all of them. Ten of fifteen phase pairs and ten of eighteen
+offset pairs exceed the warning threshold.
+
+A fit that reaches that far past its own support is an error bar, not a
+correction. The tool computes range/IQR per pair, flags it with `!`, and says
+so. The source-zone numbers above are therefore quoted as an uncertainty and
+**not** subtracted from the published time series.
+
+```bash
+python src/troposphere.py --dir outputs/export_src --aoi source --report-only
+python src/troposphere.py --dir outputs/export_goff_src --aoi source     --match layer2 --report-only
+```
+
+There is one more limit no amount of statistics fixes: real deformation that
+happens to correlate with height looks exactly like a stratified delay to this
+fit, and one interferogram cannot separate them. That is what `--report-only`
+is for.
 
 ---
 
@@ -963,7 +1012,10 @@ Stated here rather than left for a reader to find.
 3. **Sensitivity is undetermined below ~10 degrees of slope**, which affects the
    multi-geometry table and every downslope magnitude derived by division.
 4. **The stratified troposphere is measured but not removed** from the GUNW
-   series - 16% of variance, +/-78 to +/-116 mm over the relief.
+   series - 21% of variance, up to 77 mm over the relief. The tool to remove it
+   exists; it is held back because the valid pixels span only ~1.1 km of a 4.0
+   km elevation range, so the fit is extrapolated across ~3.4x its own IQR. A
+   correction set by a minority of pixels is an error bar, not a correction.
 5. **Impoundment has a grid floor of roughly 25 m of blockage** at ~105 m cells.
    Established at Blatten, where the observed 10 m lake is below what the terrain
    grid can represent. A finer DEM would move it; a better algorithm would not.
@@ -1068,6 +1120,7 @@ src/     nisar_acquisition.py   catalogue search + download
          geometry_merge.py      LOS -> downslope, sensitivity
          candidate_check.py     four tests against one location
          detectability.py       revisit vs warning time simulation
+         troposphere.py         stratified delay: measure, flag, optionally remove
          impoundment.py         landslide-dam susceptibility
 REPRODUCE_RESULTS.md            products -> commands -> expected numbers
 data/    nisar_l2/  dem/        products (gitignored)
