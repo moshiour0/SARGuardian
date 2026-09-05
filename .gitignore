@@ -21,6 +21,9 @@ outputs/*
 !outputs/*stats*.csv
 !outputs/ts_*.csv
 !outputs/detectability.csv
+# Same reasoning for the impoundment maps: 13 KB each, and regenerating one
+# means several thousand external DEM queries.
+!outputs/dam_sites_*.geojson
 *.png
 *.csv
 
