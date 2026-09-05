@@ -39,6 +39,7 @@ one mountain.
 | **Source zone** | 28.2453-28.3529 N, 85.4645-85.5562 E | **The analysis AOI.** Confirmed source zone of the 26 Aug 2026 collapse; contains the failure point at 28.28771 N, 85.52809 E. |
 | Langtang | 28.2447-28.3297 N, 85.4591-85.5649 E | The wider massif box. Contains the source zone; 78.4% overlap with it. Glacier monitoring, good validation literature. |
 | Lhende Khola | 28.3400-28.4700 N, 85.4400-85.6200 E | **Control region only.** See the correction below. |
+| Blatten | 46.38-46.46 N, 7.75-7.90 E | Loetschental, Swiss Alps. Terrain-only generalisation test - see impoundment below. Not a SAR AOI. |
 
 Select at runtime with `--aoi source`, `--aoi langtang` or `--aoi lhende`.
 Both boxes are covered by NISAR paths **48 (descending)** and **98
@@ -770,23 +771,61 @@ by maximum volume just returns the largest dam height every time; what matters
 operationally is which sites impound a lot for a *small* blockage, because a
 25 m dam is a common event and a 150 m dam is not.
 
-Preliminary result, SRTM 30 m sampled to ~105 m cells:
+Result over the source zone, SRTM 30 m sampled to ~105 m cells. Volumes are
+impounded water in Mm3 at each imposed blockage height:
 
-| AOI | Best site | Mm3/m | 25 m dam | 150 m dam | Sites >2 Mm3 at 25 m |
-|-----|-----------|-------|----------|-----------|----------------------|
-| Langtang | 28.2657 N, 85.5649 E | 0.10 | 2.4 Mm3 | 53.6 Mm3 | 3 of 10 |
-| Lhende Khola | 28.4180 N, 85.5577 E | 0.21 | 5.1 Mm3 | 78.9 Mm3 | 8 of 8 |
+| # | Site | km to failure point | 10 m | 25 m | 50 m | 100 m | 150 m |
+|---|------|--------------------|------|------|------|-------|-------|
+| 1 | 28.3124 N, 85.5533 E | 3.69 | 0.44 | 2.06 | 5.72 | 14.62 | 25.17 |
+| 2 | 28.2944 N, 85.5308 E | **0.79** | - | - | - | 3.23 | 10.14 |
+| 3 | 28.2840 N, 85.5416 E | 1.38 | 0.25 | 1.19 | 3.75 | 12.06 | 23.57 |
 
-**Not yet run on the source zone.** Both rows above predate the AOI correction.
-`--aoi source` is registered and the run is one command, but until it is done
-this table describes the wider massif box and the control region, not the ground
-that failed. Do not quote it as if it did.
+Three of twelve sites lie within 3 km of the failure point, and the nearest is
+790 m from it - but that site impounds **nothing until a 100 m blockage**. Only
+four of twelve hold any water at 10 m.
 
-Two further AOIs are registered and unrun: `source`, and `blatten` - the
-Loetschental, where the Birch Glacier deposit obstructed the Lonza and impounded
-a lake on 28 May 2025. That second one is the only available test of whether any
-of this travels outside the Himalaya, and it has a documented outcome to check
-against.
+### Testing it somewhere else entirely
+
+Everything above was built for the Himalaya. The only honest way to find out
+whether it travels is to run it on a different range, on a valley where a
+landslide dam is already on the record, and see what it says.
+
+The Birch Glacier collapsed into the Loetschental on **28 May 2025**, burying
+most of Blatten. The deposit obstructed the Lonza, a lake formed and submerged
+surviving buildings, and there was serious downstream flood concern as far as
+the Rhone. Reported maximum lake depth: **about 10 m**. `--aoi blatten` is
+registered; the run needs terrain only.
+
+| # | Site | km to Blatten village | 10 m | 25 m | 50 m | 100 m | 150 m |
+|---|------|----------------------|------|------|------|-------|-------|
+| 1 | 46.4507 N, 7.7500 E | 6.31 | 0.37 | 2.20 | 7.95 | 30.19 | 66.55 |
+| 2 | 46.4086 N, 7.7984 E | 2.08 | 0.34 | 2.67 | 10.10 | 38.20 | 85.14 |
+| 4 | 46.4179 N, 7.8141 E | **0.50** | **-** | 0.73 | 2.94 | 9.78 | 18.90 |
+
+**What passed.** Pointed at a valley it was never designed for, on another
+continent, the tool ranks the Loetschental as roughly twice as dammable as
+Langtang at 150 m (85 against 25 Mm3), puts four of twelve sites within 3 km of
+the village, and puts one **500 m** from it. Nothing was tuned; only the
+bounding box changed.
+
+**What failed, and it is the more useful half.** The observed Blatten lake was
+about 10 m deep. At 10 m, the site nearest the village impounds **nothing at
+all** - it needs 25 m before it holds anything. The best 10 m site anywhere in
+the valley holds 0.37 Mm3.
+
+So the tool identifies the right valley and the right reach, and then cannot
+resolve the blockage that actually occurred. At ~105 m cells derived from SRTM
+30 m, a 10 m dam in a narrow alpine valley is below what the terrain grid can
+represent.
+
+**That is a resolution floor, and it belongs beside the others.** GUNW has a
+coherence floor, GOFF has a noise floor, sensitivity has a slope floor - and
+impoundment has a grid floor. This tool screens for where a *large* blockage
+would matter. It is not a predictor of small ones, and the Blatten test is what
+established that rather than the README asserting it.
+
+To use it below 25 m you would need a finer DEM - Copernicus DEM at 30 m or a
+national LiDAR product - not a better algorithm.
 
 Cross this layer with InSAR deformation on the flanking slopes and you get a
 two-factor alert: a site that is both **dammable** and **moving**. That is the
@@ -796,9 +835,10 @@ is not.
 **Limits, and state them in the paper.** Pools are not tested for spilling over
 cols, so volumes are upper bounds near divides. Dam height is imposed, not
 predicted - couple to a runout model before calling any number a forecast. SRTM
-dates from 2000, so terrain reshaped since is out of date. And note that the box
-containing the confirmed source zone is the *less* dammable of the two tested;
-this is terrain susceptibility, not a reconstruction of what happened.
+dates from 2000, so terrain reshaped since is out of date. The grid floor
+established at Blatten means nothing below about a 25 m blockage should be
+quoted from this at ~105 m cells. And all of it is terrain susceptibility, not a
+reconstruction of what happened.
 
 ---
 
@@ -827,11 +867,22 @@ differenced directly - see below.
 
 ---
 
+## Reproducing the results
+
+Every headline number, with the exact product identifiers and commands behind
+it, is in **[REPRODUCE_RESULTS.md](REPRODUCE_RESULTS.md)**. Two of the four
+results need no data at all and run in about a minute.
+
+If a number in this README does not reproduce from that page, the defect is
+ours. Open an issue.
+
+---
+
 ## Testing
 
 ```bash
-python -m pytest tests/ -q      # 37 tests
-python tests/mutate.py          # 15 mutations, all must be caught
+python -m pytest tests/ -q      # the runner reports the count
+python tests/mutate.py          # every mutation must be caught
 ```
 
 A test that passes proves nothing on its own - it may assert something that was
@@ -862,9 +913,22 @@ failures are **not** necessarily monsoon-driven - Blatten failed on 28 May,
 before the monsoon - so a seasonality argument that assumes monsoon-driven creep
 is Class B reasoning and does not transfer.
 
-Data spine is NASA: NISAR (L-band), NASADEM and SRTM (topography), GPM IMERG
-(rainfall), SMAP (antecedent soil moisture), Landsat and FIRMS (optical,
-thermal). Sentinel-1/2 remain as the partner-agency historical archive.
+### What is implemented, and what is not
+
+Worth being exact about, because the two are easy to blur.
+
+| | |
+|---|---|
+| **Implemented and used for every result here** | NISAR L2 GUNW and GOFF (L-band), SRTM via OpenTopoData for slope, aspect and impoundment terrain |
+| **Referenced but not implemented** | GPM IMERG (rainfall), SMAP (antecedent soil moisture), Landsat and FIRMS (optical, thermal), Sentinel-1/2 |
+
+The second row is the intended data spine for a multi-hazard system, not code
+that exists in this repository. Nothing in the results depends on it.
+
+**There is no machine learning here either.** The dependency list is numpy,
+h5py, asf_search, rasterio, pyproj and matplotlib. Every result comes from
+physics, geometry and statistics. That is a description, not an apology - the
+central finding is a measurement limit, and a model would not have found it.
 
 ---
 
@@ -880,8 +944,9 @@ Stated here rather than left for a reader to find.
    multi-geometry table and every downslope magnitude derived by division.
 4. **The stratified troposphere is measured but not removed** from the GUNW
    series - 16% of variance, +/-78 to +/-116 mm over the relief.
-5. **The inverse-velocity detector uses one scalar floor** where per-pair floors
-   vary twelvefold.
+5. **Impoundment has a grid floor of roughly 25 m of blockage** at ~105 m cells.
+   Established at Blatten, where the observed 10 m lake is below what the terrain
+   grid can represent. A finer DEM would move it; a better algorithm would not.
 6. **The co-event footprint is not a scar map.** It is broader and less
    terrain-selective than the failure, and peak monsoon is a confound we can
    argue against but not eliminate.
@@ -889,6 +954,10 @@ Stated here rather than left for a reader to find.
    at this site (median difference +218 mm, scatter 267 mm). Coverage is; use it.
 8. **No independent ground validation.** No GNSS, no field survey, no optical
    confirmation of the deformation field.
+
+The inverse-velocity detector's single scalar floor was on this list until
+`--floors` landed; each interval is now gated against the floor of the pair that
+produced it.
 
 ---
 
@@ -923,21 +992,46 @@ Methods this project uses, rather than a survey.
    - the small-baseline temporal inversion `timeseries.py` reduces to, given
      products that are already unwrapped and geocoded.
 
-### Still to cite
+### Data and product documentation
 
-Three sources are used as evidence in this README and are not yet properly
-referenced. They are load-bearing, so they need real citations before
-submission anywhere:
+5. **NISAR Level-2 Geocoded Unwrapped Interferogram (GUNW).** NASA SDS Product
+   Specification **JPL D-102272 Rev F**.
+   [ASF user guide](https://nisar-docs.asf.alaska.edu/gunw/)
+   - layer definitions, the mask encoding, and the 80 m posting the fixed export
+     grid is built on.
 
-- **The Blatten velocity record** in the calibration table (0.5-0.8 m/day at
-  six days, 10 m/day at one day). Currently unsourced. The whole detectability
-  argument is calibrated against it.
-- **The ESA ALOS-2 / SAOCOM analysis** of Kleines Nesthorn creep rates
-  (~50 cm/yr by 2023, >150 cm/yr by August 2024), quoted in "Two regimes, two
-  instruments".
-- **The NISAR L2 product specification**, for the GUNW and GOFF layer
-  definitions, the three-digit mask encoding, and the "raw, unculled,
-  unfiltered" characterisation of the offset layers.
+6. **NISAR Level-2 Geocoded Pixel Offsets (GOFF).** NASA SDS Product
+   Specification **JPL D-105010 Rev D**.
+   [ASF user guide](https://nisar-docs.asf.alaska.edu/goff/)
+   - the three correlation-window layers, and the reason gating and culling are
+     the caller's job.
+
+7. **ESA / MODULATE, "Satellite radars reveal early signs of slope instability
+   years before Blatten rock/ice avalanche"** (8 August 2025).
+   [eo4society.esa.int](https://eo4society.esa.int/2025/08/08/satellite-radars-reveal-early-signs-of-slope-instability-years-before-blatten-rock-ice-avalanche/)
+   - ALOS-2 PALSAR-2 and SAOCOM L-band archive analysis over Kleines Nesthorn,
+     with displacement signals traced back to 2017. This is the source for the
+     "visible to phase InSAR for years" half of the two-regime argument.
+
+8. **Monitoring the displacement of large alpine rock slope instabilities with
+   L-band SAR interferometric techniques.** *Natural Hazards and Earth System
+   Sciences* **26**, 2579 (2026).
+   [nhess.copernicus.org](https://nhess.copernicus.org/articles/26/2579/2026/)
+   - the peer-reviewed treatment of the same L-band monitoring.
+
+### Still to verify
+
+Two figures quoted here are **not yet checked against a source**, and are marked
+as such rather than presented as sourced:
+
+- **The Blatten velocity record** in the calibration table - 0.5-0.8 m/day at
+  six days before failure, 10 m/day at one day. Unsourced. The entire
+  detectability argument is calibrated against it, so this is the most important
+  gap in the reference list.
+- **The Kleines Nesthorn creep rates** quoted in "Two regimes, two instruments"
+  as ~50 cm/yr by 2023 and >150 cm/yr by August 2024. References 7 and 8 cover
+  the observation; the specific numbers have not been confirmed against either
+  text and should be read from the paper before being quoted again.
 
 ---
 
@@ -955,6 +1049,7 @@ src/     nisar_acquisition.py   catalogue search + download
          candidate_check.py     four tests against one location
          detectability.py       revisit vs warning time simulation
          impoundment.py         landslide-dam susceptibility
+REPRODUCE_RESULTS.md            products -> commands -> expected numbers
 data/    nisar_l2/  dem/        products (gitignored)
 outputs/                        GeoTIFFs, quicklooks, CSVs (derived stats kept)
 tests/   synth.py mutate.py     fixtures built from a known answer
