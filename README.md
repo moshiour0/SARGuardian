@@ -802,21 +802,39 @@ registered; the run needs terrain only.
 | 2 | 46.4086 N, 7.7984 E | 2.08 | 0.34 | 2.67 | 10.10 | 38.20 | 85.14 |
 | 4 | 46.4179 N, 7.8141 E | **0.50** | **-** | 0.73 | 2.94 | 9.78 | 18.90 |
 
-**What passed.** Pointed at a valley it was never designed for, on another
-continent, the tool ranks the Loetschental as roughly twice as dammable as
-Langtang at 150 m (85 against 25 Mm3), puts four of twelve sites within 3 km of
-the village, and puts one **500 m** from it. Nothing was tuned; only the
-bounding box changed.
+All four areas, best site in each, same heights throughout:
 
-**What failed, and it is the more useful half.** The observed Blatten lake was
-about 10 m deep. At 10 m, the site nearest the village impounds **nothing at
-all** - it needs 25 m before it holds anything. The best 10 m site anywhere in
-the valley holds 0.37 Mm3.
+| AOI | sites responding at 10 m | 10 m | 25 m | 50 m | 100 m | 150 m |
+|-----|-------------------------|------|------|------|-------|-------|
+| Source zone | 4 / 12 | 0.44 | 2.06 | 5.72 | 14.62 | 29.63 |
+| Langtang | 2 / 12 | 0.32 | 1.77 | 6.13 | 23.22 | 50.34 |
+| Lhende (control) | 1 / 12 | 0.58 | 2.67 | 9.65 | 35.18 | 72.08 |
+| **Blatten** | **6 / 12** | 0.37 | 2.67 | 10.10 | 38.20 | 85.14 |
 
-So the tool identifies the right valley and the right reach, and then cannot
-resolve the blockage that actually occurred. At ~105 m cells derived from SRTM
-30 m, a 10 m dam in a narrow alpine valley is below what the terrain grid can
-represent.
+**Read that table across, not down.** The ratio between any two areas depends
+entirely on which height you pick. Blatten against Langtang is **1.69x** at
+150 m, **1.51x** at 25 m and **1.15x** at 10 m; Blatten against the source zone
+is **2.87x** at 150 m and **0.85x** at 10 m - the source zone is the more
+dammable of the two once the blockage is small. Quoting a single "twice as
+dammable" figure would be an artefact of choosing 150 m, in the same way the
+seasonal noise claim was an artefact of not controlling for track.
+
+**The column that actually separates them is the first one.** Six of twelve
+Loetschental reaches impound water from a 10 m blockage, against two in Langtang
+and one in Lhende. The Loetschental is not distinctive because it holds more
+water; it is distinctive because it has **three times as many reaches where a
+small blockage does something at all** - and a small blockage is precisely what
+happened there.
+
+**Now the failure, and it is the more useful half.** The observed Blatten lake
+was about 10 m deep. At 10 m the site nearest the village - 500 m away -
+impounds **nothing**; it needs 25 m before it holds anything. The nearest reach
+that does respond at 10 m is **1.61 km** away.
+
+So the tool identifies the right valley, ranks it correctly for small-blockage
+sensitivity, and then cannot resolve the blockage at the reach where it actually
+occurred. At ~105 m cells derived from SRTM 30 m, a 10 m dam in a narrow alpine
+valley is below what the terrain grid can represent.
 
 **That is a resolution floor, and it belongs beside the others.** GUNW has a
 coherence floor, GOFF has a noise floor, sensitivity has a slope floor - and

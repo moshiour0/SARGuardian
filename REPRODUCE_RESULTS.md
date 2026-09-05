@@ -96,18 +96,34 @@ that is the gentle-terrain limit, and the tool refuses to give a verdict there.
 
 **Needs: nothing but a network connection.**
 
+Run **all four at the same heights** — a ratio between two areas is meaningless
+otherwise. Blatten against Langtang is 1.69x at 150 m and 1.15x at 10 m.
+
 ```bash
-python src/impoundment.py --api --aoi blatten --heights 10 25 50 100 150 \
-    --rank-by efficiency --geojson outputs/dam_sites_blatten.geojson
-python src/impoundment.py --api --aoi source  --heights 10 25 50 100 150 \
-    --rank-by efficiency --geojson outputs/dam_sites_source.geojson
+for A in source langtang lhende blatten; do
+  python src/impoundment.py --api --aoi $A --heights 10 25 50 100 150 \
+      --rank-by efficiency --geojson outputs/dam_sites_$A.geojson
+done
 ```
 
-**Expect**, for Blatten, a site at **46.4179 N, 7.8141 E** about 500 m from the
-village that impounds **nothing at 10 m** and 0.73 Mm3 at 25 m. The observed
+PowerShell:
+
+```powershell
+foreach ($A in "source","langtang","lhende","blatten") {
+  python src/impoundment.py --api --aoi $A --heights 10 25 50 100 150 `
+      --rank-by efficiency --geojson outputs/dam_sites_$A.geojson
+}
+```
+
+**Expect** sites responding at a 10 m blockage: **6/12** for Blatten, 4/12
+source zone, 2/12 Langtang, 1/12 Lhende. That first column is what separates the
+Loetschental, not the volumes.
+
+**And expect** a Blatten site at **46.4179 N, 7.8141 E**, about 500 m from the
+village, that impounds **nothing at 10 m** and 0.73 Mm3 at 25 m. The observed
 lake after the 28 May 2025 Birch Glacier collapse was about 10 m deep, so the
-tool identifies the reach and cannot resolve the blockage that occurred. That is
-the grid floor.
+tool identifies the valley and ranks it correctly, then cannot resolve the
+blockage at the reach where it happened. That is the grid floor.
 
 ---
 
