@@ -802,7 +802,9 @@ registered; the run needs terrain only.
 | 2 | 46.4086 N, 7.7984 E | 2.08 | 0.34 | 2.67 | 10.10 | 38.20 | 85.14 |
 | 4 | 46.4179 N, 7.8141 E | **0.50** | **-** | 0.73 | 2.94 | 9.78 | 18.90 |
 
-All four areas, best site in each, same heights throughout:
+All four areas at the same heights. Volumes are the **largest at each height
+across all twelve sites**, which is not necessarily site 1 - the ranking is by
+efficiency, so a lower-ranked reach can hold more water at a big blockage:
 
 | AOI | sites responding at 10 m | 10 m | 25 m | 50 m | 100 m | 150 m |
 |-----|-------------------------|------|------|------|-------|-------|
