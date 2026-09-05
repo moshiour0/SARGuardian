@@ -142,6 +142,36 @@ MUTATIONS = [
      "    if abs(ratio_motion - 1.0) < RATIO_MARGIN:",
      "    if False:",
      "test_no_verdict_when_the_two_hypotheses_predict_the_same_ratio"),
+
+    ("elevation fit chases the outlier tails",
+     "troposphere.py",
+     '        if not robust:',
+     '        if True:',
+     "test_outliers_do_not_steer_the_slope"),
+
+    ("trend removed in mm per metre, not mm per km",
+     "troposphere.py",
+     '    return disp_mm - fit["slope_mm_per_km"] * (elev_m / 1000.0)',
+     '    return disp_mm - fit["slope_mm_per_km"] * elev_m',
+     "test_removal_does_not_raise_the_core_scatter"),
+
+    ("intercept subtracted along with the gradient",
+     "troposphere.py",
+     '    return disp_mm - fit["slope_mm_per_km"] * (elev_m / 1000.0)',
+     '    return disp_mm - fit["slope_mm_per_km"] * (elev_m / 1000.0) - fit["intercept_mm"]',
+     "test_intercept_is_not_subtracted"),
+
+    ("extrapolated fit not flagged",
+     "troposphere.py",
+     '               leverage=(rng / iqr) if iqr > 0 else float("inf"),',
+     '               leverage=1.0,',
+     "test_leverage_is_flagged_when_the_fit_is_extrapolated"),
+
+    ("flat terrain given a slope anyway",
+     "troposphere.py",
+     '    if np.ptp(e_all) <= 0:',
+     '    if False:',
+     "test_flat_terrain_is_refused"),
 ]
 
 
