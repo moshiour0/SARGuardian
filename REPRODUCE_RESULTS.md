@@ -216,6 +216,52 @@ python src/timeseries.py --from-stats outputs/goff_stats_source.csv \
 
 ---
 
+## Result 5 - the troposphere is a phase problem, not an offset problem
+
+**Needs: the exported rasters from Result 4, plus the GUNW exports.**
+
+```bash
+python src/troposphere.py --dir outputs/export_src --aoi source --report-only
+python src/troposphere.py --dir outputs/export_goff_src --aoi source     --match layer2 --report-only
+```
+
+The first fetch of the DEM takes a few minutes - OpenTopoData allows one
+request per second - and is cached under `outputs/dem_cache/` afterwards.
+`--match layer2` is required on the GOFF directory: it holds three layers per
+pair and mixing them in one summary is meaningless.
+
+**Expect**, over the source zone:
+
+| Product | Pairs | \|r\| median | Variance explained | p<0.001 | Sign reversals |
+|---------|-------|-------------|--------------------|---------|----------------|
+| GUNW - phase | 15 | 0.46 | 21.1% | 13 / 15 | 6 |
+| GOFF - offsets | 18 | 0.12 | 1.5% | 15 / 18 | 10 |
+
+Fourteenfold in explained variance. That is the reason the bound in Result 4
+survives: it rests on GOFF.
+
+**Do not read the slope column as the answer.** GOFF slopes are the larger of
+the two - median 19.1 mm/km against 8.8 for phase - because offset fields are
+one to two orders of magnitude noisier, so a steeper line explains less of what
+is there.
+
+**And expect ten of fifteen phase pairs flagged `!` for leverage.** The valid
+pixels span about 1.1 km of a 4.0 km elevation range, so the fit is
+extrapolated across ~3.4x its own IQR. That is why the tool is run with
+`--report-only` and the trend is quoted as an error bar rather than subtracted.
+
+### Shortcut, no products needed
+
+Both per-pair fits are committed:
+
+```bash
+python -c "import csv,statistics as st; r=[x for x in csv.DictReader(open('outputs/troposphere_goff_source.csv')) if x['usable']=='True']; print(len(r), round(st.median([abs(float(x['r'])) for x in r]),2))"
+```
+
+Expect `18 0.12`.
+
+---
+
 ## What you cannot reproduce, and why
 
 - **Independent ground truth.** There is none. No GNSS, no field survey, no
