@@ -172,6 +172,30 @@ MUTATIONS = [
      '    if np.ptp(e_all) <= 0:',
      '    if False:',
      "test_flat_terrain_is_refused"),
+
+    ("local floor drops the span, reporting scatter as velocity",
+     "local_floor.py",
+     "    return 3.0 * robust_sigma(values_mm) / span_days",
+     "    return 3.0 * robust_sigma(values_mm)",
+     "test_floor_is_three_sigma_over_the_span"),
+
+    ("window padded instead of clipped at the raster edge",
+     "local_floor.py",
+     "    r0, r1 = max(0, row - radius), min(arr.shape[0], row + radius + 1)",
+     "    r0, r1 = row - radius, row + radius + 1",
+     "test_window_is_clipped_at_the_edge_not_padded"),
+
+    ("a two-pixel window still gets a noise floor",
+     "local_floor.py",
+     "    if a.size < MIN_PX or w.size < MIN_PX:",
+     "    if False:",
+     "test_too_few_valid_pixels_is_refused_not_averaged"),
+
+    ("window sample count not reported with the floor",
+     "local_floor.py",
+     '           "window_total_px": int(win_mm.size),',
+     '           "window_total_px": 0,',
+     "test_valid_pixel_count_is_reported_alongside_the_floor"),
 ]
 
 
