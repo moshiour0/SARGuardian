@@ -127,7 +127,7 @@ blockage at the reach where it happened. That is the grid floor.
 
 ---
 
-## Result 4 - no motion above 18.6 mm/day before the failure
+## Result 4 - no motion above 33.4 mm/day at the failure point
 
 **Needs: 16 NISAR L2 GOFF products, about 17 GB.**
 
@@ -203,6 +203,35 @@ Ascending summer block, 2 July to 19 August 2026:
 Fitted linear velocity **-0.711 mm/day**, and `--jackknife` must report the
 block as a chain with redundancy 0 - **untested, not confirmed**. That warning
 is part of the result.
+
+### The floor at the failure point, which is the one to quote
+
+Everything above is measured over the whole 82 km2 polygon. Add the target flag
+and the answer changes by 1.7x:
+
+```bash
+python src/local_floor.py --dir outputs/export_goff_src --match layer2 \
+    --lat 28.28771 --lon 85.52809 --sweep 3 6 12 --exclude 20260828 _UR_
+```
+
+**Expect** an ASC 098 median floor of **19.8 mm/day over the AOI against 33.4 at
+the point**, and the last pre-event pair `20260726_20260819` to go from **8.9 to
+34.3 mm/day on 26 of 169 valid pixels** - the pair with the best AOI floor in
+the archive is the worst one at the failure point. At radius 3 that pair holds
+2 valid pixels and is refused; at radius 12 it recovers, because the window has
+pulled in terrain that did not fail.
+
+Then confirm the conclusion is unchanged at the point:
+
+```bash
+python src/timeseries.py --dir data/nisar_l2/GOFF --product GOFF \
+    --goff-layer layer2 --aoi source --invert --auto-ref \
+    --target-lat 28.28771 --target-lon 85.52809 --target-radius 6
+```
+
+**Expect** a summer ascending velocity of **-0.14 +/- 1.42 mm/day**, not
+significant at 2 sigma - as at radius 3 (+2.40 +/- 2.41) and radius 12
+(-0.06 +/- 0.33).
 
 ### Shortcut, no products needed
 

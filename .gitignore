@@ -36,6 +36,8 @@ outputs/*
 !outputs/dam_sites_*.geojson
 # And the per-pair elevation fits: they are the evidence for limitation 4.
 !outputs/troposphere_*.csv
+# And the point-versus-area floors: they are the evidence for the headline bound.
+!outputs/local_floor_*.csv
 
 # Secrets
 .env

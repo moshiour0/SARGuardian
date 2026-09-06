@@ -21,10 +21,15 @@ of the event.
 
 So the answer to "can NISAR give warning of a collapse like this one" is: not
 at 12-day repeat, not with L2 products, and we can say precisely which limit
-stopped each one. **No motion above 18.6 mm/day in the seven weeks before
-failure**, on the one geometry with a stable floor, with the last observation
-seven days out. A Blatten-class precursor would have exceeded that floor by
-16-26x. It was not there.
+stopped each one. **No motion above 33.4 mm/day at the failure point in the
+seven weeks before failure**, on the one geometry with a stable floor, with the
+last observation seven days out. A Blatten-class precursor - 0.5-0.8 m/day at
+six days out - would have exceeded that floor by **15-24x**. It was not there.
+
+That floor is measured **at the failure point**, not over the area. Over the
+whole 82 km2 source polygon the same products give 18.6 mm/day, and quoting
+that number here would overstate what NISAR could see on the hillside that
+failed by 1.7x. See [the bound at the point](#the-bound-at-the-point-not-over-the-area).
 
 That is a bounded null with a measured floor behind it, paired with a measured
 positive - and it is an argument about instruments and revisit, not about this
@@ -359,6 +364,73 @@ the pair that produced it**, not against one scalar, and it disappears.
 The final seven days before failure are unobserved. The interval that covers
 late August is a 24-day average, which dilutes a 7-day precursor about
 threefold.
+
+### The bound at the point, not over the area
+
+Every floor above is the MAD scatter of one product over the whole **82 km2**
+source polygon. The failure was one hillside inside it. Those are not the same
+measurement, and the difference is a factor of **1.7**.
+
+Ascending path 098, GOFF layer2, routine products, in a 13x13 pixel window
+(about 1 km) centred on the failure point at 28.28771 N 85.52809 E:
+
+| ASC 098 pair | Span | Floor over the AOI | Floor at the point | Valid px |
+|--------------|------|--------------------|--------------------|----------|
+| 2025-11-28 -> 12-10 | 12 | 21.0 | 28.0 | 102 / 169 |
+| 2025-12-10 -> 12-22 | 12 | 21.4 | 42.8 | 93 / 169 |
+| 2025-12-22 -> 01-03 | 12 | 24.5 | 47.5 | 111 / 169 |
+| 2026-01-03 -> 01-15 | 12 | 23.8 | 32.5 | 103 / 169 |
+| 2026-07-02 -> 07-14 | 12 | 18.6 | 40.4 | 49 / 169 |
+| 2026-07-14 -> 07-26 | 12 | 13.4 | 19.2 | 65 / 169 |
+| **2026-07-26 -> 08-19** | 24 | **8.9** | **34.3** | **26 / 169** |
+| 2026-08-19 -> 08-31 | 12 | 15.6 | 16.5 | 19 / 169 |
+| **median** | | **19.8** | **33.4** | |
+
+**The bolded row is the last ascending interval before the collapse.** Over the
+AOI it has the lowest floor in the entire archive - 8.9 mm/day, the number that
+made the published bound look strongest. At the failure point that same pair
+has a floor of **34.3 mm/day** and **26 of 169 valid pixels**. The pair that
+made the bound look best is the pair that is worst where it matters.
+
+Tighten the window and it gets worse, which is the direction that matters: at
+500 m the same pair holds **2 valid pixels** and is refused outright. Widen to
+2 km and it recovers to 7.1 mm/day - because the window has pulled in terrain
+that did not fail. That is the dilution, made visible.
+
+**The conclusion survives.** Measured at the failure point itself, the summer
+ascending block is consistent with no motion at every window size tested:
+
+| Window | Summer ASC velocity | Verdict |
+|--------|--------------------|---------|
+| 250 m | +2.40 +/- 2.41 mm/day | not significant at 2 sigma |
+| 500 m | -0.14 +/- 1.42 mm/day | not significant at 2 sigma |
+| 1 km | -0.06 +/- 0.33 mm/day | not significant at 2 sigma |
+| whole AOI | -0.71 mm/day | not significant |
+
+One thing does appear at the point that the AOI median hides: the **winter**
+block accumulates monotonically, +207 mm over 48 days, a fitted +4.24 mm/day
+that clears the 2-sigma fit test. It is **0.13x the local winter floor of ~33
+mm/day**, so it is not a measurement - and it is eight months before the
+failure, in the season and at the scale where the rejected candidate turned out
+to be snowpack path delay. Recorded, not carried forward.
+
+```bash
+python src/local_floor.py --dir outputs/export_goff_src --match layer2 \
+    --lat 28.28771 --lon 85.52809 --sweep 3 6 12 --exclude 20260828 _UR_
+
+python src/timeseries.py --dir data/nisar_l2/GOFF --product GOFF \
+    --goff-layer layer2 --aoi source --invert --auto-ref \
+    --target-lat 28.28771 --target-lon 85.52809 --target-radius 6
+```
+
+**Why this was missed for so long.** `--target-lat` has existed in
+`timeseries.py` since the beginning, and the tool prints a warning when it is
+not used: *"using the median over the whole AOI... a small landslide inside a
+large stable AOI will be averaged into nothing."* The warning was correct, it
+fired on every run, and the headline bound was computed without the flag anyway.
+A warning nobody acts on is not a safeguard.
+
+---
 
 ### The co-event detection
 
@@ -1026,6 +1098,11 @@ Stated here rather than left for a reader to find.
    at this site (median difference +218 mm, scatter 267 mm). Coverage is; use it.
 8. **No independent ground validation.** No GNSS, no field survey, no optical
    confirmation of the deformation field.
+9. **Every floor other than the headline one is still AOI-wide.** The pre-event
+   bound is now quoted at the failure point (33.4 mm/day, 1.7x the 82 km2
+   figure), but the co-event decorrelation statistics, the coverage table and
+   the troposphere fits are all area aggregates. Where a hazard is localised,
+   expect the local number to be worse.
 
 The inverse-velocity detector's single scalar floor was on this list until
 `--floors` landed; each interval is now gated against the floor of the pair that
@@ -1121,6 +1198,7 @@ src/     nisar_acquisition.py   catalogue search + download
          candidate_check.py     four tests against one location
          detectability.py       revisit vs warning time simulation
          troposphere.py         stratified delay: measure, flag, optionally remove
+         local_floor.py         detection floor at a point vs over the AOI
          impoundment.py         landslide-dam susceptibility
 REPRODUCE_RESULTS.md            products -> commands -> expected numbers
 data/    nisar_l2/  dem/        products (gitignored)
