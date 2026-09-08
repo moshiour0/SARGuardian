@@ -190,6 +190,83 @@ def test_duplicate_products_flag_a_whole_fringe_disagreement():
     assert flagged[0]["fringes"] == pytest.approx(2.17, abs=0.05)
 
 
+def test_a_duplicate_with_no_valid_pixels_is_reported_not_crashed_on():
+    """
+    report() returns early without a 'median' when a pair has nothing valid, so
+    check_consistency raised KeyError on any duplicate group containing one.
+
+    That is where duplicates actually live: monsoon pairs run at 1-3% AOI
+    coverage and the co-event pair ships both a routine and an urgent product.
+    A batch would die after the last product and before the CSV was written -
+    the same failure mode, and the same silence, as the key mismatch above.
+    """
+    rows = [
+        {"reference": "20260816", "secondary": "20260828", "valid_px": 0,
+         "file": "NISAR_L2_PR_GUNW_x.h5"},                       # no 'median'
+        {"reference": "20260816", "secondary": "20260828", "median": -14.66,
+         "mean_coherence": 0.64, "file": "NISAR_L2_UR_GUNW_x.h5",
+         "wavelength_m": synth.WAVELENGTH_M},
+    ]
+    assert check_consistency(rows) == []                # must not raise, must not flag
+
+
+def test_consistency_sizes_a_fringe_from_the_products_own_wavelength():
+    """
+    report() never emitted wavelength_m, so the fringe test silently fell back
+    to the module constant. A product on a different centre frequency would
+    then be judged against the wrong cycle length.
+    """
+    rows = [
+        {"reference": "20260816", "secondary": "20260828", "median": 0.0,
+         "mean_coherence": 0.6, "file": "NISAR_L2_PR_GUNW_x.h5",
+         "wavelength_m": 0.4},
+        {"reference": "20260816", "secondary": "20260828", "median": 200.0,
+         "mean_coherence": 0.6, "file": "NISAR_L2_UR_GUNW_x.h5",
+         "wavelength_m": 0.4},
+    ]
+    flagged = check_consistency(rows)
+    assert len(flagged) == 1
+    # one fringe at lambda = 0.4 m is 200 mm, so this gap is exactly one cycle
+    assert flagged[0]["fringes"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_consistency_survives_a_product_with_no_coherence_layer():
+    rows = [
+        {"reference": "20260816", "secondary": "20260828", "median": 0.0,
+         "mean_coherence": None, "file": "NISAR_L2_PR_GUNW_x.h5"},
+        {"reference": "20260816", "secondary": "20260828", "median": 5.0,
+         "mean_coherence": None, "file": "NISAR_L2_UR_GUNW_x.h5"},
+    ]
+    check_consistency(rows)                             # must not raise
+
+
+def test_nodata_is_decided_on_raw_phase_not_the_ionosphere_corrected_array(tmp_path):
+    """
+    GUNW fills nodata with exact zeros and the ionosphere screen is not zero
+    there, so subtracting the screen first turns every nodata pixel into a
+    small non-zero number and the `phase != 0` test stops finding any of them.
+
+    Reading with and without the screen must therefore gate the SAME pixels.
+    It survived only because connectedComponents happens to reject the same
+    cells, and that layer is optional.
+    """
+    f = tmp_path / synth.granule_name()
+    truth = synth.write_gunw(f, truth_mm=50.0, iono_mm=40.0, nodata_fraction=0.20)
+    assert truth["n_nodata"] > 500, "fixture must actually contain unfilled cells"
+
+    r = read_gunw(f, auto_ref=True, apply_iono=True)
+
+    # Not one unfilled cell may be counted as a measurement, screen or no screen.
+    leaked = int((r["valid"] & truth["nodata"]).sum())
+    assert leaked == 0, (
+        f"{leaked} of {truth['n_nodata']} nodata cells survived gating - the "
+        "phase == 0 test is running on the ionosphere-corrected array")
+
+    # And the decision must not depend on whether the screen was removed.
+    without = read_gunw(f, auto_ref=True, apply_iono=False)
+    assert np.array_equal(r["valid"], without["valid"])
+
+
 def test_consistency_check_runs_on_reader_output_keys(tmp_path):
     """
     It once looked up "reference_date" while report() returned "reference".

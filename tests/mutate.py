@@ -119,6 +119,30 @@ MUTATIONS = [
      "floors[(a, b)] = f",
      "test_duplicate_processings_keep_the_larger_floor"),
 
+    ("coverage measured against the frame, not the AOI",
+     "gunw_reader.py",
+     '"aoi_pct": round(100 * n / aoi_px, 2) if aoi_px else None,',
+     '"aoi_pct": round(100 * n / total, 2) if aoi_px else None,',
+     "test_coverage_is_reported_against_the_aoi_not_the_frame"),
+
+    ("nodata decided after the ionosphere screen is removed",
+     "gunw_reader.py",
+     "    valid = np.isfinite(disp) & has_phase",
+     "    valid = np.isfinite(disp) & (phase != 0)",
+     "test_nodata_is_decided_on_raw_phase_not_the_ionosphere_corrected_array"),
+
+    ("consistency check trusts every duplicate to carry a median",
+     "gunw_reader.py",
+     "        measured = [g for g in group if g.get(\"median\") is not None]",
+     "        measured = list(group)",
+     "test_a_duplicate_with_no_valid_pixels_is_reported_not_crashed_on"),
+
+    ("fringe length taken from the constant, not the product",
+     "gunw_reader.py",
+     '        lam = group[0].get("wavelength_m") or NISAR_LAMBDA_M',
+     '        lam = NISAR_LAMBDA_M',
+     "test_consistency_sizes_a_fringe_from_the_products_own_wavelength"),
+
     ("Sentinel-1 modelled with NISAR's look side",
      "geometry_merge.py",
      'Track("S1 DESC 19", "Sentinel-1", False, 98.18, 39.0, 12, left_looking=False),',

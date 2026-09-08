@@ -98,6 +98,7 @@ def write_gunw(
     water_stripe: bool = False,
     unusable_stripe: bool = False,
     hole_fraction: float = 0.0,
+    nodata_fraction: float = 0.0,
     include_wrapped_decoy: bool = True,
     stable_ring_px: int = 40,
     wavelength_m: float = WAVELENGTH_M,
@@ -113,6 +114,11 @@ def write_gunw(
     iono_mm          constant ionospheric screen, in mm of LOS
     water_stripe     a band coded as water, which must be rejected
     unusable_stripe  a band with a zero subswath digit, also rejected
+    nodata_fraction  cells left as EXACT ZERO phase, the way a real GUNW
+                     fills what it could not unwrap. Their mask digits
+                     stay valid on purpose, so `phase == 0` is the only
+                     thing that can reject them - which is what makes
+                     them able to test the nodata gate at all
     stable_ring_px   width of same-component stable ground around the AOI
     """
     xs, ys = make_grid(n)
@@ -147,6 +153,18 @@ def write_gunw(
         iono_phase[:] = displacement_to_phase(ramp * iono_mm, wavelength_m)
         phase = phase + iono_phase                     # reader must remove it
 
+    # Unfilled cells, written last so they are exactly zero in the stored
+    # array - including where the ionosphere screen is not zero. That is the
+    # real product's convention, and it is the only thing that can catch a
+    # reader which decides nodata AFTER subtracting the screen.
+    nodata = np.zeros((n, n), dtype=bool)
+    if nodata_fraction:
+        # Scattered across the WHOLE grid, the AOI included. Keeping them
+        # outside would let the AOI clip remove them before the nodata gate
+        # was ever exercised, which is a fixture that cannot fail.
+        nodata = rng.random((n, n)) < nodata_fraction
+        phase[nodata] = 0.0
+
     coh = np.full((n, n), coherence, dtype=np.float32)
     mask = np.full((n, n), encode_mask(), dtype=np.uint8)
     if hole_fraction:
@@ -160,7 +178,7 @@ def write_gunw(
     if unusable_stripe:
         mask[-12:, :] = encode_mask(ref_sub=0)
 
-    usable = np.ones((n, n), dtype=bool)
+    usable = ~nodata
     if hole_fraction:
         usable &= ~holes
     if water_stripe:
@@ -198,6 +216,7 @@ def write_gunw(
 
     return {"truth_mm": truth_mm, "n": n, "xs": xs, "ys": ys, "aoi": aoi,
             "usable": usable, "components": comp, "fringe_mm": FRINGE_MM,
+            "nodata": nodata, "n_nodata": int(nodata.sum()),
             "n_aoi_usable": int((aoi & usable).sum())}
 
 

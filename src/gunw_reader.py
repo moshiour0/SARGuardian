@@ -331,6 +331,14 @@ def read_gunw(
     if flip_sign:
         scale = -scale
 
+    # Which pixels carry no phase, decided on the RAW array. GUNW fills nodata
+    # with exact zeros, and the ionosphere screen is not zero there - so
+    # subtracting the screen first turns every nodata pixel into a small
+    # non-zero number and the `phase != 0` test below stops finding any of
+    # them. That was survivable only because connectedComponents happens to
+    # reject the same pixels, and that layer is optional.
+    has_phase = phase != 0
+
     if iono is not None and apply_iono and iono.shape == phase.shape:
         good = np.isfinite(iono)
         if good.any():
@@ -344,7 +352,7 @@ def read_gunw(
     # phase -> LOS displacement, millimetres
     disp = phase * scale
 
-    valid = np.isfinite(disp) & (phase != 0)
+    valid = np.isfinite(disp) & has_phase
     gates = {"finite": int(valid.sum())}
 
     if coherence is not None:
@@ -550,6 +558,13 @@ def read_gunw(
         "valid": valid,
         "xs": xs, "ys": ys, "epsg": epsg,
         "wavelength_m": wavelength,
+        # How many grid cells the AOI actually covers. Without this the only
+        # denominator available is the full frame - 17.7 M pixels ascending,
+        # 26.6 M descending - and "coverage over the source zone" then gets
+        # computed against a number that has nothing to do with the source
+        # zone. It also makes the ascending/descending comparison unfair,
+        # because the two frames differ in size by 1.5x.
+        "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
         "iono_rms_mm": iono_rms_mm,
         "ref_value_mm": ref_value,
         # Where the reference was taken, in grid indices. Exposed so a caller
@@ -576,14 +591,38 @@ def report(result: dict) -> dict:
     if result.get("iono_rms_mm") is not None:
         print(f"  iono screen     {result['iono_rms_mm']:.1f} mm RMS (subtracted)")
 
-    print("\n  quality gates (cumulative):")
+    # Percentages here are of the FRAME, and are labelled so, because a gate
+    # applied before the AOI clip has no AOI to be a fraction of. The coverage
+    # figure that matters is printed below, against the AOI.
+    print("\n  quality gates (cumulative, % of frame):")
     for name, n in result["gates"].items():
-        print(f"    {name:<28} {n:>10,}  {100*n/total:>5.1f}%")
+        print(f"    {name:<28} {n:>10,}  {100*n/total:>7.3f}%")
 
     n = int(valid.sum())
+    aoi_px = result.get("aoi_px")
+
+    # Two coverage numbers, and only one of them answers a question anybody
+    # asks. `frame_pct` is valid pixels over the WHOLE product - tens of
+    # millions of cells, most of them nowhere near the area of interest - so it
+    # lands between 0.01 and 0.04 here and is useless for comparing anything.
+    # `aoi_pct` is valid pixels over the cells the AOI actually covers, which
+    # is what "coverage over the source zone" means.
+    #
+    # Quoting the wrong one cost this project a factor of ~16: winter ascending
+    # coverage of the 82 km2 source zone is 55%, not the 3.5% that came from
+    # reading a frame fraction as though it were an AOI fraction. It also made
+    # the ascending/descending ratio meaningless, because the two frames are
+    # different sizes.
     stats = {"file": result["file"], "reference": result["reference_date"],
              "secondary": result["secondary_date"], "valid_px": n,
-             "valid_pct": round(100 * n / total, 2)}
+             "aoi_px": aoi_px,
+             "aoi_pct": round(100 * n / aoi_px, 2) if aoi_px else None,
+             "frame_px": total,
+             "frame_pct": round(100 * n / total, 4),
+             # check_consistency sizes a fringe from this. It was never
+             # written, so the fringe test always fell back to the module
+             # constant instead of the wavelength the product reports.
+             "wavelength_m": round(float(result["wavelength_m"]), 6)}
 
     if n == 0:
         print("\n  NO VALID PIXELS. Lower --coh-threshold or check the AOI overlaps the frame.")
@@ -601,9 +640,24 @@ def report(result: dict) -> dict:
     if result["coherence"] is not None:
         print(f"\n  mean coherence (valid px): {result['coherence'][valid].mean():.3f}")
 
-    if stats["valid_pct"] < 10:
-        print("\n  WARNING: under 10% of the scene survived gating. Treat with suspicion -")
+    if aoi_px:
+        print(f"\n  coverage        {n:,} of {aoi_px:,} AOI cells = "
+              f"{stats['aoi_pct']:.1f}% of the area of interest")
+        print(f"                  ({stats['frame_pct']:.3f}% of the {total:,}-cell frame, "
+              f"which is not a coverage figure)")
+
+    # Gate on AOI coverage, not frame coverage. The frame fraction is ~0.03%
+    # for every pair over an AOI this size, so this warning used to fire on all
+    # 15 of them - including the winter pairs at 55% AOI coverage, which are
+    # the usable ones. A warning that fires every time carries no information.
+    cover = stats["aoi_pct"] if aoi_px else None
+    if cover is not None and cover < 10:
+        print(f"\n  WARNING: only {cover:.1f}% of the AOI survived gating. Treat with "
+              "suspicion -")
         print("  likely monsoon decorrelation or a 24-day span. Consider GOFF instead.")
+    elif cover is None:
+        print("\n  NOTE: no AOI clip applied, so there is no coverage figure. Only the")
+        print("  frame fraction is available, and it is not comparable between tracks.")
 
     stats.update({k: round(float(v), 3) for k, v in
                   zip(["p1", "p5", "p25", "median", "p75", "p95", "p99"], qs)})
@@ -1007,6 +1061,20 @@ def check_consistency(rows: list[dict]) -> list[dict]:
 
     suspect = []
     for (ref, sec), group in sorted(dupes.items()):
+        # A pair with no valid pixels returns early from report() without a
+        # 'median', so this used to raise KeyError on any duplicate group
+        # containing one. That is not hypothetical: monsoon pairs run at 1-3%
+        # AOI coverage and the co-event pair has both a routine and an urgent
+        # product, so an empty one is exactly where duplicates live.
+        measured = [g for g in group if g.get("median") is not None]
+        if len(measured) < 2:
+            print(f"\n  {ref} -> {sec}   {len(group)} products, but "
+                  f"{len(group) - len(measured)} had no valid pixels")
+            print("    Cannot cross-check: a product with nothing measured cannot")
+            print("    agree or disagree with anything.")
+            continue
+
+        group = measured
         lam = group[0].get("wavelength_m") or NISAR_LAMBDA_M
         fringe_mm = float(lam) / 2 * 1000
         meds = [float(g["median"]) for g in group]
@@ -1017,9 +1085,10 @@ def check_consistency(rows: list[dict]) -> list[dict]:
               f"one fringe = {fringe_mm:.1f} mm)")
         for g in group:
             proc = re.search(r"NISAR_L2_([A-Z]{2})_", Path(g["file"]).name)
+            coh = g.get("mean_coherence")
+            coh_s = f"{float(coh):.2f}" if coh is not None else "n/a"
             print(f"    {proc.group(1) if proc else '??'}  median "
-                  f"{float(g['median']):>9.2f} mm   coherence "
-                  f"{float(g['mean_coherence']):.2f}")
+                  f"{float(g['median']):>9.2f} mm   coherence {coh_s}")
         print(f"    disagreement: {spread:.2f} mm = {n_fringes:.2f} fringes")
 
         if abs(n_fringes - round(n_fringes)) < 0.25 and round(n_fringes) >= 1:

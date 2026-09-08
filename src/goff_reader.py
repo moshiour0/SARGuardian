@@ -259,6 +259,10 @@ def read_goff(
             "range_var": L["rng_var"],
             "valid": valid,
             "xs": L["xs"], "ys": L["ys"], "epsg": L["epsg"],
+            # Cells the AOI covers, so coverage has a denominator that means
+            # something. See gunw_reader.report for what quoting the frame
+            # fraction instead cost this project.
+            "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
             "gates": gates,
             "ramp_rms_mm": ramp_rms,
             "ref_range_m": ref_rng,
@@ -371,7 +375,10 @@ def report(res: dict, span_days: float | None = None) -> list[dict]:
         n = int(v.sum())
         print(f"\n  --- {name} ---")
         for k, c in L["gates"].items():
-            print(f"    {k:<26}{c:>12,}  {100*c/total:>5.1f}%")
+            print(f"    {k:<26}{c:>12,}  {100*c/total:>7.3f}% of frame")
+        if L.get("aoi_px"):
+            print(f"    {'-> coverage of the AOI':<26}{n:>12,}  "
+                  f"{100*n/L['aoi_px']:>7.1f}% of {L['aoi_px']:,} AOI cells")
         if n == 0:
             print("    NO VALID PIXELS")
             continue
@@ -380,7 +387,12 @@ def report(res: dict, span_days: float | None = None) -> list[dict]:
         sig_r = robust_sigma(r)
         row = {"file": res["file"], "layer": name,
                "reference": res["reference_date"], "secondary": res["secondary_date"],
-               "valid_px": n, "valid_pct": round(100 * n / total, 2),
+               "valid_px": n,
+               "aoi_px": L.get("aoi_px"),
+               "aoi_pct": (round(100 * n / L["aoi_px"], 2)
+                           if L.get("aoi_px") else None),
+               "frame_px": total,
+               "frame_pct": round(100 * n / total, 4),
                "range_median_mm": round(float(np.median(r)), 2),
                "range_mad_sigma_mm": round(sig_r, 2),
                "range_p5_mm": round(float(np.percentile(r, 5)), 2),
