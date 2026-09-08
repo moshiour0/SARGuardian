@@ -196,6 +196,18 @@ MUTATIONS = [
      '           "window_total_px": int(win_mm.size),',
      '           "window_total_px": 0,',
      "test_valid_pixel_count_is_reported_alongside_the_floor"),
+
+    ("post-event data leaks into the forecast",
+     "inverse_velocity.py",
+     '        leaked = [w for w in vs if w["t1"] >= cutoff]',
+     '        leaked = []',
+     "test_post_event_interval_is_dropped_from_the_fit"),
+
+    ("cutoff boundary is exclusive, so the event pair survives",
+     "inverse_velocity.py",
+     '        leaked = [w for w in vs if w["t1"] >= cutoff]',
+     '        leaked = [w for w in vs if w["t1"] > cutoff]',
+     "test_an_interval_ending_exactly_on_the_event_is_excluded"),
 ]
 
 

@@ -191,7 +191,7 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
 def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
                   window: int, r2_min: float, horizon_days: float,
                   sig_multiple: float, event_date: date | None,
-                  floors: dict | None = None) -> dict:
+                  floors: dict | None = None, cutoff: date | None = None) -> dict:
     print(f"\n{'='*74}")
     print(f"{label}  block {comp}   {rows[0]['epoch']} .. {rows[-1]['epoch']}  "
           f"({len(rows)} epochs)")
@@ -201,6 +201,35 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     if not vs:
         print("  no velocity estimates possible")
         return {"alarm": False, "reason": "no intervals"}
+
+    # A forecast may only use data that existed before the thing it forecasts.
+    #
+    # This is not a hypothetical. `--event-date` used to score the prediction
+    # and nothing else, so an interval whose SECOND acquisition came after the
+    # collapse went straight into the fit. On a real failure that interval
+    # carries the collapse itself - metres of apparent offset - so it clears
+    # any floor, supplies the third velocity the fit needs, and the detector
+    # announces an alarm with a lead time. Reproduced on synthetic data: three
+    # pre-event intervals gave NO ALARM at 2 usable velocities; adding the
+    # event-spanning interval produced "predicted failure 2026-08-31, lead 6
+    # days, prediction error +5 days". Every number in that line was hindsight.
+    #
+    # The midpoint labelling hid it. The fit reported "ending 2026-08-25",
+    # which is the midpoint of an interval running to 08-31, so the output
+    # looked pre-event while resting on post-event data.
+    if cutoff is not None:
+        leaked = [w for w in vs if w["t1"] >= cutoff]
+        if leaked:
+            vs = [w for w in vs if w["t1"] < cutoff]
+            print(f"\n  FORECAST CUTOFF {cutoff}: dropped {len(leaked)} interval(s)")
+            for w in leaked:
+                print(f"    {w['t0']} -> {w['t1']}  {w['v_mm_day']:+.2f} mm/day"
+                      f"   ends on or after the cutoff")
+            print("    A forecast cannot use an observation of the event it")
+            print("    forecasts. Pass --allow-post-event to override, and say so.")
+        if not vs:
+            print("\n  nothing left before the cutoff")
+            return {"alarm": False, "reason": "all intervals post-cutoff"}
 
     # Each interval is gated against the floor of the pair that produced it.
     # Where no per-pair floor is available the scalar falls back in, and the
@@ -364,11 +393,24 @@ def main() -> int:
     ap.add_argument("--window", type=int, default=3)
     ap.add_argument("--r2-min", type=float, default=0.70)
     ap.add_argument("--horizon", type=float, default=60.0)
-    ap.add_argument("--event-date", help="YYYY-MM-DD, to score the prediction")
+    ap.add_argument("--event-date",
+                    help="YYYY-MM-DD. Scores the prediction, AND becomes the "
+                         "forecast cutoff: intervals ending on or after it are "
+                         "dropped from the fit")
+    ap.add_argument("--forecast-cutoff", metavar="YYYY-MM-DD",
+                    help="drop intervals ending on or after this date. Defaults "
+                         "to --event-date")
+    ap.add_argument("--allow-post-event", action="store_true",
+                    help="disable the cutoff. Only for studying the event pair "
+                         "itself - never for a forecast claim")
     ap.add_argument("--plot", metavar="OUT.png")
     args = ap.parse_args()
 
     ev = datetime.strptime(args.event_date, "%Y-%m-%d").date() if args.event_date else None
+    cutoff = (datetime.strptime(args.forecast_cutoff, "%Y-%m-%d").date()
+              if args.forecast_cutoff else ev)
+    if args.allow_post_event:
+        cutoff = None
     series = load_series(resolve(args.ts))
     if not series:
         logger.error("No rows in %s", args.ts); return 1
@@ -392,7 +434,7 @@ def main() -> int:
     for (geom, comp), rows in sorted(series.items()):
         results.append(analyse_block(geom, comp, rows, args.noise_floor,
                                      args.window, args.r2_min, args.horizon,
-                                     args.sig_multiple, ev, floors))
+                                     args.sig_multiple, ev, floors, cutoff))
 
     print(f"\n{'='*74}\nSUMMARY\n{'='*74}")
     fired = [r for r in results if r.get("alarm")]

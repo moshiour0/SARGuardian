@@ -365,6 +365,49 @@ The final seven days before failure are unobserved. The interval that covers
 late August is a 24-day average, which dilutes a 7-day precursor about
 threefold.
 
+### The forecast cutoff, and a false alarm we could have published
+
+`--event-date` used to score the prediction and nothing else. It did not stop
+an interval whose **second** acquisition fell after the collapse from entering
+the fit - and the reproduction page's own command feeds the full series, which
+contains 28 and 31 August.
+
+On this data it changed nothing, because those intervals sit below the floor
+like everything else. On a real failure it changes everything. Reproduced on
+synthetic data with two usable pre-event velocities and one interval spanning
+the event:
+
+| Input | Result |
+|-------|--------|
+| Pre-event intervals only | **NO ALARM** - 2 usable velocities, the fit needs 3 |
+| Plus the event-spanning interval | *** ALARM *** predicted 2026-08-31, **lead 6 days**, R2 0.993, "prediction error +5 days" |
+
+Every number in that alarm line is hindsight. The event-spanning interval
+carries the collapse itself - metres of apparent offset - so it clears any
+floor, supplies the third velocity, and the detector reports a successful
+forecast of something it had already observed.
+
+**The midpoint labelling hid it.** The fit printed *"fitted on 3 velocities
+ending 2026-08-25"* - the midpoint of an interval running to 08-31. The output
+read as pre-event while resting on post-event data.
+
+This is the exact confusion the project argues against - detecting a collapse
+and predicting one are different problems - arriving dressed as a success. The
+cutoff is now on by default: `--event-date` drops every interval ending on or
+after it, names what it dropped, and `--allow-post-event` is required to
+override.
+
+```
+FORECAST CUTOFF 2026-08-26: dropped 1 interval(s)
+  2026-08-19 -> 2026-08-31  -2.78 mm/day   ends on or after the cutoff
+  A forecast cannot use an observation of the event it forecasts.
+```
+
+The boundary is `>=`, not `>`: an acquisition on the day of the collapse may
+already contain it.
+
+---
+
 ### The bound at the point, not over the area
 
 Every floor above is the MAD scatter of one product over the whole **82 km2**
@@ -1098,7 +1141,11 @@ Stated here rather than left for a reader to find.
    at this site (median difference +218 mm, scatter 267 mm). Coverage is; use it.
 8. **No independent ground validation.** No GNSS, no field survey, no optical
    confirmation of the deformation field.
-9. **Every floor other than the headline one is still AOI-wide.** The pre-event
+9. **The forecast cutoff is date-based, not scene-based.** It drops intervals
+   ending on or after the event date, which is right when the date is known.
+   In an operational setting the date is what you are trying to predict, so the
+   protection would have to come from processing latency instead.
+10. **Every floor other than the headline one is still AOI-wide.** The pre-event
    bound is now quoted at the failure point (33.4 mm/day, 1.7x the 82 km2
    figure), but the co-event decorrelation statistics, the coverage table and
    the troposphere fits are all area aggregates. Where a hazard is localised,
