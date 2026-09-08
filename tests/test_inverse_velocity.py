@@ -205,3 +205,83 @@ def test_duplicate_processings_keep_the_larger_floor(tmp_path):
                     "detect_floor_mm_day": "44.6"})
     got = load_floors(p)
     assert got[(_date(2026, 8, 16), _date(2026, 8, 28))] == 85.6
+
+
+# ---------------------------------------------------------------------------
+from datetime import date, timedelta  # noqa: E402
+
+# Hindsight must not reach the fit.
+#
+# `--event-date` used to score the prediction and nothing else, so an interval
+# whose SECOND acquisition fell after the collapse went straight into the fit.
+# On a real failure that interval carries the collapse - metres of apparent
+# offset - so it clears any floor, supplies the third velocity the fit needs,
+# and the detector announces an alarm with a lead time. The whole thesis of
+# this project is that detecting a collapse and predicting one are different
+# problems; a forecast built on the event is the exact confusion it argues
+# against, dressed as a success.
+#
+# The midpoint labelling hid it: the fit reported "ending 2026-08-25", the
+# midpoint of an interval running to 08-31, so the output read as pre-event.
+
+def _leaky_block():
+    """Two usable pre-event velocities, then one that spans the event."""
+    base = date(2026, 7, 2)
+    cum = [0.0, -36.0, -336.0, -1296.0, -3696.0]        # 3, 25, 40, 200 mm/day
+    days = [0, 12, 24, 48, 60]
+    return [{"epoch": base + timedelta(days=d), "cumulative_mm": c}
+            for d, c in zip(days, cum)]
+
+
+def test_post_event_interval_is_dropped_from_the_fit():
+    rows = _leaky_block()
+    leaked = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
+                           date(2026, 8, 26), None, cutoff=None)
+    guarded = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
+                            date(2026, 8, 26), None, cutoff=date(2026, 8, 26))
+    assert leaked["alarm"], "fixture must alarm when the event is let in"
+    assert not guarded["alarm"], "the cutoff must remove that alarm"
+
+
+def test_the_cutoff_keeps_everything_before_the_event():
+    """It must drop the leaking interval, not the whole block."""
+    rows = _leaky_block()
+    r = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
+                      date(2026, 8, 26), None, cutoff=date(2026, 8, 26))
+    assert r.get("reason") != "all intervals post-cutoff"
+
+
+def test_an_interval_ending_exactly_on_the_event_is_excluded():
+    """
+    An acquisition on the day of the collapse may already contain it. The
+    boundary is >=, not >, and that choice is deliberate.
+
+    The fixture has to be built so the boundary is what decides. Three usable
+    velocities are needed for a fit, and the third one is the interval landing
+    exactly on the event date - so `>=` leaves two and refuses, while `>` lets
+    it through and alarms. An earlier version of this test used only two usable
+    velocities and passed either way; the mutation harness caught it.
+    """
+    base = date(2026, 7, 2)
+    days = [0, 12, 24, 36, 55]           # last epoch is 2026-08-26 itself
+    cum = [0.0, -36.0, -336.0, -816.0, -4616.0]   # 3, 25, 40, 200 mm/day
+    rows = [{"epoch": base + timedelta(days=d), "cumulative_mm": c}
+            for d, c in zip(days, cum)]
+    assert rows[-1]["epoch"] == date(2026, 8, 26)
+
+    loose = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
+                          date(2026, 8, 26), None, cutoff=None)
+    assert loose["alarm"], "fixture must alarm when the boundary lets it in"
+
+    r = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
+                      date(2026, 8, 26), None, cutoff=date(2026, 8, 26))
+    assert not r["alarm"]
+
+
+def test_no_cutoff_leaves_behaviour_unchanged():
+    """Passing cutoff=None must reproduce the old path exactly."""
+    rows = _leaky_block()
+    a = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0, None, None)
+    b = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0, None, None,
+                      cutoff=None)
+    assert a["alarm"] == b["alarm"]

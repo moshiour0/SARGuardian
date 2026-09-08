@@ -183,6 +183,20 @@ python src/inverse_velocity.py --ts outputs/ts_goff_source.csv \
     --noise-floor 18.6 --event-date 2026-08-26
 ```
 
+`--event-date` is also the **forecast cutoff**. The series it reads contains 28
+and 31 August, both after the collapse, and the run must print:
+
+```
+FORECAST CUTOFF 2026-08-26: dropped 1 interval(s)
+  2026-08-19 -> 2026-08-31  -2.78 mm/day   ends on or after the cutoff
+```
+
+with a second drop of `2026-08-16 -> 2026-08-28  +8.74 mm/day` on descending.
+If those lines are missing you are running a version that lets the event into
+its own forecast. Both intervals sit below the floor here, so the bound is
+unchanged either way - but on data where they do not, the detector will
+announce a lead time built entirely on hindsight.
+
 ### Expected numbers
 
 `outputs/goff_stats_source.csv`, HH/layer2, routine products only:
