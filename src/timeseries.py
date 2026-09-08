@@ -657,7 +657,8 @@ def main() -> int:
                     help="which product to build the series from")
     ap.add_argument("--goff-layer", default="layer2",
                     help="GOFF correlation-window layer (layer3 is usually quietest)")
-    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="langtang")
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
+                    help="analysis AOI. Defaults to the confirmed detachment zone; it used to default to the wider langtang box")
     ap.add_argument("--auto-ref", action="store_true",
                     help="pick the reference automatically (recommended)")
     ap.add_argument("--coh-threshold", type=float, default=0.3)

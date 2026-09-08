@@ -56,31 +56,41 @@ logging.basicConfig(
 logger = logging.getLogger("nisar-acq")
 
 # ---------------------------------------------------------------------------
-# AOI - switch by editing AOI_RING.
+# AOI. Imported, never redefined.
 #
-# LANGTANG   Langtang Lirung massif, 80.8 km2, 3048-7188 m. Glacier monitoring.
-# LHENDE     Reported source zone of the 26 Aug 2026 collapse, ~9 km north.
+# This module used to carry its own copy of the rings, with no SOURCE_RING at
+# all and no way to choose one but editing the file. Two consequences: the
+# analysis AOI could not be searched or downloaded with the tool the
+# reproduction page tells you to use, and the retracted claim that Lhende was
+# "the reported source zone ~9 km north" survived here after it had been
+# corrected everywhere else.
+#
+# One definition, in gunw_reader, for every module.
 # ---------------------------------------------------------------------------
-LANGTANG_RING = [
-    (85.46683434336315, 28.324709534140283),
-    (85.45910958140026, 28.277704299412660),
-    (85.47267083017955, 28.253664665263376),
-    (85.50734379401987, 28.245345485689977),
-    (85.53583958259410, 28.244740597906280),
-    (85.55884220710581, 28.249882034713380),
-    (85.56485035529917, 28.272864249930198),
-    (85.56193211189097, 28.289493024692200),
-    (85.55918552985972, 28.307177143980763),
-    (85.54854252448862, 28.316849264798610),
-    (85.52468159309214, 28.328333765691790),
-    (85.50614216438120, 28.329693690212682),
-]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gunw_reader import AOIS  # noqa: E402
 
-LHENDE_RING = [
-    (85.44, 28.34), (85.62, 28.34), (85.62, 28.47), (85.44, 28.47),
-]
+AOI_NAME = "source"
+AOI_RING = AOIS[AOI_NAME]
 
-AOI_RING = LANGTANG_RING          # <-- switch here
+
+def set_aoi(name: str) -> None:
+    """Switch the AOI and rebuild everything derived from it."""
+    global AOI_NAME, AOI_RING, AOI_WKT, BBOX, SEARCH_WKT
+    if name not in AOIS:
+        raise SystemExit(f"Unknown AOI '{name}'. Choose from {sorted(AOIS)}")
+    AOI_NAME = name
+    AOI_RING = AOIS[name]
+    AOI_WKT = "POLYGON ((" + ", ".join(f"{x} {y}" for x, y in AOI_RING + [AOI_RING[0]]) + "))"
+    lons = [c[0] for c in AOI_RING]
+    lats = [c[1] for c in AOI_RING]
+    BBOX = (min(lons), min(lats), max(lons), max(lats))
+    SEARCH_WKT = (
+        f"POLYGON(({BBOX[0]:.4f} {BBOX[1]:.4f},{BBOX[2]:.4f} {BBOX[1]:.4f},"
+        f"{BBOX[2]:.4f} {BBOX[3]:.4f},{BBOX[0]:.4f} {BBOX[3]:.4f},"
+        f"{BBOX[0]:.4f} {BBOX[1]:.4f}))"
+    )
+
 
 AOI_WKT = "POLYGON ((" + ", ".join(f"{x} {y}" for x, y in AOI_RING + [AOI_RING[0]]) + "))"
 _lons = [c[0] for c in AOI_RING]
@@ -359,6 +369,10 @@ def download(product_types: list[str], records: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="NISAR acquisition for the Rasuwa AOIs")
+    parser.add_argument("--aoi", choices=sorted(AOIS), default="source",
+                        help="which AOI to search. 'source' is the confirmed "
+                             "detachment zone; 'lhende' is the runout corridor "
+                             "the avalanche dammed")
     parser.add_argument("--recon", action="store_true", help="inventory available products")
     parser.add_argument("--sentinel1", action="store_true", help="also show Sentinel-1 track coverage")
     parser.add_argument("--download", nargs="+", metavar="TYPE", help="download product types, e.g. GUNW GOFF")
@@ -372,6 +386,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="list what --download would fetch, and its size")
     args = parser.parse_args()
+    set_aoi(args.aoi)
 
     if not (args.recon or args.download or args.watch):
         parser.print_help()

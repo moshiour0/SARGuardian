@@ -19,14 +19,25 @@ four directions at once, and this tool runs the attack.
     differential is it local, or is it the whole AOI moving together?
     ceiling      is it slower than lambda/4 per pair, i.e. measurable at all?
 
-The seasonality test is the one people skip
-===========================================
-Himalayan slope creep is monsoon-driven: pore pressure peaks June to
-September. A signal that appears in the accumulation season and vanishes
-through the monsoon has the seasonality of a snowpack, not a slope. Dry snow
-is nearly transparent at L-band, so it preserves coherence while adding a path
-delay that scales with accumulated water equivalent - producing a steady,
-spatially coherent, high-coherence apparent motion that is not motion.
+The seasonality test, and what it can and cannot say
+===================================================
+A signal that appears in the dry season and vanishes through the monsoon has
+the seasonality of a snowpack. Dry snow is nearly transparent at L-band, so it
+preserves coherence while adding a path delay that grows with accumulated water
+equivalent - a steady, spatially coherent, high-coherence apparent motion that
+is not motion.
+
+The inverse does NOT follow, and an earlier version of this note assumed it
+did. It read "Himalayan slope creep is monsoon-driven: pore pressure peaks June
+to September", which is Class B reasoning - rainfall-triggered failure on
+vegetated slopes. Class A failures, the kind this project targets, are not
+necessarily monsoon-driven: Blatten went on 28 May, before any monsoon, and the
+26 August 2026 detachment is attributed to permafrost degradation rather than
+pore pressure. So dry-season quiescence is evidence AGAINST a snowpack delay,
+but dry-season motion is not evidence against creep.
+
+This test therefore only ever fires in one direction: it can reject a
+candidate, never confirm one.
 
 Usage
 -----

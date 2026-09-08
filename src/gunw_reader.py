@@ -1163,8 +1163,8 @@ def main() -> int:
     ap.add_argument("--ref-radius", type=int, default=5, help="reference window half-width in pixels")
     ap.add_argument("--no-clip", action="store_true", help="do not clip to the AOI ring")
     ap.add_argument("--flip-sign", action="store_true", help="invert the LOS sign convention")
-    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="langtang",
-                    help="which box to clip to; lhende is the 26 Aug source zone")
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
+                    help="which box to clip to. 'source' is the confirmed detachment zone and the default; 'lhende' is the runout corridor the avalanche dammed, not a control")
     ap.add_argument("--auto-ref", action="store_true",
                     help="pick the highest-coherence fully-valid block outside the AOI "
                          "as the reference, instead of guessing a lat/lon")

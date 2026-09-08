@@ -424,7 +424,8 @@ def main() -> int:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--api", action="store_true", help="sample SRTM via OpenTopoData")
     src.add_argument("--dem", metavar="FILE.tif", help="local DEM GeoTIFF")
-    ap.add_argument("--aoi", choices=sorted(AOIS), default="langtang")
+    ap.add_argument("--aoi", choices=sorted(AOIS), default="source",
+                    help="terrain AOI. 'lhende' is the valley the 26 Aug 2026 avalanche dammed and breached, so its map is a testable prediction")
     ap.add_argument("--cells", type=int, default=12000, help="approx grid cells for --api")
     ap.add_argument("--heights", type=float, nargs="+", default=[25, 50, 100, 150])
     ap.add_argument("--min-accum", type=int, default=40,

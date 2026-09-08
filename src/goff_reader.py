@@ -234,9 +234,27 @@ def read_goff(
                     za = azi[gy, gx]
                     coefa, *_ = np.linalg.lstsq(A, za, rcond=None)
                     azi = azi - (coefa[0] + coefa[1] * XX + coefa[2] * YY)
-                logger.info("[%s] deramped: removed plane of %.0f mm RMS "
-                            "(fitted on %d px outside the AOI)",
-                            name, ramp_rms, int(gy.size))
+                # The RMS is of the plane over the FIT region, which is the
+                # stable ground outside the AOI - not over the AOI, where the
+                # plane is interpolated across a hole. Saying which matters:
+                # they are different numbers and only the second describes
+                # what was removed from the measurement.
+                inside = ~aoi_mask if aoi_mask is None else aoi_mask
+                aoi_ramp = (float(np.sqrt(np.mean((plane[inside] * 1000.0) ** 2)))
+                            if inside.any() else float("nan"))
+                logger.info("[%s] deramped: plane is %.0f mm RMS on the stable "
+                            "ground it was fitted to (%d px outside the AOI), "
+                            "%.0f mm RMS across the AOI itself",
+                            name, ramp_rms, int(gy.size), aoi_ramp)
+                # The plane carries a constant term, so it re-removes whatever
+                # the auto-reference already subtracted. Two mechanisms, one
+                # job: the reference chooses WHERE zero is when deramping is
+                # off, and is otherwise absorbed here. The logged reference
+                # offset above is therefore informational, not the offset that
+                # ends up in the data.
+                if ref_rng is not None:
+                    logger.info("[%s] (the auto-reference constant %+.3f m is "
+                                "absorbed by the plane's intercept)", name, ref_rng)
             else:
                 logger.warning("[%s] too little stable ground to deramp", name)
 
@@ -536,8 +554,8 @@ def main() -> int:
                    help="folder of GOFF products (default: data/nisar_l2/GOFF)")
     m.add_argument("--noise-floor", metavar="DIR",
                    help="measure the detection floor on pairs you believe are stable")
-    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="langtang",
-                    help="which box to clip to; lhende is the 26 Aug source zone")
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
+                    help="which box to clip to. 'source' is the confirmed detachment zone and the default; 'lhende' is the runout corridor the avalanche dammed, not a control")
     ap.add_argument("--layer", default="best", help="layer1, layer2, or best (both)")
     ap.add_argument("--correlation", type=float, default=DEFAULT_CORRELATION)
     ap.add_argument("--snr", type=float, default=DEFAULT_SNR)
