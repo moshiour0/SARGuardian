@@ -305,15 +305,47 @@ def analyse(z, lats, lons, heights, min_accum_cells, top_n,
     for s_ in sites.values():
         bh = s_["by_height"]
         s_["max_volume_Mm3"] = max(v["volume_Mm3"] for v in bh.values())
-        # Mm3 impounded per metre of blockage at the SMALLEST height that fills.
-        # A site needing 150 m of debris is far less likely than one needing 25 m.
+        # The smallest blockage this site responds to at all. A reach that needs
+        # 100 m of debris before it holds anything is a different proposition
+        # from one that starts filling at 10 m, and this is the number that
+        # separates them.
         lo = min(bh)
+        s_["threshold_height_m"] = lo
         s_["efficiency_Mm3_per_m"] = bh[lo]["volume_Mm3"] / lo
         s_["volume_at_min_height_Mm3"] = bh[lo]["volume_Mm3"]
         s_["truncated"] = any(v["truncated"] for v in bh.values())
 
-    metric = "efficiency_Mm3_per_m" if rank_by == "efficiency" else "max_volume_Mm3"
-    ranked = sorted(sites.values(), key=lambda r: -r[metric])
+    return rank_sites(list(sites.values()), rank_by, top_n, min_separation_km)
+
+
+def rank_sites(sites: list[dict], rank_by: str, top_n: int,
+               min_separation_km: float) -> list[dict]:
+    """
+    Order the sites and suppress near-duplicates.
+
+    Pure: takes dicts, returns dicts, touches no DEM. The ranking is the part
+    of this module that makes a claim - "favours sites a small landslide could
+    dam" - so it has to be checkable without several thousand DEM queries.
+    """
+    if rank_by == "efficiency":
+        # Threshold height FIRST, then volume per metre within it.
+        #
+        # Ranking on volume-per-metre alone did the opposite of what it claims.
+        # `lo` differs between sites and impounded volume grows faster than
+        # linearly with height, so dividing by a LARGER lo can still give a
+        # bigger ratio - and a site that holds nothing until 100 m outranks
+        # sites that start filling at 10 m. In the committed source-zone run
+        # that is exactly what happened: site 2 needs a 100 m blockage and came
+        # second of twelve, above four reaches that respond at 10 m.
+        #
+        # "Favours sites a small landslide could dam" has to mean the small
+        # blockage comes first. Efficiency then orders the sites that share a
+        # threshold, which is a like-for-like comparison because lo is equal.
+        ranked = sorted(sites,
+                        key=lambda r: (r["threshold_height_m"],
+                                       -r["efficiency_Mm3_per_m"]))
+    else:
+        ranked = sorted(sites, key=lambda r: -r["max_volume_Mm3"])
 
     # Non-maximum suppression. Consecutive channel cells describe the SAME pool
     # with the dam nudged a few tens of metres, so without this one valley reach
@@ -340,7 +372,7 @@ def report(rows, heights, rank_by):
 
     head = f"{'#':>3}  {'LAT':>9}{'LON':>10}{'SILL m':>8}{'UPSTR km2':>10}"
     head += "".join(f"{int(h):>8}m" for h in hs)
-    head += f"{'Mm3/m':>9}  FLAG"
+    head += f"{'THRESH':>8}{'Mm3/m':>9}  FLAG"
     print(head)
     print("-" * len(head))
 
@@ -350,12 +382,21 @@ def report(rows, heights, rank_by):
         for h in hs:
             v = r["by_height"].get(h)
             line += f"{v['volume_Mm3']:>9.1f}" if v else f"{'-':>9}"
-        line += f"{r['efficiency_Mm3_per_m']:>9.2f}  "
+        line += f"{r['threshold_height_m']:>7.0f}m{r['efficiency_Mm3_per_m']:>9.2f}  "
         line += "truncated" if r["truncated"] else ""
         print(line)
 
     print("\n  columns are impounded volume (Mm3) at each dam height")
-    print(f"  Mm3/m = volume at the smallest height tested ({min(hs):g} m) per metre of blockage")
+    print("  Mm3/m = volume at the smallest height THIS SITE responds to, per")
+    print("  metre of blockage. The threshold differs between sites, so this")
+    print("  column compares like for like only within one threshold - which is")
+    print("  why the ranking sorts on threshold first.")
+    if rank_by == "efficiency":
+        by_thr: dict[float, int] = {}
+        for r in rows:
+            by_thr[r["threshold_height_m"]] = by_thr.get(r["threshold_height_m"], 0) + 1
+        summary = ", ".join(f"{n} at {h:g} m" for h, n in sorted(by_thr.items()))
+        print(f"\n  threshold blockage: {summary}")
     print("\nScale reference:")
     print("  2024 Thame GLOF, Nepal            ~  2 Mm3")
     print("  2023 South Lhonak GLOF, Sikkim    ~ 50 Mm3  (~180 dead)")

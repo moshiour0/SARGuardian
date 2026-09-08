@@ -119,6 +119,14 @@ MUTATIONS = [
      "floors[(a, b)] = f",
      "test_duplicate_processings_keep_the_larger_floor"),
 
+    ("impoundment ranks on volume-per-metre across different thresholds",
+     "impoundment.py",
+     '        ranked = sorted(sites,\n'
+     '                        key=lambda r: (r["threshold_height_m"],\n'
+     '                                       -r["efficiency_Mm3_per_m"]))',
+     '        ranked = sorted(sites, key=lambda r: -r["efficiency_Mm3_per_m"])',
+     "test_a_site_needing_a_hundred_metres_does_not_outrank_one_that_fills_at_ten"),
+
     ("--blatten declared but never read",
      "detectability.py",
      "    if args.blatten:\n        if args.precursor == [5, 10, 20, 40]:",
