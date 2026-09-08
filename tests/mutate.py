@@ -119,6 +119,30 @@ MUTATIONS = [
      "floors[(a, b)] = f",
      "test_duplicate_processings_keep_the_larger_floor"),
 
+    ("--blatten declared but never read",
+     "detectability.py",
+     "    if args.blatten:\n        if args.precursor == [5, 10, 20, 40]:",
+     "    if False:\n        if args.precursor == [5, 10, 20, 40]:",
+     "test_blatten_preset_actually_changes_the_run"),
+
+    ("detector gate ignores the noise it is guarding against",
+     "detectability.py",
+     '        return self.sig_multiple * 3.0 * self.noise_mm * math.sqrt(2.0) / max(dt, 1e-9)',
+     '        return self.min_velocity_mm_day',
+     "test_noise_gate_scales_with_the_velocity_noise_it_guards"),
+
+    ("sweep shares one generator, so a cell cannot be reproduced alone",
+     "detectability.py",
+     "            rng = np.random.default_rng((seed, int(T * 1000), int(dt * 1000)))",
+     "            pass",
+     "test_a_cell_reproduces_regardless_of_what_it_was_swept_alongside"),
+
+    ("phase ceiling ignores the spatial gradient assumption",
+     "detectability.py",
+     "            step = np.abs(np.diff(truth)) * gradient_fraction",
+     "            step = np.abs(np.diff(truth))",
+     "test_gradient_fraction_relaxes_the_phase_ceiling"),
+
     ("lead time measured from the interval midpoint",
      "inverse_velocity.py",
      '        last_obs = win[-1]["t1"]',

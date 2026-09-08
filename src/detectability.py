@@ -62,6 +62,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import math
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -109,10 +110,43 @@ class Precursor:
 # ---------------------------------------------------------------------------
 @dataclass
 class Detector:
+    """
+    The significance gate is the whole argument, so it is a parameter here.
+
+    inverse_velocity.py, which runs on measured data, refuses to admit a
+    velocity that does not clear a multiple of the MEASURED noise floor, and
+    the README calls that "the whole difference between a detector and a random
+    number generator". This detector used to carry a hardcoded 1.0 mm/day
+    threshold that was not exposed on the command line and did not scale with
+    noise - so in every sweep ever run it sat far below the noise and admitted
+    essentially everything.
+
+    That matters because the headline procurement result is a FALSE-ALARM
+    argument. Velocity noise is sigma*sqrt(2)/dt, so it grows as revisit
+    shortens; a gate that ignores it therefore lets short revisits look worse
+    than they are. Run both and say which you used:
+
+        gate="noise"  threshold = sig_multiple * 3 * sigma*sqrt(2)/dt
+                      the same discipline as the measured-data detector
+        gate="fixed"  threshold = min_velocity_mm_day, whatever the noise
+                      the old behaviour, kept so the difference is showable
+    """
     window: int = 3              # velocity estimates in the trailing fit
     r2_min: float = 0.70         # goodness of the 1/v trend
     horizon_days: float = 30.0   # ignore predictions further out than this
-    min_velocity_mm_day: float = 1.0   # ignore velocities buried in noise
+    min_velocity_mm_day: float = 1.0   # used only when gate == "fixed"
+    gate: str = "noise"
+    sig_multiple: float = 1.0
+    noise_mm: float = 5.0        # 1-sigma displacement noise, for the gate
+
+    def threshold(self, dt: float) -> float:
+        """The velocity a sample must clear to enter a fit, in mm/day."""
+        if self.gate == "fixed":
+            return self.min_velocity_mm_day
+        # A velocity is a difference of two noisy displacements over dt, so its
+        # 1-sigma is sigma*sqrt(2)/dt. Three of those is the same 3-sigma floor
+        # the measured-data path gates on.
+        return self.sig_multiple * 3.0 * self.noise_mm * math.sqrt(2.0) / max(dt, 1e-9)
 
     def run(self, times: np.ndarray, disp: np.ndarray, failure_day: float) -> dict:
         """
@@ -131,8 +165,9 @@ class Detector:
         for k in range(self.window, len(vel) + 1):
             wt = tau[k - self.window:k]
             wv = vel[k - self.window:k]
+            wdt = dt[k - self.window:k]
 
-            if np.any(wv < self.min_velocity_mm_day):
+            if np.any(wv < np.array([self.threshold(x) for x in wdt])):
                 continue                    # not yet moving measurably
 
             inv = 1.0 / wv
@@ -171,7 +206,7 @@ class Detector:
 def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
              noise_mm: float, n_trials: int, rng: np.random.Generator,
              lead_in_days: float = 30.0, wavelength_m: float | None = None,
-             n_null: int = 1000) -> dict:
+             n_null: int = 1000, gradient_fraction: float = 1.0) -> dict:
     """
     One (precursor, revisit) cell of the sweep.
 
@@ -203,7 +238,18 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
         if ceiling_mm is not None:
             # First interval whose true displacement exceeds lambda/4 aliases.
             # Motion only accelerates, so everything after it is lost too.
-            step = np.abs(np.diff(truth))
+            #
+            # The Itoh condition constrains the phase difference between
+            # ADJACENT PIXELS, not the displacement of one pixel between
+            # passes. Applying it to the temporal step, as here, assumes the
+            # whole of that step appears across one pixel boundary - i.e. the
+            # moving patch abuts stable ground within a single 80 m cell.
+            # That is the most pessimistic reading. A real landslide has a
+            # gradual displacement gradient, so only a fraction of the motion
+            # falls between neighbours and the true ceiling is more permissive.
+            # gradient_fraction makes the assumption a number instead of a
+            # silent choice; 1.0 reproduces the pessimistic case.
+            step = np.abs(np.diff(truth)) * gradient_fraction
             bad = np.nonzero(step > ceiling_mm)[0]
             if len(bad):
                 cut = int(bad[0]) + 1
@@ -271,8 +317,8 @@ REVISITS = [1, 2, 3, 4, 6, 8, 12, 16, 24]
 
 def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
           creep_mm: float, detector: Detector, n_trials: int, seed: int,
-          wavelength_m: float | None = None, n_null: int = 1000) -> list[dict]:
-    rng = np.random.default_rng(seed)
+          wavelength_m: float | None = None, n_null: int = 1000,
+          lead_in_days: float = 30.0, gradient_fraction: float = 1.0) -> list[dict]:
     rows = []
     for T in precursor_days:
         p = Precursor(duration_days=T, creep_to_1d_mm=creep_mm)
@@ -282,6 +328,10 @@ def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
         print(f"PRECURSOR {T:g} days   ({creep_mm:g} mm creep to 1 day before failure, "
               f"noise {noise_mm:g} mm)")
         print(f"MEASUREMENT: {mode}")
+        gdesc = (f"{detector.sig_multiple:g} x 3-sigma velocity noise "
+                 f"(scales with revisit)" if detector.gate == "noise"
+                 else f"flat {detector.min_velocity_mm_day:g} mm/day")
+        print(f"SIGNIFICANCE GATE: {gdesc}")
         print(f"{'='*74}")
         print(f"{'REVISIT':>8}{'SAMPLES':>8}{'SATUR':>7}{'DETECT':>8}{'FALSE':>7}"
               f"{'EARLY':>7}{'WARNING (days)':>22}{'|ERR|':>8}")
@@ -289,11 +339,19 @@ def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
               f"{'rej.':>7}{'median [p25-p75]':>22}{'days':>8}")
         print("-" * 82)
         for dt in revisits:
+            # A seed per cell, derived from the cell. The shared generator
+            # was consumed in sequence, so a cell's numbers depended on
+            # which --revisit list it happened to be passed alongside and
+            # one cell could not be reproduced on its own.
+            rng = np.random.default_rng((seed, int(T * 1000), int(dt * 1000)))
             r = simulate(p, detector, dt, noise_mm, n_trials, rng,
-                         wavelength_m=wavelength_m, n_null=n_null)
+                         lead_in_days=lead_in_days, wavelength_m=wavelength_m,
+                         n_null=n_null, gradient_fraction=gradient_fraction)
             r["precursor_days"] = T
             r["noise_mm"] = noise_mm
             r["creep_mm"] = creep_mm
+            r["gate"] = detector.gate
+            r["gate_mm_day"] = round(detector.threshold(dt), 3)
             rows.append(r)
             n_in = int(T // dt)
             rate = r["detection_rate"]
@@ -322,14 +380,24 @@ def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
                 print(f"    revisit {r['revisit_days']:g} d: "
                       f"{r['detection_rate']:.0%} detection vs "
                       f"{r['false_alarm_rate']:.1%} false alarm")
-        dead = [r["revisit_days"] for r in cells if r["detection_rate"] < 0.5]
-        if dead:
-            limit = min(dead)
+        # The largest revisit that still detects, and the smallest that does
+        # not. Both MEASURED. This used to print "usable revisit <= T/3"
+        # unconditionally, which is a rule of thumb restated as a result: the
+        # number came from the formula, not from the sweep.
+        good = sorted(r["revisit_days"] for r in cells if r["detection_rate"] >= 0.5)
+        dead = sorted(r["revisit_days"] for r in cells if r["detection_rate"] < 0.5)
+        if good and dead and min(dead) > min(good):
+            limit = min(d for d in dead if d > max(good)) if any(
+                d > max(good) for d in dead) else min(dead)
             print(f"\n  Detection collapses at revisit >= {limit:g} days "
                   f"(= precursor / {T/limit:.1f}).")
-            print(f"  Usable revisit for a {T:g}-day precursor: <= {T/3:.1f} days.")
+            print(f"  Largest revisit measured to work: {max(good):g} days "
+                  f"(= precursor / {T/max(good):.1f}).")
+        elif good:
+            print(f"\n  Detected at better than 50% at every revisit tested "
+                  f"(up to {max(good):g} days).")
         else:
-            print("\n  Detected at better than 50% for every revisit tested.")
+            print("\n  Never detected at better than 50% at any revisit tested.")
     return rows
 
 
@@ -441,12 +509,54 @@ def main() -> int:
                          "0.2384 = NISAR L-band, 0.0555 = Sentinel-1 C-band. "
                          "Omit to model offset tracking (no ceiling).")
     ap.add_argument("--blatten", action="store_true",
-                    help="calibrated Blatten preset: 7-day rapid phase, 10 m/day at failure")
+                    help="Blatten preset: 7-day precursor, 27 m of creep, revisits "
+                         "1 2 4 6 12. Choose the measurement yourself with --noise "
+                         "and --wavelength - the preset does not, because phase and "
+                         "offset tracking are the comparison the case exists to make")
+    ap.add_argument("--gate", choices=("noise", "fixed"), default="noise",
+                    help="significance gate. 'noise' scales with the velocity "
+                         "noise sigma*sqrt(2)/dt, the same discipline "
+                         "inverse_velocity.py applies to measured data. 'fixed' "
+                         "is the old flat --min-velocity threshold")
+    ap.add_argument("--min-velocity", type=float, default=1.0,
+                    help="mm/day, used only with --gate fixed. Was hardcoded and "
+                         "unreachable, and sat far below the noise in every sweep")
+    ap.add_argument("--sig-multiple", type=float, default=1.0,
+                    help="multiplier on the 3-sigma velocity floor (--gate noise)")
+    ap.add_argument("--lead-in", type=float, default=30.0,
+                    help="days of stable ground before onset. Was hardcoded, and it "
+                         "decides which cells have too few samples to run at all")
+    ap.add_argument("--gradient-fraction", type=float, default=1.0,
+                    help="fraction of the inter-pass displacement that appears "
+                         "between ADJACENT pixels, which is what the lambda/4 "
+                         "condition actually limits. 1.0 assumes the moving patch "
+                         "abuts stable ground within one cell - the most "
+                         "pessimistic case, and the one behind the published "
+                         "phase ceiling")
     ap.add_argument("--csv", metavar="OUT.csv")
     ap.add_argument("--plot", metavar="OUT.png")
     args = ap.parse_args()
 
-    det = Detector(window=args.window, r2_min=args.r2_min)
+    # --blatten used to be declared and never read, so the flag silently did
+    # nothing and the run came out on the defaults.
+    if args.blatten:
+        if args.precursor == [5, 10, 20, 40]:
+            args.precursor = [7.0]
+        if args.creep == 300.0:
+            args.creep = 27000.0
+        if args.revisit == REVISITS:
+            args.revisit = [1, 2, 4, 6, 12]
+        mode = (f"phase, lambda={args.wavelength}" if args.wavelength
+                else "offset tracking")
+        print(f"\nBLATTEN PRESET: precursor {args.precursor[0]:g} d, "
+              f"creep {args.creep:g} mm, revisits {args.revisit}, "
+              f"noise {args.noise:g} mm, {mode}")
+        print("Explicit flags win; the preset only fills in what you did not set.\n")
+
+    det = Detector(window=args.window, r2_min=args.r2_min,
+                   min_velocity_mm_day=args.min_velocity,
+                   gate=args.gate, sig_multiple=args.sig_multiple,
+                   noise_mm=args.noise)
 
     if args.demo:
         demo(Precursor(args.precursor[0], args.creep), det,
@@ -455,7 +565,8 @@ def main() -> int:
 
     rows = sweep(args.precursor, args.revisit, args.noise, args.creep,
                  det, args.trials, args.seed, args.wavelength,
-                 n_null=args.null_trials)
+                 n_null=args.null_trials, lead_in_days=args.lead_in,
+                 gradient_fraction=args.gradient_fraction)
 
     print("\n" + "=" * 74)
     print("These are MODEL results. Absolute warning times depend on the assumed")
@@ -467,7 +578,7 @@ def main() -> int:
         keys = ["precursor_days", "revisit_days", "detection_rate",
                 "false_alarm_rate", "premature_rate", "warning_median",
                 "warning_p25", "warning_p75", "abs_pred_error_median",
-                "noise_mm", "creep_mm", "n_trials"]
+                "noise_mm", "creep_mm", "n_trials", "gate", "gate_mm_day"]
         with open(args.csv, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")
             w.writeheader(); w.writerows(rows)
