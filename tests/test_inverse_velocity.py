@@ -239,8 +239,26 @@ def test_post_event_interval_is_dropped_from_the_fit():
                            date(2026, 8, 26), None, cutoff=None)
     guarded = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
                             date(2026, 8, 26), None, cutoff=date(2026, 8, 26))
-    assert leaked["alarm"], "fixture must alarm when the event is let in"
-    assert not guarded["alarm"], "the cutoff must remove that alarm"
+    # Without the cutoff the event-spanning interval reaches the fit: it
+    # carries the collapse itself, so it clears any floor and supplies the
+    # third velocity. That is the leak, and it is what the cutoff exists to
+    # stop - assert on the mechanism, not on whether an alarm happened to fire.
+    event_span = (date(2026, 8, 19), date(2026, 8, 31))
+    assert event_span in leaked["usable"], (
+        "fixture must let the event-spanning interval into the fit")
+    assert not leaked["dropped"]
+
+    assert event_span in guarded["dropped"], "the cutoff must drop it"
+    assert event_span not in guarded.get("usable", [])
+    assert not guarded["alarm"]
+
+    # Second line of defence, and it is independent of the cutoff. Measured
+    # honestly - from the last ACQUISITION rather than an interval midpoint -
+    # the leaked fit predicts a failure that had already happened by the time
+    # of the last observation it used, so it is not a forecast at all.
+    assert not leaked["alarm"], (
+        "a fit resting on the event should not produce a forward-looking "
+        "prediction once lead time is measured from the acquisition")
 
 
 def test_the_cutoff_keeps_everything_before_the_event():
@@ -269,12 +287,18 @@ def test_an_interval_ending_exactly_on_the_event_is_excluded():
             for d, c in zip(days, cum)]
     assert rows[-1]["epoch"] == date(2026, 8, 26)
 
+    boundary = (date(2026, 8, 7), date(2026, 8, 26))
+
     loose = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
                           date(2026, 8, 26), None, cutoff=None)
-    assert loose["alarm"], "fixture must alarm when the boundary lets it in"
+    assert boundary in loose["usable"], (
+        "with an exclusive boundary the interval landing on the event day "
+        "reaches the fit - which is the thing being guarded against")
 
     r = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
                       date(2026, 8, 26), None, cutoff=date(2026, 8, 26))
+    assert boundary in r["dropped"], "an acquisition on the day may contain the event"
+    assert boundary not in r.get("usable", [])
     assert not r["alarm"]
 
 
@@ -285,3 +309,116 @@ def test_no_cutoff_leaves_behaviour_unchanged():
     b = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0, None, None,
                       cutoff=None)
     assert a["alarm"] == b["alarm"]
+
+
+# ---------------------------------------------------------------------------
+# Lead time is measured from an acquisition, never from an interval midpoint
+# ---------------------------------------------------------------------------
+def test_lead_time_runs_from_the_last_acquisition_not_the_midpoint():
+    """
+    A velocity sits at the midpoint of the interval that produced it, but the
+    last thing actually OBSERVED is that interval's second acquisition. The
+    alarm used to compute `t_fail - mid` and print it as "lead time N days from
+    the last observation", which inflates the lead by half the interval - six
+    days on a 12-day pair, twelve on a 24-day one.
+
+    That is the same midpoint confusion that let post-event data into the fit
+    and produced a "successful forecast" of an event already observed. It is
+    worth pinning in the one place where it silently flatters the result.
+    """
+    rows = failure_series(+1)
+    r = run(rows)
+    assert r["alarm"]
+
+    vs = velocities(rows)
+    closing = next(w for w in vs if w["t1"] == r["last_observation"])
+    assert closing["t1"] > closing["mid"], (
+        "an acquisition is later than the midpoint of the interval it closes")
+    last = closing
+
+    expected = (r["predicted"] - r["last_observation"]).days
+    assert r["lead_days"] == expected
+
+    # And the midpoint version really is longer, so the two cannot be confused
+    # for one another by accident.
+    from_mid = (r["predicted"] - last["mid"]).days
+    assert from_mid > r["lead_days"]
+
+
+def test_lead_time_shrinks_as_the_closing_interval_lengthens():
+    """
+    Two series ending on the same acquisition, one closed by a long interval.
+    Measured from the acquisition the lead is identical; measured from the
+    midpoint the long interval would appear to buy days of extra warning it
+    did not buy.
+    """
+    short = run(failure_series(+1, days=(0, 6, 12, 18, 24, 30, 36, 42, 48)))
+    long_ = run(failure_series(+1, days=(0, 6, 12, 18, 24, 30, 36, 48)))
+    assert short["alarm"] and long_["alarm"]
+    if short["last_observation"] == long_["last_observation"]:
+        assert short["lead_days"] == long_["lead_days"]
+
+
+# ---------------------------------------------------------------------------
+# The summary must gate the same way the table does
+# ---------------------------------------------------------------------------
+def test_summary_reports_against_the_pairs_own_floor(tmp_path, capsys):
+    """
+    Every block gates per pair. The SUMMARY used to recompute
+    sig_multiple * noise_floor and divide the fastest velocity by the scalar,
+    reintroducing the exact defect --floors was written to remove - in the last
+    thing the reader sees.
+
+    The concrete case: descending 2026-06-29 -> 2026-07-11 reads +19.60 mm/day.
+    Against a global 18.6 mm/day gate that is 1.05x and looks like motion.
+    Against its own 114.3 mm/day floor it is 0.17x and is plainly noise.
+    """
+    import subprocess as sp
+
+    ts = tmp_path / "ts.csv"
+    with open(ts, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["geometry", "component", "epoch", "days_from_start",
+                    "cumulative_mm", "error_mm"])
+        for epoch, cum in (("2026-06-29", 0.0), ("2026-07-11", 235.147),
+                           ("2026-07-23", 138.849)):
+            w.writerow(["DESC path 48", 2, epoch, 0, cum, ""])
+
+    floors = tmp_path / "floors.csv"
+    with open(floors, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["reference", "secondary", "layer", "detect_floor_mm_day"])
+        w.writerow(["20260629", "20260711", "HH/layer2", "114.31"])
+        w.writerow(["20260711", "20260723", "HH/layer2", "86.24"])
+
+    out = sp.run([sys.executable, str(ROOT / "src" / "inverse_velocity.py"),
+                  "--ts", str(ts), "--floors", str(floors),
+                  "--floors-layer", "layer2", "--noise-floor", "18.6"],
+                 capture_output=True, text=True, check=True).stdout
+
+    assert "SUMMARY" in out
+    summary = out.split("SUMMARY")[1]
+    assert "0.17x" in summary, (
+        "the summary must rate +19.60 mm/day against its own 114.3 mm/day "
+        f"floor, not against the 18.6 scalar. Got:\n{summary}")
+    assert "1.05x" not in summary
+    assert "its own measured floor" in summary
+
+
+def test_summary_says_so_when_it_falls_back_to_the_scalar(tmp_path):
+    """A fallback that is not announced is indistinguishable from a measurement."""
+    import subprocess as sp
+
+    ts = tmp_path / "ts.csv"
+    with open(ts, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["geometry", "component", "epoch", "days_from_start",
+                    "cumulative_mm", "error_mm"])
+        for epoch, cum in (("2026-06-29", 0.0), ("2026-07-11", 10.0),
+                           ("2026-07-23", 20.0)):
+            w.writerow(["DESC path 48", 2, epoch, 0, cum, ""])
+
+    out = sp.run([sys.executable, str(ROOT / "src" / "inverse_velocity.py"),
+                  "--ts", str(ts), "--noise-floor", "18.6"],
+                 capture_output=True, text=True, check=True).stdout
+    assert "fallback floor" in out.lower() or "no per-pair floors" in out.lower()

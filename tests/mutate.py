@@ -119,6 +119,18 @@ MUTATIONS = [
      "floors[(a, b)] = f",
      "test_duplicate_processings_keep_the_larger_floor"),
 
+    ("lead time measured from the interval midpoint",
+     "inverse_velocity.py",
+     '        last_obs = win[-1]["t1"]',
+     '        last_obs = win[-1]["mid"]',
+     "test_lead_time_runs_from_the_last_acquisition_not_the_midpoint"),
+
+    ("summary reverts to the global scalar floor",
+     "inverse_velocity.py",
+     '            fastest, gate = r["max_velocity"], r["required"]',
+     '            fastest, gate = r["max_velocity"], args.sig_multiple * args.noise_floor',
+     "test_summary_reports_against_the_pairs_own_floor"),
+
     ("coverage measured against the frame, not the AOI",
      "gunw_reader.py",
      '"aoi_pct": round(100 * n / aoi_px, 2) if aoi_px else None,',

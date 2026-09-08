@@ -187,6 +187,11 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
             "sigma_days": sigma_tf, "n": n}
 
 
+def _spans(ws) -> list[tuple]:
+    """(reference, secondary) for each interval, so callers can see what a fit used."""
+    return [(w["t0"], w["t1"]) for w in ws]
+
+
 # ---------------------------------------------------------------------------
 def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
                   window: int, r2_min: float, horizon_days: float,
@@ -200,7 +205,8 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     vs = velocities(rows, floors)
     if not vs:
         print("  no velocity estimates possible")
-        return {"alarm": False, "reason": "no intervals"}
+        return {"alarm": False, "reason": "no intervals",
+                "dropped": [], "intervals": []}
 
     # A forecast may only use data that existed before the thing it forecasts.
     #
@@ -217,8 +223,10 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     # The midpoint labelling hid it. The fit reported "ending 2026-08-25",
     # which is the midpoint of an interval running to 08-31, so the output
     # looked pre-event while resting on post-event data.
+    dropped: list[tuple] = []
     if cutoff is not None:
         leaked = [w for w in vs if w["t1"] >= cutoff]
+        dropped = [(w["t0"], w["t1"]) for w in leaked]
         if leaked:
             vs = [w for w in vs if w["t1"] < cutoff]
             print(f"\n  FORECAST CUTOFF {cutoff}: dropped {len(leaked)} interval(s)")
@@ -229,7 +237,8 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
             print("    forecasts. Pass --allow-post-event to override, and say so.")
         if not vs:
             print("\n  nothing left before the cutoff")
-            return {"alarm": False, "reason": "all intervals post-cutoff"}
+            return {"alarm": False, "reason": "all intervals post-cutoff",
+                    "dropped": dropped, "intervals": []}
 
     # Each interval is gated against the floor of the pair that produced it.
     # Where no per-pair floor is available the scalar falls back in, and the
@@ -302,8 +311,14 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
               f"each above their own gate.")
         return {"alarm": False, "reason": "insufficient velocities above noise floor",
                 "max_velocity": vmax, "required": wmax["gate"],
-                "gate_is_own": wmax["gate_is_own"]}
+                "gate_is_own": wmax["gate_is_own"],
+                "dropped": dropped, "intervals": _spans(vs), "usable": _spans(usable)}
 
+    # Earliest qualifying window, not the trailing one: the question this tool
+    # answers is "when would this detector have fired", so it reports the first
+    # moment the evidence was there rather than the most recent fit. Stated
+    # here because the two give different lead times and the difference is not
+    # visible in the output.
     best = None
     for k in range(window, len(usable) + 1):
         win = usable[k - window:k]
@@ -314,10 +329,17 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
             continue
         if fit["t_fail_date"] is None:
             continue
-        lead = (fit["t_fail_date"] - win[-1]["mid"]).days
+        # Lead time runs from the LAST ACQUISITION in the window, not from the
+        # midpoint of the last interval. The midpoint is 6 days earlier on a
+        # 12-day pair and 12 on a 24-day one, so quoting it inflates the lead
+        # by half the interval - and calling that "from the last observation"
+        # is the same midpoint confusion that let post-event data into the fit
+        # in the first place.
+        last_obs = win[-1]["t1"]
+        lead = (fit["t_fail_date"] - last_obs).days
         if not (0 < lead <= horizon_days):
             continue
-        best = (win, fit, lead)
+        best = (win, fit, lead, last_obs)
         break
 
     if best is None:
@@ -325,20 +347,29 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
               f"{window} met all of:")
         print(f"    1/v decreasing (acceleration), R2 >= {r2_min}, "
               f"predicted failure 0-{horizon_days:g} days ahead")
-        return {"alarm": False, "reason": "no qualifying accelerating trend"}
+        return {"alarm": False, "reason": "no qualifying accelerating trend",
+                "dropped": dropped, "intervals": _spans(vs), "usable": _spans(usable)}
 
-    win, fit, lead = best
+    win, fit, lead, last_obs = best
     print(f"\n  *** ALARM ***")
-    print(f"    fitted on {fit['n']} velocities ending {win[-1]['mid']}")
+    # Name the acquisition, not the midpoint. "ending 2026-08-25" for a window
+    # whose last interval runs to 08-31 reads as pre-event while resting on
+    # post-event data, which is precisely how the false alarm got published.
+    print(f"    fitted on {fit['n']} velocities, last acquisition {last_obs}")
+    print(f"    (interval midpoints {win[0]['mid']} .. {win[-1]['mid']}; the fit "
+          f"is on midpoints,\n     the lead time is from the acquisition)")
     print(f"    1/v slope {fit['slope']:+.5f} per day, R2 {fit['r2']:.3f}")
     pm = f" +/- {fit['sigma_days']:.1f}" if np.isfinite(fit["sigma_days"]) else ""
     print(f"    predicted failure {fit['t_fail_date']}{pm} days")
-    print(f"    lead time {lead} days from the last observation")
+    print(f"    lead time {lead} days from the last observation ({last_obs})")
     if event_date:
         err = (fit["t_fail_date"] - event_date).days
         print(f"    actual event {event_date}  ->  prediction error {err:+d} days")
     return {"alarm": True, "predicted": fit["t_fail_date"], "lead_days": lead,
-            "r2": fit["r2"], "sigma_days": fit["sigma_days"]}
+            "last_observation": last_obs,
+            "r2": fit["r2"], "sigma_days": fit["sigma_days"],
+            "dropped": dropped, "intervals": _spans(vs), "usable": _spans(usable),
+            "fitted": _spans(win)}
 
 
 def plot(series, noise_floor, sig_multiple, out: Path, event_date=None):
@@ -446,14 +477,25 @@ def main() -> int:
         print(f"  No alarm in any of {len(results)} blocks.")
         for r in results:
             print(f"    - {r.get('reason')}")
-        mv = [r["max_velocity"] for r in results if "max_velocity" in r]
-        if mv:
-            gate = args.sig_multiple * args.noise_floor
-            fastest = max(mv, key=abs)
-            print(f"\n  Fastest single interval anywhere: {fastest:+.2f} mm/day "
-                  f"({abs(fastest)/args.noise_floor:.1f}x the noise floor)")
-            print(f"  Detection required: {gate:.2f} mm/day sustained across "
+        # Against the floor of the pair that produced it, not the global
+        # scalar. Every block above gates per pair; this summary used to
+        # recompute sig_multiple * args.noise_floor and divide by the scalar,
+        # which reintroduced - in the last thing the reader sees - exactly the
+        # defect --floors exists to remove. On this data that is the difference
+        # between "1.05x the gate" and "0.17x the gate" for the same interval.
+        cand = [r for r in results if "max_velocity" in r]
+        if cand:
+            r = max(cand, key=lambda r: abs(r["max_velocity"]) / max(r["required"], 1e-9))
+            fastest, gate = r["max_velocity"], r["required"]
+            basis = ("its own measured floor" if r.get("gate_is_own")
+                     else f"the fallback floor {args.noise_floor:g} mm/day")
+            print(f"\n  Fastest interval relative to its own gate: {fastest:+.2f} mm/day "
+                  f"against {gate:.1f} mm/day\n  ({abs(fastest)/gate:.2f}x, gated on {basis})")
+            print(f"  Detection required: that ratio above 1 across "
                   f"{args.window} consecutive intervals.")
+            if not all(x.get("gate_is_own") for x in cand):
+                print("  NOTE: at least one block had no per-pair floor and fell back "
+                      "to the scalar.")
             # Two different failure modes, and saying which one is the point.
             # A single fast interval that exceeds the gate is not a shortfall in
             # magnitude - it is a shortfall in persistence, which is exactly how
@@ -466,8 +508,10 @@ def main() -> int:
                       f"not of accelerating creep - and the series\n  returning to "
                       f"its starting value confirms it.")
             else:
+                short = (gate / abs(fastest)) if fastest else float("inf")
+                short_s = f"{short:.1f}x" if np.isfinite(short) else "infinitely"
                 print(f"\n  No interval anywhere reached the gate; the fastest was "
-                      f"{gate/abs(fastest):.1f}x short.")
+                      f"{short_s} short.")
             print("\n  This is a bounded non-detection, not an absence of evidence:")
             print("  any precursor slower than the floor is invisible to this product,")
             print("  and that bound is the quotable result.")
