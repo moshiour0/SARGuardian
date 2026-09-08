@@ -157,3 +157,94 @@ def test_scatter_reports_both_statistics():
     assert sd > 3.0 * mad
     sd_g, mad_g = scatter(core)
     assert abs(sd_g / mad_g - 1.0) < 0.2
+
+
+# ---------------------------------------------------------------------------
+# Sign reversals are a within-track statement, and must be scored against chance
+# ---------------------------------------------------------------------------
+def _row(track, ref, slope, proc="PR"):
+    return {"file": f"GUNW_{ref}_x_{proc}.tif", "track": track,
+            "reference": ref, "proc": proc, "slope_mm_per_km": slope}
+
+
+def test_reversals_are_counted_within_a_track_not_across_the_file_list():
+    """
+    Rows arrive in `sorted(glob("*.tif"))` order, which is by date across ALL
+    tracks - so the "consecutive 12-day pairs" being compared ran descending,
+    ascending, descending, ascending. Two geometries project the same delay
+    field differently; reading them as one sequence measures nothing.
+
+    Here each track is individually perfectly stable, and interleaving them
+    would report a reversal at every step.
+    """
+    from troposphere import sign_reversals
+    rows = []
+    for i, ref in enumerate(("20260101", "20260113", "20260125", "20260206")):
+        rows.append(_row("A098", ref, +5.0))
+        rows.append(_row("D048", ref, -5.0))
+
+    flips, transitions, seqs = sign_reversals(rows)
+    assert seqs == {"A098": "++++", "D048": "----"}
+    assert flips == 0, "each track is stable; only the interleaving reverses"
+    assert transitions == 6
+
+
+def test_duplicate_processings_of_one_pair_count_once():
+    """PR and UR are the same two images. Two rows, one observation."""
+    from troposphere import sign_reversals
+    rows = [_row("A098", "20260101", +5.0, "PR"),
+            _row("A098", "20260101", +6.0, "UR"),
+            _row("A098", "20260113", -5.0, "PR")]
+    flips, transitions, seqs = sign_reversals(rows)
+    assert seqs["A098"] == "+-"
+    assert transitions == 1 and flips == 1
+
+
+def test_a_perfectly_alternating_track_reverses_at_every_transition():
+    from troposphere import sign_reversals
+    refs = ("20260101", "20260113", "20260125", "20260206", "20260218")
+    rows = [_row("A098", r, (+5.0 if i % 2 == 0 else -5.0))
+            for i, r in enumerate(refs)]
+    flips, transitions, _ = sign_reversals(rows)
+    assert (flips, transitions) == (4, 4)
+
+
+def test_random_signs_land_near_half_the_transitions():
+    """
+    The number the claim has to beat. Six reversals in fifteen pairs - the
+    figure this project published as evidence of alternation - is fourteen
+    transitions against seven expected, i.e. BELOW chance.
+    """
+    from troposphere import sign_reversals
+    rng = np.random.default_rng(0)
+    refs = [f"2026{m:02d}01" for m in range(1, 13)]
+    ratios = []
+    for _ in range(200):
+        rows = [_row("A098", r, float(rng.choice([-1.0, 1.0]))) for r in refs]
+        f, t, _ = sign_reversals(rows)
+        ratios.append(f / t)
+    assert 0.45 < float(np.mean(ratios)) < 0.55
+
+
+def test_an_undefined_correlation_is_not_reported_as_significant():
+    """
+    p_value fell back to 0.0 when r was NaN, so an undefined fit came out as
+    maximally significant and would have been starred *** in the table.
+    """
+    from troposphere import fit_elevation_trend
+
+    # No relief at all: the fit is refused before a correlation is attempted.
+    flat = fit_elevation_trend(np.full(200, 3000.0), np.arange(200, dtype=float))
+    assert not flat["usable"]
+    assert not np.isfinite(flat["p_value"])
+
+    # Real relief, but a perfectly constant displacement field. The fit runs and
+    # is marked usable, and corrcoef is 0/0 - so this is the path that actually
+    # reaches the significance branch, and where p fell back to 0.0.
+    elev = np.linspace(3000.0, 7000.0, 400)
+    const = fit_elevation_trend(elev, np.full(400, 12.0))
+    assert const["usable"], "fixture must reach the significance branch"
+    assert not np.isfinite(const["r"])
+    assert not np.isfinite(const["p_value"]), (
+        f"an undefined correlation was scored p={const['p_value']!r}; "
+        "0.0 would star it *** in the table")

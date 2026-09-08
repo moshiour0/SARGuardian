@@ -84,6 +84,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -183,9 +184,17 @@ def fit_elevation_trend(elev_m: np.ndarray, disp_mm: np.ndarray,
     nn = int(keep.sum())
     if np.isfinite(r) and abs(r) < 1.0 and nn > 2:
         t = abs(r) * math.sqrt((nn - 2) / (1.0 - r * r))
+        # Normal tail on a t statistic, which is fine at these sample sizes -
+        # and beside the point. The samples are neighbouring 80 m pixels in one
+        # interferogram, so they are not independent and the effective n is
+        # tens, not thousands. Read this as "a trend exists at all", never as a
+        # strength of evidence; the caller prints that caveat.
         out["p_value"] = math.erfc(t / math.sqrt(2.0))
     else:
-        out["p_value"] = 0.0
+        # An undefined correlation is not a significant one. This used to
+        # return 0.0, so a NaN r came out as maximally significant and would
+        # have been starred *** in the table.
+        out["p_value"] = float("nan")
     return out
 
 
@@ -226,6 +235,51 @@ def scatter(a: np.ndarray) -> tuple:
     if v.size == 0:
         return float("nan"), float("nan")
     return float(np.std(v)), robust_sigma(v)
+
+
+
+DATE_PAIR = re.compile(r"(\d{8})_(\d{8})")
+
+
+def sign_reversals(rows: list[dict]) -> tuple[int, int, dict]:
+    """
+    How often the fitted slope changes sign between CONSECUTIVE PAIRS ON ONE
+    TRACK, in date order.
+
+    Why this is not simply zip(signs, signs[1:])
+    -------------------------------------------
+    It used to be, over rows in whatever order `sorted(glob("*.tif"))` produced.
+    That order is by date across ALL tracks, so the "consecutive 12-day pairs"
+    being compared ran descending, ascending, descending, ascending - two
+    geometries that project the same delay field differently, read as one time
+    sequence. It also counted the routine and urgent products of the same
+    acquisitions as two observations.
+
+    The claim being tested is that the slope reverses between successive passes
+    of the same satellite over the same ground, which is a statement about one
+    track. So: group by track, drop duplicate processings of a pair, order by
+    reference date, and count transitions within each group.
+
+    Returns (reversals, transitions, {track: sign string}). Compare reversals
+    against transitions/2, which is what random signs give.
+    """
+    by_track: dict[str, dict[str, dict]] = {}
+    for r in rows:
+        # One observation per acquisition pair. PR and UR are the same two
+        # images; keeping both inflates the count and, since they usually agree
+        # in sign, biases it toward "no reversal".
+        by_track.setdefault(r.get("track", "?"), {}).setdefault(
+            r.get("reference", r["file"]), r)
+
+    flips = transitions = 0
+    seqs: dict[str, str] = {}
+    for track, pairs in by_track.items():
+        ordered = [pairs[k] for k in sorted(pairs)]
+        seq = "".join("+" if p["slope_mm_per_km"] > 0 else "-" for p in ordered)
+        seqs[track] = seq
+        flips += sum(1 for a, b in zip(seq, seq[1:]) if a != b)
+        transitions += max(0, len(seq) - 1)
+    return flips, transitions, seqs
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +399,24 @@ def main() -> int:
                 grid_key = key
             prof = s.profile
 
+        # Which track and which pair this raster came from. The exporter writes
+        # the source granule into the tags, and the granule name is the only
+        # place the orbit direction survives - the export filename carries
+        # dates and processing type but not A/D.
+        tags = {}
+        try:
+            with rasterio.open(f) as _s:
+                tags = _s.tags()
+        except Exception:
+            pass
+        gran = tags.get("source", "")
+        m = re.search(r"_(\d{3})_([AD])_", gran)
+        track = f"{m.group(2)}{m.group(1)}" if m else "?"
+        proc = re.search(r"NISAR_L2_([A-Z]{2})_", gran)
+        proc = proc.group(1) if proc else "??"
+        dm = DATE_PAIR.search(f.name)
+        ref = dm.group(1) if dm else f.name
+
         fit = fit_elevation_trend(dem, arr)
         sd_b, mad_b = scatter(arr)
         corrected = remove_trend(dem, arr, fit)
@@ -355,9 +427,9 @@ def main() -> int:
             print(f"  {name:<26}{fit['n']:>6}   too few valid samples")
             continue
 
-        star = ("***" if fit["p_value"] < 0.001 else
-                "**" if fit["p_value"] < 0.01 else
-                "*" if fit["p_value"] < 0.05 else "")
+        pv = fit["p_value"]
+        star = "" if not np.isfinite(pv) else (
+            "***" if pv < 0.001 else "**" if pv < 0.01 else "*" if pv < 0.05 else "")
         flag = "!" if fit["leverage"] > LEVERAGE_WARN else " "
         print(f"  {name:<26}{fit['n']:>6}{fit['slope_mm_per_km']:>9.1f}"
               f"{fit['r']:>7.2f}{100*fit['variance_explained']:>6.1f}%"
@@ -365,7 +437,8 @@ def main() -> int:
               f"{sd_b:>7.1f}>{sd_a:<7.1f}{mad_b:>7.1f}>{mad_a:<7.1f}"
               f"{fit['leverage']:>6.1f}{flag}")
 
-        rows.append({"file": f.name, **fit,
+        rows.append({"file": f.name, "track": track, "proc": proc,
+                     "reference": ref, **fit,
                      "std_before_mm": sd_b, "std_after_mm": sd_a,
                      "mad_before_mm": mad_b, "mad_after_mm": mad_a})
 
@@ -383,15 +456,19 @@ def main() -> int:
 
     sl = np.array([r["slope_mm_per_km"] for r in rows])
     rr = np.array([abs(r["r"]) for r in rows])
-    sig = sum(1 for r in rows if r["p_value"] < 0.001)
-    signs = "".join("+" if x > 0 else "-" for x in sl)
-    flips = sum(1 for a, b in zip(signs, signs[1:]) if a != b)
+    sig = sum(1 for r in rows if np.isfinite(r["p_value"]) and r["p_value"] < 0.001)
+    flips, transitions, seqs = sign_reversals(rows)
 
     print(f"\n  {len(rows)} pairs fitted")
     print(f"  |slope| median {np.median(np.abs(sl)):.1f} mm/km, max {np.abs(sl).max():.1f}")
     print(f"  |r| median {np.median(rr):.2f}, variance explained {100*np.median(rr**2):.1f}%")
-    print(f"  significant at p<0.001: {sig} of {len(rows)}")
-    print(f"  sign sequence: {signs}   ({flips} reversals)")
+    print(f"  significant at p<0.001: {sig} of {len(rows)}  "
+          f"(see the note on effective sample size below)")
+    for t, seq in sorted(seqs.items()):
+        print(f"  sign sequence, track {t}: {seq}")
+    expected = transitions / 2.0
+    print(f"  reversals: {flips} of {transitions} within-track transitions; "
+          f"{expected:.1f} expected if the signs were random")
 
     worse_std = sum(1 for r in rows if r["std_after_mm"] > r["std_before_mm"])
     worse_mad = sum(1 for r in rows if r["mad_after_mm"] > r["mad_before_mm"])
@@ -416,15 +493,32 @@ def main() -> int:
         print("    pull in the tails. That is a sign the fit is serving the")
         print("    outliers, not the field.")
 
-    if flips >= len(rows) // 3:
-        print("\n  THE SIGN REVERSES between consecutive pairs. Ground does not")
-        print("  change direction that often; a water-vapour field does. This is")
-        print("  atmosphere, not deformation.")
+    # A coin gives half the transitions. The old test fired at len(rows)//3,
+    # which is BELOW chance - it announced alternation on evidence consistent
+    # with no alternation at all, and it counted transitions across an
+    # alphabetical file list that interleaves ascending and descending pairs.
+    if transitions >= 6 and flips >= 0.75 * transitions:
+        print("\n  THE SIGN REVERSES between consecutive pairs on the same track,")
+        print(f"  {flips} of {transitions} transitions against {expected:.1f} expected by")
+        print("  chance. Ground does not change direction that often; a")
+        print("  water-vapour field does. This is atmosphere, not deformation.")
+    elif transitions >= 6 and flips > expected:
+        print(f"\n  The sign reverses more often than chance ({flips} of "
+              f"{transitions}, {expected:.1f} expected)")
+        print("  but not decisively. Do not lead with this; the variance split")
+        print("  between phase and offsets is the stronger evidence.")
     else:
         print("\n  The sign is largely stable. A persistent elevation-correlated")
         print("  signal can be stratified delay OR real motion that happens to")
         print("  scale with height - one interferogram cannot separate them.")
         print("  Prefer --report-only here and quote the slope as an error bar.")
+
+    print("\n  ON THE p COLUMN. It treats every valid pixel as an independent")
+    print("  sample. Interferogram pixels at 80 m posting are strongly")
+    print("  correlated in space, so the effective sample size is tens, not")
+    print("  thousands, and these p-values are far smaller than the evidence")
+    print("  supports. Read the correlation and the variance columns; the p")
+    print("  column only separates 'a trend exists' from 'nothing at all'.")
 
     if args.report_only:
         print("\n  --report-only: nothing written. Quote the slope as an")

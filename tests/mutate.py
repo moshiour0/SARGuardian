@@ -119,6 +119,24 @@ MUTATIONS = [
      "floors[(a, b)] = f",
      "test_duplicate_processings_keep_the_larger_floor"),
 
+    ("sign reversals counted across tracks instead of within one",
+     "troposphere.py",
+     '        by_track.setdefault(r.get("track", "?"), {}).setdefault(',
+     '        by_track.setdefault("all", {}).setdefault(',
+     "test_reversals_are_counted_within_a_track_not_across_the_file_list"),
+
+    ("duplicate processings counted as two observations",
+     "troposphere.py",
+     '            r.get("reference", r["file"]), r)',
+     '            r["file"], r)',
+     "test_duplicate_processings_of_one_pair_count_once"),
+
+    ("an undefined correlation reported as maximally significant",
+     "troposphere.py",
+     '        out["p_value"] = float("nan")',
+     '        out["p_value"] = 0.0',
+     "test_an_undefined_correlation_is_not_reported_as_significant"),
+
     ("impoundment ranks on volume-per-metre across different thresholds",
      "impoundment.py",
      '        ranked = sorted(sites,\n'
