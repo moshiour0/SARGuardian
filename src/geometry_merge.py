@@ -54,6 +54,35 @@ Check: descending Sentinel-1 at 28 N has heading ~189 deg, giving E > 0 - the
 satellite is east of the target, which is correct for a west-looking descending
 pass.
 
+Look side is a property of the mission, not a default
+=====================================================
+That check is the one this module used to fail. `los_unit` defaults to
+left-looking, and every caller took the default, so Sentinel-1 was modelled
+left-looking too - which is precisely the case the paragraph above says must
+give E > 0, and it was giving E < 0.
+
+The two missions differ and both are now carried on the Track:
+
+    NISAR       LEFT-looking   (a mission choice, for full Antarctic coverage)
+    Sentinel-1  RIGHT-looking  (ascending images east, descending images west)
+
+It is not a footnote. At the 26 Aug 2026 failure point - a 27.4 deg slope
+facing 273 deg - getting Sentinel-1's side wrong reverses the verdict on three
+of the five tracks:
+
+    track           wrong side   correct    verdict
+    S1 ASC 85         -0.904      +0.188    usable -> BLIND
+    NISAR ASC 98      -0.889      -0.889    unchanged
+    S1 DESC 19        +0.198      -0.913    blind  -> USABLE
+    S1 DESC 121       +0.198      -0.913    blind  -> USABLE
+    NISAR DESC 48     +0.163      +0.163    unchanged
+
+so the site has THREE usable tracks, not one look direction, and a genuine
+ascending/descending pair that `decompose()` can separate into east and
+vertical. Where a granule is at hand, prefer `los_from_product()` over any of
+this - the product carries its own look vectors and settles the question
+without reconstructing anything.
+
 Usage
 -----
     # Which tracks can even see motion on this slope? No data needed.
@@ -93,6 +122,11 @@ class Track:
     inclination_deg: float
     incidence_deg: float
     repeat_days: int
+    # Which side the antenna points. NISAR looks LEFT; Sentinel-1 looks RIGHT.
+    # There is deliberately no default: a look side that can be omitted is a
+    # look side that gets omitted, and this module already made that mistake
+    # once for every Sentinel-1 track. Adding a mission means stating it.
+    left_looking: bool
 
 
 # Tracks covering the Langtang / Lhende AOIs. Incidence angles are nominal
@@ -108,11 +142,11 @@ class Track:
 MIN_SLOPE_DEG = 10.0
 
 TRACKS = [
-    Track("NISAR ASC 98", "NISAR", True, 98.4, 37.0, 12),
-    Track("NISAR DESC 48", "NISAR", False, 98.4, 37.0, 12),
-    Track("S1 ASC 85", "Sentinel-1", True, 98.18, 39.0, 12),
-    Track("S1 DESC 19", "Sentinel-1", False, 98.18, 39.0, 12),
-    Track("S1 DESC 121", "Sentinel-1", False, 98.18, 39.0, 12),
+    Track("NISAR ASC 98", "NISAR", True, 98.4, 37.0, 12, left_looking=True),
+    Track("NISAR DESC 48", "NISAR", False, 98.4, 37.0, 12, left_looking=True),
+    Track("S1 ASC 85", "Sentinel-1", True, 98.18, 39.0, 12, left_looking=False),
+    Track("S1 DESC 19", "Sentinel-1", False, 98.18, 39.0, 12, left_looking=False),
+    Track("S1 DESC 121", "Sentinel-1", False, 98.18, 39.0, 12, left_looking=False),
 ]
 
 
@@ -131,21 +165,30 @@ def heading_deg(inclination_deg: float, lat_deg: float, ascending: bool) -> floa
     return asc % 360.0 if ascending else (180.0 - asc) % 360.0
 
 
-def los_unit(heading: float, incidence: float, left_looking: bool = True) -> np.ndarray:
+def los_unit(heading: float, incidence: float, left_looking: bool) -> np.ndarray:
     """
     Unit vector from the ground target toward the satellite, in ENU.
 
-    The look side matters and is easy to get wrong. This formula was written
-    for a right-looking sensor; NISAR looks LEFT, and its products say so in
-    identification/lookDirection. Using the right-looking form on NISAR
-    reverses both horizontal components while leaving the vertical untouched -
-    so an AOI median, which is dominated by the vertical term, looks entirely
-    reasonable while every east-west inference is backwards.
+    `left_looking` is REQUIRED and has no default. That is the whole point of
+    this signature. It used to default to True, every caller took the default,
+    and so Sentinel-1 - which looks RIGHT - was modelled as a left-looking
+    sensor for the entire multi-geometry analysis.
+
+    The failure is quiet in exactly the way that does most damage. Flipping the
+    side reverses both horizontal components and leaves the vertical untouched,
+    so an AOI median - dominated by the vertical term - stays perfectly
+    plausible while every east-west inference, and every sensitivity on a
+    steep slope, comes out backwards.
 
     Checked against the products' own losUnitVectorX/Y at 28.275 N:
 
-        ASC 98   derived right-looking  E -0.6261  N -0.1053  U +0.7726
-                 product                E +0.6161  N +0.1531  U +0.7727
+        NISAR ASC 98   right-looking form   E -0.6261  N -0.1053  U +0.7726
+                       product              E +0.6161  N +0.1531  U +0.7727
+
+    which is the left-looking form, and confirms NISAR's stated look side.
+    Sentinel-1 is the other way round: descending at 28 N has heading ~189 deg
+    and must give E > 0, the satellite east of the target, because a descending
+    right-looking pass images west.
 
     Prefer los_from_product() when a granule is at hand; this is the fallback
     for planning before anything is downloaded.
@@ -326,7 +369,7 @@ def sensitivities(lat: float, lon: float, slope: float, aspect: float,
     rows = []
     for tr in TRACKS:
         h = heading_deg(tr.inclination_deg, lat, tr.ascending)
-        l_hat = los_unit(h, tr.incidence_deg)
+        l_hat = los_unit(h, tr.incidence_deg, tr.left_looking)
         sens = float(np.dot(s_hat, l_hat))
         rows.append({
             "track": tr.name, "ascending": tr.ascending,
@@ -483,7 +526,7 @@ def merge(ts_path: Path, lat: float, lon: float, min_sensitivity: float):
             logger.warning("No geometry known for '%s' - skipped", geom)
             continue
         h = heading_deg(tr.inclination_deg, lat, tr.ascending)
-        sens = float(np.dot(s_hat, los_unit(h, tr.incidence_deg)))
+        sens = float(np.dot(s_hat, los_unit(h, tr.incidence_deg, tr.left_looking)))
         if abs(sens) < min_sensitivity:
             print(f"  {geom} block {comp}: sensitivity {sens:+.3f} - BLIND, rejected")
             continue
@@ -585,11 +628,15 @@ def coverage_map(aoi: str, step: float, min_sens: float, out_csv=None) -> int:
     print(f"  slope          median {np.median(slope[ok]):.1f} deg, "
           f"{100 * np.mean(slope[ok] > 20):.0f}% steeper than 20 deg")
 
+    # Take the geometry from TRACKS rather than restating it. This block used
+    # to carry its own incidence angles (39.4 and 37.7 against the 37.0 in
+    # TRACKS) and its own implicit look side, so the map and the point report
+    # could disagree about the same satellite.
     sens = {}
-    for label, ascending, inc in (("NISAR ASC 98", True, 39.4),
-                                  ("NISAR DESC 48", False, 37.7)):
-        h = heading_deg(98.4, float(np.mean(LA)), ascending)
-        L = los_unit(h, inc)
+    for tr in [t for t in TRACKS if t.mission == "NISAR"]:
+        label = tr.name
+        h = heading_deg(tr.inclination_deg, float(np.mean(LA)), tr.ascending)
+        L = los_unit(h, tr.incidence_deg, tr.left_looking)
         S = np.zeros_like(slope)
         for i in range(slope.shape[0]):
             for j in range(slope.shape[1]):
@@ -632,8 +679,11 @@ def main() -> int:
     mode.add_argument("--sensitivity", action="store_true",
                       help="which tracks can see motion here (needs no data)")
     mode.add_argument("--merge", action="store_true", help="merge a timeseries.py CSV")
-    mode.add_argument("--map", metavar="AOI", choices=("langtang", "lhende"),
-                      help="what fraction of an AOI each geometry can actually see")
+    mode.add_argument("--map", metavar="AOI", choices=("source", "langtang", "lhende"),
+                      help="what fraction of an AOI each geometry can actually see. "
+                           "'source' is the analysis AOI and was missing from this "
+                           "list, which is why the coverage of the null was never "
+                           "computed over the polygon the null is about")
     ap.add_argument("--lat", type=float)
     ap.add_argument("--lon", type=float)
     ap.add_argument("--step", type=float, default=0.003,

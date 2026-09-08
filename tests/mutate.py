@@ -119,6 +119,22 @@ MUTATIONS = [
      "floors[(a, b)] = f",
      "test_duplicate_processings_keep_the_larger_floor"),
 
+    ("Sentinel-1 modelled with NISAR's look side",
+     "geometry_merge.py",
+     'Track("S1 DESC 19", "Sentinel-1", False, 98.18, 39.0, 12, left_looking=False),',
+     'Track("S1 DESC 19", "Sentinel-1", False, 98.18, 39.0, 12, left_looking=True),',
+     "test_descending_sentinel1_puts_the_satellite_east_of_the_target"),
+
+    ("look side reverses the vertical too, not just the horizontals",
+     "geometry_merge.py",
+     "    return np.array([side * -math.sin(t) * math.cos(h),\n"
+     "                     side * math.sin(t) * math.sin(h),\n"
+     "                     math.cos(t)])",
+     "    return np.array([side * -math.sin(t) * math.cos(h),\n"
+     "                     side * math.sin(t) * math.sin(h),\n"
+     "                     side * math.cos(t)])",
+     "test_flipping_the_side_reverses_only_the_horizontal_components"),
+
     ("geometry test decides the wrong way round",
      "candidate_check.py",
      "    if d_motion < d_delay:",
