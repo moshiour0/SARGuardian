@@ -255,10 +255,24 @@ def test_an_interval_ending_exactly_on_the_event_is_excluded():
     """
     An acquisition on the day of the collapse may already contain it. The
     boundary is >=, not >, and that choice is deliberate.
+
+    The fixture has to be built so the boundary is what decides. Three usable
+    velocities are needed for a fit, and the third one is the interval landing
+    exactly on the event date - so `>=` leaves two and refuses, while `>` lets
+    it through and alarms. An earlier version of this test used only two usable
+    velocities and passed either way; the mutation harness caught it.
     """
     base = date(2026, 7, 2)
+    days = [0, 12, 24, 36, 55]           # last epoch is 2026-08-26 itself
+    cum = [0.0, -36.0, -336.0, -816.0, -4616.0]   # 3, 25, 40, 200 mm/day
     rows = [{"epoch": base + timedelta(days=d), "cumulative_mm": c}
-            for d, c in zip([0, 12, 24, 55], [0.0, -36.0, -336.0, -1336.0])]
+            for d, c in zip(days, cum)]
+    assert rows[-1]["epoch"] == date(2026, 8, 26)
+
+    loose = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
+                          date(2026, 8, 26), None, cutoff=None)
+    assert loose["alarm"], "fixture must alarm when the boundary lets it in"
+
     r = analyse_block("ASC", 1, rows, 18.6, 3, 0.8, 60.0, 1.0,
                       date(2026, 8, 26), None, cutoff=date(2026, 8, 26))
     assert not r["alarm"]
