@@ -33,7 +33,7 @@ machine urs.earthdata.nasa.gov login YOUR_USER password YOUR_PASS
 
 ---
 
-## Result 1 - revisit near precursor/3, not daily
+## Result 1 - revisit near precursor/3, and daily revisit is *not* worse
 
 **Needs: nothing. Runs in about a minute.**
 
@@ -42,34 +42,55 @@ python src/detectability.py --sweep --precursor 5 10 20 40
 ```
 
 **Expect** the detection-collapse threshold at `precursor / 2.5` in all four
-cells, and the false-alarm column to rise as revisit shortens:
+cells, and - with the default noise-scaled significance gate - a **0.0%
+false-alarm rate at every revisit tested**:
 
-| Precursor | Revisit | Detection | False alarm |
-|-----------|---------|-----------|-------------|
-| 10 days | 1 day | ~91% | ~11% |
-| 10 days | 3 days | ~95% | ~0.4% |
-| 40 days | 1 day | ~92% | ~21% |
-| 40 days | 6 days | ~96% | ~0% |
+| Precursor | Revisit | Detection | False alarm | Prediction error |
+|-----------|---------|-----------|-------------|------------------|
+| 10 days | 1 day | ~98% | ~0.0% | ~0.7 d |
+| 10 days | 3 days | ~79% | ~0.0% | ~0.9 d |
+| 40 days | 1 day | ~66% | ~0.0% | ~0.3 d |
+| 40 days | 12 days | ~53% | ~0.0% | ~2.7 d |
 
-Monte Carlo, so exact percentages move by a point or two between runs. The
-**ordering** is the result and it is stable: daily revisit has the highest
-false-alarm rate and the worst prediction error in every case tested.
+Monte Carlo, so exact percentages move by a point or two. The **ordering** is
+the result: shorter revisit gives a smaller prediction error and a shorter
+warning; longer revisit gives more warning, a fuzzier date, and eventually no
+detection at all.
 
-The Blatten-calibrated pair:
+### The correction, and how to reproduce the old numbers
+
+This page used to promise the opposite - ~11% false alarms at daily revisit
+rising to ~21% - and that came from a detector whose threshold was a hardcoded
+1.0 mm/day, unreachable from the command line and independent of noise. At 5 mm
+displacement noise the velocity noise is 7.1 mm/day at daily revisit, so the
+gate sat an order of magnitude below it.
+
+`--gate fixed` reproduces the old behaviour so the two are comparable:
 
 ```bash
-python src/detectability.py --sweep --precursor 7 --creep 27000 \
-    --noise 5 --wavelength 0.2384 --revisit 1 2 4 6 12     # phase
-python src/detectability.py --sweep --precursor 7 --creep 27000 \
-    --noise 300 --revisit 1 2 4 6 12                       # offset tracking
+python src/detectability.py --sweep --precursor 10 40 --gate fixed
+python src/detectability.py --sweep --precursor 10 40 --gate noise   # default
 ```
 
-Phase saturates at 100% and never detects. Offsets reach ~89% at 1 day and ~94%
-at 2 days, with false-alarm rates of ~14% and ~7%.
+**Expect** 12.0% and 22.0% false alarms at 1-day revisit under `fixed`, and
+0.0% under `noise`. Both sweeps are committed:
+`outputs/detectability.csv` and `outputs/detectability_fixed_gate.csv`, each
+carrying its `gate` and `gate_mm_day` columns so a table cannot be quoted
+without them.
+
+The Blatten-calibrated pair, now that `--blatten` actually does something:
+
+```bash
+python src/detectability.py --sweep --blatten --noise 5 --wavelength 0.2384  # phase
+python src/detectability.py --sweep --blatten --noise 300                    # offsets
+```
+
+Phase saturates at 100% and never detects. Offset tracking reaches ~100% at 1
+and 2 days with no false alarms, and nothing at 4 days or longer.
 
 ---
 
-## Result 2 - four of five tracks are blind at the failure point
+## Result 2 - three of five tracks can see the failure point
 
 **Needs: nothing but a network connection (SRTM via OpenTopoData).**
 
@@ -77,14 +98,20 @@ at 2 days, with false-alarm rates of ~14% and ~7%.
 python src/geometry_merge.py --sensitivity --lat 28.2877 --lon 85.5281 --stencil-sweep
 ```
 
-**Expect** slope ~27 deg, aspect ~273 deg (west-facing), elevation ~5166 m, and:
+**Expect** slope ~27 deg, aspect ~273 deg (west-facing), elevation ~5166 m, and
+**three usable tracks, not two**:
 
-| Track | Sensitivity | Verdict |
-|-------|-------------|---------|
-| S1 ASC 85 | -0.904 | usable |
-| NISAR ASC 98 | -0.890 | usable |
-| S1 DESC 19 / 121 | +0.197 | blind |
-| NISAR DESC 48 | +0.163 | blind |
+| Track | Look side | Sensitivity | Verdict |
+|-------|-----------|-------------|---------|
+| S1 DESC 19 / 121 | right | -0.913 | usable |
+| NISAR ASC 98 | left | -0.889 | usable |
+| S1 ASC 85 | right | +0.188 | blind |
+| NISAR DESC 48 | left | +0.163 | blind |
+
+If you get the mirror image of this - both ascending usable, all descending
+blind - you are running a version that models Sentinel-1 as left-looking.
+NISAR looks left; Sentinel-1 looks right. `pytest tests/test_geometry_merge.py`
+asserts it against the look vectors the products themselves carry.
 
 The `--stencil-sweep` output should show the sign **stable** across DEM stencil
 widths here. Run it at `--lat 28.27484 --lon 85.47405` instead and it is not -
@@ -127,7 +154,7 @@ blockage at the reach where it happened. That is the grid floor.
 
 ---
 
-## Result 4 - no motion above 33.4 mm/day at the failure point
+## Result 4 - no motion above 40.4 mm/day at the failure point
 
 **Needs: 16 NISAR L2 GOFF products, about 17 GB.**
 
@@ -235,6 +262,15 @@ the archive is the worst one at the failure point. At radius 3 that pair holds
 2 valid pixels and is refused; at radius 12 it recovers, because the window has
 pulled in terrain that did not fail.
 
+**The bound to quote is 40.4 mm/day, not 33.4.** 33.4 is the median across all
+eight ascending pairs, five of them winter pairs outside the window being
+bounded. Over the seven weeks before failure the three covering intervals give
+40.4, 19.2 and 34.3 at the point, and a bound that holds across a window is set
+by its weakest interval.
+
+Radii are `(2r+1)`-cell windows at 80 m posting: radius 3 is 560 m, radius 6 is
+**1.04 km**, radius 12 is 2.00 km.
+
 Then confirm the conclusion is unchanged at the point:
 
 ```bash
@@ -243,9 +279,15 @@ python src/timeseries.py --dir data/nisar_l2/GOFF --product GOFF \
     --target-lat 28.28771 --target-lon 85.52809 --target-radius 6
 ```
 
-**Expect** a summer ascending velocity of **-0.14 +/- 1.42 mm/day**, not
-significant at 2 sigma - as at radius 3 (+2.40 +/- 2.41) and radius 12
-(-0.06 +/- 0.33).
+**Expect** a summer ascending velocity of **-0.14 mm/day** at radius 6 (1 km),
++2.40 at radius 3 (560 m) and -0.06 at radius 12 (2 km) - each far below the
+local floor at that window.
+
+The `+/-` figures this page used to quote alongside them are not usable: they
+are an OLS slope error on a *cumulative* series, whose residuals are correlated
+by construction, and the summer blocks' only degrees of freedom come from a
+routine/urgent duplicate of the same two acquisitions. Compare against the
+measured floor instead.
 
 ### Shortcut, no products needed
 
@@ -275,10 +317,16 @@ pair and mixing them in one summary is meaningless.
 
 **Expect**, over the source zone:
 
-| Product | Pairs | \|r\| median | Variance explained | p<0.001 | Sign reversals |
-|---------|-------|-------------|--------------------|---------|----------------|
-| GUNW - phase | 15 | 0.46 | 21.1% | 13 / 15 | 6 |
-| GOFF - offsets | 18 | 0.12 | 1.5% | 15 / 18 | 10 |
+| Product | Pairs | \|r\| median | Variance explained | Sign reversals (within track) |
+|---------|-------|-------------|--------------------|-------------------------------|
+| GUNW - phase | 15 | 0.46 | 21.1% | 9 of 12, 6 expected by chance |
+| GOFF - offsets | 18 | 0.12 | 1.5% | consistent with chance |
+
+Reversals are counted **within one track, in date order, one observation per
+acquisition pair**. Counted across the alphabetical file list - which
+interleaves ascending and descending, and double-counts routine/urgent pairs -
+the phase figure was 6 of 14, which is *below* the 7 that random signs give.
+The variance split, not the reversal count, is the evidence here.
 
 Fourteenfold in explained variance. That is the reason the bound in Result 4
 survives: it rests on GOFF.

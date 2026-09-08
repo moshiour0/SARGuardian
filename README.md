@@ -21,19 +21,38 @@ of the event.
 
 So the answer to "can NISAR give warning of a collapse like this one" is: not
 at 12-day repeat, not with L2 products, and we can say precisely which limit
-stopped each one. **No motion above 33.4 mm/day at the failure point in the
-seven weeks before failure**, on the one geometry with a stable floor, with the
-last observation seven days out. A Blatten-class precursor - 0.5-0.8 m/day at
-six days out - would have exceeded that floor by **15-24x**. It was not there.
+stopped each one. **No motion above 40.4 mm/day at the failure point in the
+seven weeks before failure**, on the one NISAR geometry with a stable floor,
+with the last observation seven days out. A Blatten-class precursor - 0.5-0.8
+m/day at six days out - would have exceeded that floor by **12-20x**. It was
+not there.
+
+That bound is the **worst** of the three intervals covering those seven weeks
+(40.4, 19.2 and 34.3 mm/day at the failure point), because a bound that holds
+across a window is set by its weakest interval. An earlier version quoted 33.4
+mm/day, which is the median across all eight ascending pairs - five of them
+winter pairs from November to January, outside the window being bounded. That
+is the same pooling error this page diagnoses in the seasonal noise claim,
+committed on the headline number.
 
 That floor is measured **at the failure point**, not over the area. Over the
 whole 82 km2 source polygon the same products give 18.6 mm/day, and quoting
 that number here would overstate what NISAR could see on the hillside that
-failed by 1.7x. See [the bound at the point](#the-bound-at-the-point-not-over-the-area).
+failed. See [the bound at the point](#the-bound-at-the-point-not-over-the-area).
+
+**And the failure point is a guess.** 28.28771 N 85.52809 E was estimated from
+the reported location, not derived from the data. Its elevation (5,166 m)
+matches the ~5,200 m detachment in the published accounts, but the reported
+scar is roughly 1.4 km wide on the **north face** of Langtang Lirung while the
+SRTM aspect at that single pixel reads west-facing. The aspect drives every
+sensitivity number below, so this is the largest open uncertainty in the
+analysis and it is stated rather than buried.
 
 That is a bounded null with a measured floor behind it, paired with a measured
 positive - and it is an argument about instruments and revisit, not about this
 one mountain.
+
+<img src="docs/regimes.svg" alt="Velocity ladder: interferometric phase works below the 5 mm/day L-band ceiling and only in winter; offset tracking works above its measured 40.4 mm/day floor at the failure point; between them is a band neither product can see. A Blatten-class precursor at 500-800 mm/day sits far above both." width="100%">
 
 ---
 
@@ -43,7 +62,7 @@ one mountain.
 |------|--------|------|
 | **Source zone** | 28.2453-28.3529 N, 85.4645-85.5562 E | **The analysis AOI.** Confirmed source zone of the 26 Aug 2026 collapse; contains the failure point at 28.28771 N, 85.52809 E. |
 | Langtang | 28.2447-28.3297 N, 85.4591-85.5649 E | The wider massif box. Contains the source zone; 78.4% overlap with it. Glacier monitoring, good validation literature. |
-| Lhende Khola | 28.3400-28.4700 N, 85.4400-85.6200 E | **Control region only.** See the correction below. |
+| Lhende Khola | 28.3400-28.4700 N, 85.4400-85.6200 E | **The runout and damming corridor.** The avalanche entered this valley, blocked it, and the barrier burst. Not a control. See the correction below. |
 | Blatten | 46.38-46.46 N, 7.75-7.90 E | Loetschental, Swiss Alps. Terrain-only generalisation test - see impoundment below. Not a SAR AOI. |
 
 Select at runtime with `--aoi source`, `--aoi langtang` or `--aoi lhende`.
@@ -53,24 +72,38 @@ Both boxes are covered by NISAR paths **48 (descending)** and **98
 Sentinel-1 tracks over the same ground: ASC 85 (frame 88), DESC 19 (frame 497),
 DESC 121 (frames 498-499), all 12-day repeat.
 
-### A correction, because it invalidated four months of results
+### Two corrections, and the second one corrects the first
 
-An earlier version of this README carried a warning in bold: *"the Langtang box
-does not contain the 26 Aug failure zone - that sits ~9 km north, in the Lhende
-Khola catchment."* **That was wrong.** The Lhende extent came from a report
-published immediately after the collapse and was never checked against
-anything.
+**First correction.** An earlier version carried a warning in bold: *"the
+Langtang box does not contain the 26 Aug failure zone - that sits ~9 km north,
+in the Lhende Khola catchment."* The **detachment** is not in the Lhende box.
+It is on the north face of Langtang Lirung at about 5,200 m, inside the source
+polygon, 5.8 km south of the Lhende box's southern edge. Every InSAR result
+computed with `--aoi lhende` - the bounded non-detection, the detection floors,
+the product-choice conclusion - was measured over ground that does not contain
+the detachment. That half stands.
 
-The confirmed source zone is **5.8 km south of the southern edge of the Lhende
-box** and overlaps it by 12%. Every result computed with `--aoi lhende` - the
-bounded non-detection, the detection floors, the product-choice conclusion, the
-co-event analysis - described ground that does not contain the failure. Those
-results were not wrong so much as vacuous: they correctly characterise a piece
-of the Himalaya where nothing happened.
+**Second correction, and it undoes the rest of the first.** The retraction went
+on to call Lhende *"a piece of the Himalaya where nothing happened"* and demote
+it to a control region. That is false. The avalanche descended into the **Lhende
+Khola**, temporarily dammed it, and the barrier burst - which is the step that
+turned a slope failure into a 100 km flood down the Bhotekoshi and Trishuli.
+Satellite evidence for a temporary blockage in the upper Lhende Khola is in the
+published accounts.
 
-We keep Lhende as a labelled control region, because a well-characterised patch
-of nearby ground where nothing occurred is genuinely useful. It is no longer
-the analysis AOI.
+Source zone and runout are two different places, and the retraction collapsed
+them into one.
+
+**This is expensive, because it threw away the only real validation available.**
+`impoundment.py` exists to map exactly this cascade - detachment, channel
+blockage, breach, surge. The Lhende Khola is now a **documented landslide dam
+with a documented breach**, which makes `outputs/dam_sites_lhende.geojson` a
+falsifiable prediction against a real event rather than a description of
+nothing. It is scored below, and it does not come out well.
+
+So: **source zone** for where the slope failed and what SAR could see there;
+**Lhende Khola** for where the channel blocked and what the terrain said about
+that in advance. Both are analysis AOIs. Neither is a control.
 
 ---
 
@@ -80,8 +113,8 @@ Measured over the source zone, on real products, except where marked.
 
 | Regime | Velocity | GUNW - phase | GOFF - offsets | Status |
 |--------|----------|--------------|----------------|--------|
-| Winter, slow creep | mm/day | **Works.** 3% coverage, below the phase ceiling | Blind. Floor 9-118 mm/day | measured |
-| Monsoon, slow creep | mm/day | **Fails.** 0% coverage - decorrelation | Marginal. ASC floor 9-25 mm/day | measured |
+| Winter, slow creep | mm/day | **Works.** 55% of the AOI ascending, below the phase ceiling | Blind. Floor 9-118 mm/day | measured |
+| Monsoon, slow creep | mm/day | **Fails.** 1-3% ascending - decorrelation | Marginal. ASC floor 9-25 mm/day | measured |
 | Pre-failure acceleration | m/day | Fails. Above the ceiling, and decorrelates | Works at 1-2 day revisit | simulated |
 | **The failure itself** | metres | **Fails.** 0-1% coverage | **Loses the surface it tracks** | **measured** |
 
@@ -263,8 +296,10 @@ stats file does not cover.
 `--jackknife`** - see the redundancy note below. The noise floor passed to the
 detector must be the one you **measured** for that product, not a guess.
 
-Note: `--from-stats` only understands the GUNW column schema. With
-`--product GOFF` it raises `KeyError: 'median'`. Use `--dir`.
+`--from-stats` reads both schemas - `median` for GUNW and `range_median_mm`
+for GOFF - so the whole time series reproduces from the committed CSVs with no
+products at all. (This page used to say it raised `KeyError: 'median'` on GOFF.
+That was fixed and the note was not.)
 
 ### 7. Geometry and terrain (no data needed)
 
@@ -337,11 +372,14 @@ to average them. Keep the product that agrees with the rest of the stack.
 Ascending path 98, GOFF layer2, over the source zone. Summer block, 2 July to
 19 August 2026 - the last observation seven days before failure.
 
-| Interval | Days | Velocity | Against the 18.6 mm/day gate |
-|----------|------|----------|------------------------------|
-| 2026-07-02 -> 2026-07-14 | 12 | -3.39 mm/day | below floor, 0.18x |
-| 2026-07-14 -> 2026-07-26 | 12 | +1.72 mm/day | below floor, 0.09x |
-| 2026-07-26 -> 2026-08-19 | 24 | -0.41 mm/day | below floor, 0.02x |
+| Interval | Days | Velocity | That pair's own AOI floor | x gate |
+|----------|------|----------|---------------------------|--------|
+| 2026-07-02 -> 2026-07-14 | 12 | -3.39 mm/day | 18.6 mm/day | 0.18x |
+| 2026-07-14 -> 2026-07-26 | 12 | +1.72 mm/day | 13.4 mm/day | 0.13x |
+| 2026-07-26 -> 2026-08-19 | 24 | -0.41 mm/day | 8.9 mm/day | 0.05x |
+
+Each interval is gated against the floor of the pair that produced it, not
+against one scalar for the stack - see the note on `--floors` below.
 
 Fitted linear velocity **-0.711 mm/day**, sign stable across every removable
 subset (-0.723 to -0.455) but **untested** - the block has zero redundancy, so
@@ -360,10 +398,12 @@ Descending shows one interval at +19.60 mm/day that clears a global gate, but
 that pair's own scatter is 169.7 mm. **Gate each interval against the floor of
 the pair that produced it**, not against one scalar, and it disappears.
 
-**Two coverage caveats, stated because they are the most attackable points.**
+**Three caveats, stated because they are the most attackable points.**
 The final seven days before failure are unobserved. The interval that covers
 late August is a 24-day average, which dilutes a 7-day precursor about
-threefold.
+threefold. And the floor is `3 * MAD / span`, so a longer span mechanically
+*lowers* it - which is why the 24-day pair shows the best AOI floor in the
+archive while being the worst one at the failure point.
 
 ### The forecast cutoff, and a false alarm we could have published
 
@@ -428,6 +468,7 @@ Ascending path 098, GOFF layer2, routine products, in a 13x13 pixel window
 | **2026-07-26 -> 08-19** | 24 | **8.9** | **34.3** | **26 / 169** |
 | 2026-08-19 -> 08-31 | 12 | 15.6 | 16.5 | 19 / 169 |
 | **median** | | **19.8** | **33.4** | |
+| **max over the 7 pre-failure weeks** | | **18.6** | **40.4** | |
 
 **The bolded row is the last ascending interval before the collapse.** Over the
 AOI it has the lowest floor in the entire archive - 8.9 mm/day, the number that
@@ -443,19 +484,41 @@ that did not fail. That is the dilution, made visible.
 **The conclusion survives.** Measured at the failure point itself, the summer
 ascending block is consistent with no motion at every window size tested:
 
-| Window | Summer ASC velocity | Verdict |
-|--------|--------------------|---------|
-| 250 m | +2.40 +/- 2.41 mm/day | not significant at 2 sigma |
-| 500 m | -0.14 +/- 1.42 mm/day | not significant at 2 sigma |
-| 1 km | -0.06 +/- 0.33 mm/day | not significant at 2 sigma |
-| whole AOI | -0.71 mm/day | not significant |
+| `--target-radius` | Window | Summer ASC velocity | Against the local floor |
+|---|---|---|---|
+| 3 | 560 m | +2.40 mm/day | 0.13x of 19.2-40.4 |
+| 6 | **1.04 km** | **-0.14 mm/day** | **0.01x** |
+| 12 | 2.00 km | -0.06 mm/day | 0.00x |
+| - | whole AOI | -0.71 mm/day | 0.04x of 18.6 |
 
-One thing does appear at the point that the AOI median hides: the **winter**
-block accumulates monotonically, +207 mm over 48 days, a fitted +4.24 mm/day
-that clears the 2-sigma fit test. It is **0.13x the local winter floor of ~33
-mm/day**, so it is not a measurement - and it is eight months before the
-failure, in the season and at the scale where the rejected candidate turned out
-to be snowpack path delay. Recorded, not carried forward.
+At 80 m posting a radius of `r` pixels is a `(2r+1)`-cell window, so radius 6 is
+**1.04 km** - which is what `local_floor.py` has always called it and what the
+table above is measured in. This table used to label the same three radii 250 m,
+500 m and 1 km, each off by about a factor of two, and inconsistent with the
+floor table three paragraphs earlier. The command in the reproduction page is
+`--target-radius 6`, so the headline bound is a **1 km** measurement.
+
+**The +/- values are gone, and that is a correction, not an omission.** They
+were the standard error of an ordinary least-squares line fitted to the
+*cumulative* series. In a chain SBAS series every epoch is the running sum of
+the ones before it, so the residuals are correlated by construction and that
+standard error is far too small - which is how a 2 km winter trend came out at
++4.236 +/- 0.121 mm/day, nominally 35 sigma, on five points. Worse, the summer
+blocks get any degrees of freedom at all only from a **routine/urgent duplicate
+of the same two acquisitions**, which this page elsewhere correctly describes as
+measuring "how well two processings of identical data agree, not measurement
+scatter". A ratio against the measured floor is the honest comparison and it is
+the one quoted above.
+
+One thing does appear at the widest window that the AOI median hides: over a
+**2 km** window (radius 12) the **winter** block accumulates monotonically,
++207 mm over 48 days, a fitted +4.24 mm/day. It is **0.14x the local winter
+floor at that scale (~31 mm/day)**, so it is not a measurement - and 2 km is the
+window this section has just finished describing as diluted by terrain that did
+not fail. At the 1 km window the same block is +72.6 mm and not monotonic
+(0, -19.2, -0.07, +3.0, +72.6). It is also eight months before the failure, in
+the season and at the scale where the rejected candidate turned out to be
+snowpack path delay. Recorded, not carried forward.
 
 ```bash
 python src/local_floor.py --dir outputs/export_goff_src --match layer2 \
@@ -510,16 +573,36 @@ against a purely seasonal explanation but does not eliminate one.
 
 ### Product coverage
 
-Valid-pixel fraction over the source zone, all 15 GUNW pairs:
+Valid-pixel fraction over the source zone, all 15 GUNW pairs. The denominator
+is the **12,818 cells the 82 km2 AOI covers** at 80 m posting, not the 18-27
+million cells of the surrounding frame:
 
-| Season | Median | Range |
-|--------|--------|-------|
-| Winter | 3% | 1-4% |
-| Monsoon | **0%** | 0-1% |
+| Season | Track | Median | Range |
+|--------|-------|--------|-------|
+| Winter | ASC 098 | **55%** | 49-59% |
+| Winter | DESC 048 | 21% | 17-21% |
+| Monsoon | ASC 098 | 2% | 1-3% |
+| Monsoon | DESC 048 | 6% | 3-11% |
 
-`gunw_reader.py` prints the warning itself on every summer pair: *"under 10% of
-the scene survived gating... Consider GOFF instead."* **There is no usable
-summer phase measurement at the source zone.** The reasoning that once pointed
+**A correction, because it changed a regime.** These used to read 3% and 0%.
+`report()` divided valid pixels by the size of the whole product and the
+resulting 0.01-0.04 was then quoted as though it were a percentage of the AOI -
+roughly a factor of sixteen, in the direction that made a usable winter
+interferogram look marginal. Winter ascending phase is not a 3% scrap; it is
+more than half the AOI. The monsoon row is not 0% either.
+
+It also made the ascending/descending comparison meaningless, because the two
+frames differ in size by 1.5x. On AOI cells the winter advantage is **2.7x** -
+which is what the track table below now carries; it used to say 3.5x.
+
+`gunw_reader.py` prints the warning on the summer pairs: *"only 2.1% of the AOI
+survived gating... Consider GOFF instead."* **There is no usable summer phase
+measurement at the source zone** - 1-3% ascending is not a measurement.
+
+That warning used to fire on all fifteen pairs, winter included, because it was
+gated on the frame fraction, which is under 10% for every pair over an AOI this
+size. A warning that fires every time carries no information; it is now gated on
+AOI coverage and stays silent on the winter pairs. The reasoning that once pointed
 the other way asked whether the motion was below the phase ceiling - it is - and
 never asked whether there was any phase to measure.
 
@@ -529,16 +612,50 @@ LOS displacement regressed against DEM elevation, one fit per pair, over every
 valid pixel on the fixed export lattice. The fit clips residuals at 3 MADs and
 refits - see below for why that is not optional.
 
-| Product | Pairs | \|r\| median | Variance explained | p<0.001 |
-|---------|-------|-------------|--------------------|---------|
-| GUNW - phase | 15 | **0.46** | **21.1%** | 13 / 15 |
-| GOFF - offsets | 18 | **0.12** | **1.5%** | 15 / 18 |
+| Product | Pairs | \|r\| median | Variance explained | Sign reversals (within track) |
+|---------|-------|-------------|--------------------|-------------------------------|
+| GUNW - phase | 15 | **0.46** | **21.1%** | 9 of 12, 6 expected |
+| GOFF - offsets | 18 | **0.12** | **1.5%** | consistent with chance |
 
-The fitted slope **alternates sign on consecutive 12-day pairs** - 6 reversals
-in 15 phase pairs, 10 in 18 offset pairs. Ground does not reverse direction
-every twelve days; a water-vapour field does. Over the relief each pair actually
-spans, the phase term reaches a median of **33 mm and a maximum of 77 mm**,
-against a quarter-wavelength ceiling of 59.5 mm per 12-day pair.
+The `p<0.001` column that used to sit here has been removed. It treated every
+one of ~7,000 valid pixels as an independent sample; neighbouring 80 m cells in
+one interferogram are strongly correlated, so the effective sample size is tens
+and those p-values were far smaller than the evidence supports. The tool still
+computes p and now prints that caveat under the table, because it separates "a
+trend exists" from "nothing at all" and nothing more.
+
+Over the relief each pair actually spans, the phase term reaches a median of
+**33 mm and a maximum of 77 mm**, against a quarter-wavelength ceiling of 59.5
+mm per 12-day pair.
+
+**The variance column is the evidence. The sign-reversal count is not, and this
+page used to lead with it.** The claim was *"the fitted slope alternates sign on
+consecutive 12-day pairs - 6 reversals in 15 phase pairs"*. Three things were
+wrong with that number:
+
+- **6 of 14 transitions is below chance.** Random signs give 7. It was being
+  quoted as evidence of alternation while sitting on the wrong side of a coin
+  flip.
+- **It was counted across an alphabetical file list**, which orders by date
+  across *both* tracks - so the "consecutive 12-day pairs" ran descending,
+  ascending, descending, ascending. Two geometries project the same delay field
+  differently; reading them as one sequence measures nothing.
+- **It counted routine and urgent products of the same acquisitions twice**, and
+  those agree in sign, which biases the count *toward* stability.
+
+Counted properly - within a track, in date order, one observation per
+acquisition pair - it is **9 reversals of 12 transitions against 6 expected**,
+one-sided binomial **p = 0.073**:
+
+```
+A098   -++-+-++
+D048   +-+-++
+```
+
+Suggestive, not decisive, and now reported that way with the chance level beside
+it. The real evidence that this term is atmospheric is the fourteenfold split in
+explained variance between phase and offsets - 21.1% against 1.5% - which is
+what the physics predicts and what no deformation field would produce.
 
 **Read the variance column, not the slope column.** The GOFF slopes are the
 larger of the two in absolute terms - median 19.1 mm/km against 8.8 for phase -
@@ -679,25 +796,81 @@ phase.
 | 20 days | >= 8 days | <= 6.7 days |
 | 40 days | >= 16 days | <= 13.3 days |
 
-### Daily revisit is worse, not better
+### Daily revisit is not worse. That result was an artefact.
 
-This is the counter-intuitive result and it survives every parameterisation we
-have run. Velocity noise scales as `sigma*sqrt(2)/dt`, so a shorter revisit
-gives a **noisier** velocity estimate. Reading the false-alarm column:
+This page used to carry the opposite claim, and it was the project's headline
+procurement conclusion: *"Buy revisit near precursor/3. Below that, false alarms
+rise without improving detection... an agency tasking daily SAR on the strength
+of a detection rate alone would evacuate on one alarm in five."*
+
+It came from a detector with **no significance gate**. `detectability.py` used a
+hardcoded 1.0 mm/day threshold that was not reachable from the command line and
+did not scale with noise. Velocity noise is `sigma*sqrt(2)/dt`, so at 5 mm
+displacement noise it is 7.1 mm/day at daily revisit and 0.6 mm/day at 12-day -
+the flat gate sat an order of magnitude **below** the noise at short revisit and
+above it at long revisit. The simulation was admitting noise as signal, and
+doing it worst exactly where the conclusion said daily sampling was dangerous.
+
+Which is the one thing this project says you must not do. `inverse_velocity.py`,
+which runs on measured data, refuses any velocity that does not clear a multiple
+of the measured floor, and the note below calls that *"the whole difference
+between a detector and a random number generator"*. The simulation was not doing
+it.
+
+Same sweep, same noise, gate the only difference (`--gate fixed` reproduces the
+old behaviour, so this is runnable rather than asserted):
 
 | Precursor | Revisit | Detection | False alarm | Prediction error |
 |-----------|---------|-----------|-------------|------------------|
-| 10 days | 1 d | 91% | **11.3%** | 4.7 d |
-| 10 days | **3 d** | **95%** | **0.4%** | **2.0 d** |
-| 20 days | 1 d | 90% | 14.6% | 8.2 d |
-| 20 days | **4 d** | **98%** | **0.0%** | 5.0 d |
-| 40 days | 1 d | 92% | **20.5%** | 11.8 d |
-| 40 days | **6 d** | **96%** | **0.0%** | 8.0 d |
+| 10 days | 1 d | 98% / 90% | **0.0% / 12.0%** | **0.7 / 4.2 d** |
+| 20 days | 1 d | 89% / 92% | **0.0% / 15.1%** | **0.4 / 8.3 d** |
+| 40 days | 1 d | 66% / 90% | **0.0% / 22.0%** | **0.3 / 12.0 d** |
 
-**Buy revisit near precursor/3. Below that, false alarms rise without improving
-detection.** An agency tasking daily SAR on the strength of a detection rate
-alone would evacuate on one alarm in five. This is the procurement conclusion,
-and it is the opposite of the obvious one.
+*(noise-scaled gate / old flat gate)*
+
+**The false-alarm rate is 0.0% at every revisit tested**, and the prediction
+error falls by a factor of four to forty. The "one alarm in five" figure does
+not survive.
+
+### What actually survives, and it is a trade rather than a cliff
+
+Two things do hold, and one is new.
+
+**Detection still collapses near precursor/2.5.** Below three or four samples
+inside the accelerating phase there is no trend to fit, whatever the gate.
+
+| Precursor | Detection collapses at | Largest revisit measured to work |
+|-----------|------------------------|----------------------------------|
+| 5 days | >= 2 days | 1 day |
+| 10 days | >= 4 days | 3 days |
+| 20 days | >= 8 days | 6 days |
+| 40 days | >= 16 days | 12 days |
+
+That "largest revisit that works" column is now **measured**. It used to be
+printed unconditionally as `precursor / 3` - a rule of thumb restated as a
+result, which is why it agreed with the rule so exactly.
+
+**The real cost of short revisit is lead time, not false alarms.** A noise-aware
+gate is *higher* at short dt, so a fast-sampling detector has to wait for a
+faster slope before it will admit a velocity at all:
+
+| Precursor | Revisit | Detection | Warning | Prediction error |
+|-----------|---------|-----------|---------|------------------|
+| 40 days | 1 d | 66% | **1.1 d** | **0.3 d** |
+| 40 days | 4 d | 70% | 4.7 d | 1.1 d |
+| 40 days | 12 d | 53% | **9.6 d** | **2.7 d** |
+
+Short revisit buys **accuracy** - you learn the date to within a third of a day
+instead of three days - and costs **warning**. Long revisit buys warning and
+costs accuracy, then stops detecting altogether. The procurement question is
+therefore which of those you need, not whether daily sampling is dangerous:
+
+- **Evacuation timing** needs the date, so buy short revisit.
+- **Deciding whether to prepare at all** needs lead time, so a 12-day track
+  still earns its place beside it.
+
+That is the opposite trade from the one this page used to publish, and it is the
+one an agency can actually act on.
 
 ### The Blatten case, both instruments
 
@@ -758,7 +931,7 @@ All measured over the source zone, so the comparison is like for like.
 |-------------|---------|----------|-------|
 | GOFF range sigma, layer2 (median of 8) | 79.2 mm | 393.2 mm | **5.0x** |
 | GOFF 3-sigma floor (median of 8) | 19.8 mm/day | 98.3 mm/day | **5.0x** |
-| GUNW valid pixels, winter (median) | 3.5% | 1.0% | **3.5x** |
+| GUNW valid pixels, winter (% of AOI) | 55% | 21% | **2.7x** |
 | Co-event coverage lost | 23.0% | 54.9% | **2.4x** |
 
 Two products, two different physical measurements, the same geometric control.
@@ -833,31 +1006,57 @@ python src/geometry_merge.py --sensitivity --lat 28.2877 --lon 85.5281
 
 The failure point sits at 5,166 m on a **27.4-degree west-facing slope** -
 steep enough that the sensitivity is well determined there, unlike the gentle
-ground discussed above.
+ground discussed above. The aspect comes from a single SRTM stencil at a
+coordinate we estimated; published accounts put the detachment on the north
+face, and a north-facing slope would put every one of these tracks between 0.28
+and 0.45, which is marginal to blind for all five. **Deriving the scar from the
+co-event decorrelation footprint and reporting the aspect distribution across
+it, rather than one pixel, is the outstanding work on this section.**
 
-| Track | Heading | Sensitivity | Noise x | Verdict |
-|-------|---------|-------------|---------|---------|
-| S1 ASC 85 | 350.7 | **-0.904** | 1.1 | usable |
-| **NISAR ASC 98** | 350.5 | **-0.890** | 1.1 | **usable** |
-| S1 DESC 19 | 189.3 | +0.197 | 5.1 | **blind** |
-| S1 DESC 121 | 189.3 | +0.197 | 5.1 | **blind** |
-| NISAR DESC 48 | 189.5 | +0.163 | 6.1 | **blind** |
+| Track | Look side | Heading | Sensitivity | Noise x | Verdict |
+|-------|-----------|---------|-------------|---------|---------|
+| **S1 DESC 19** | right | 189.3 | **-0.913** | 1.1 | **usable** |
+| **S1 DESC 121** | right | 189.3 | **-0.913** | 1.1 | **usable** |
+| **NISAR ASC 98** | left | 350.5 | **-0.889** | 1.1 | **usable** |
+| S1 ASC 85 | right | 350.7 | +0.188 | 5.3 | **blind** |
+| NISAR DESC 48 | left | 189.5 | +0.163 | 6.1 | **blind** |
 
-**Only the ascending tracks can see downslope motion at the place the slope
-actually failed**, and they see it almost perfectly - a sensitivity of -0.890
-amplifies noise by only 1.1x. Every descending track, NISAR and Sentinel-1
-alike, is geometrically blind there: a west-facing slope viewed from the east
-puts horizontal approach and vertical drop into near-cancellation in range.
+**Three of the five tracks can see downslope motion at the place the slope
+failed**, and they see it almost perfectly - a sensitivity of -0.89 amplifies
+noise by only 1.1x. The two blind ones are blind because of the terrain, not
+the data: a slope lying across the look direction puts horizontal approach and
+vertical drop into near-cancellation in range.
 
-This is why ascending is the usable geometry in every table above, and it is not
-a data-quality accident - it is the terrain. It also means the descending
-track's larger co-event coverage loss reflects its worse viewing geometry over
-this slope, not that it saw more of the event.
+### A correction, because it inverted the conclusion
 
-**For a warning system, that is the finding.** Doubling your revisit by
-combining ascending and descending is not available here; on this aspect you
-have one usable look direction and a 12-day repeat, and no amount of processing
-recovers the other one.
+This table used to read the other way round: both ascending tracks usable, all
+three descending blind, and the conclusion that *"on this aspect you have one
+usable look direction and a 12-day repeat, and no amount of processing recovers
+the other one."*
+
+That was wrong, and the cause was one missing field. `los_unit()` defaulted to
+**left-looking** and every caller took the default. NISAR really does look left
+- a mission choice, for full Antarctic coverage - so its two rows were right.
+**Sentinel-1 looks right**: ascending it images east, descending it images west.
+Modelling it left-looking reverses both horizontal components and leaves the
+vertical alone, so nothing looked odd and three of five verdicts were inverted.
+
+The module's own docstring already carried the check that catches it - *"a
+descending Sentinel-1 pass at 28 N must give E > 0"* - and the code had been
+failing its own stated check. There were no tests for the module, so nothing
+said so. `Track` now carries `left_looking` with no default anywhere, and it is
+the first thing the new test file asserts.
+
+**The corrected finding is the more useful one.** NISAR ascending plus two
+Sentinel-1 descending tracks gives roughly **4-day effective sampling** on the
+slope that failed, and a genuine ascending/descending pair - which means the
+east-versus-vertical decomposition is available here, and a real motion/
+atmosphere cross-check with it. What is *not* available is a NISAR-only
+multi-geometry solution: NISAR descending is blind, so NISAR alone is one look
+direction at 12 days. That is a case for combining missions, not for giving up.
+
+Per the revisit sweep, 4 days is the difference between never detecting a
+10-day precursor and detecting one.
 
 ### The cancellation trap
 
@@ -941,12 +1140,26 @@ impounded water in Mm3 at each imposed blockage height:
 | # | Site | km to failure point | 10 m | 25 m | 50 m | 100 m | 150 m |
 |---|------|--------------------|------|------|------|-------|-------|
 | 1 | 28.3124 N, 85.5533 E | 3.69 | 0.44 | 2.06 | 5.72 | 14.62 | 25.17 |
-| 2 | 28.2944 N, 85.5308 E | **0.79** | - | - | - | 3.23 | 10.14 |
-| 3 | 28.2840 N, 85.5416 E | 1.38 | 0.25 | 1.19 | 3.75 | 12.06 | 23.57 |
+| 2 | 28.2840 N, 85.5416 E | 1.38 | 0.25 | 1.19 | 3.75 | 12.06 | 23.57 |
+| 3 | 28.3495 N, 85.5474 E | 7.09 | 0.21 | 0.65 | 2.37 | 7.31 | 14.28 |
+| ... | | | | | | | |
+| **12** | 28.2944 N, 85.5308 E | **0.79** | - | - | - | 3.23 | 10.14 |
 
 Three of twelve sites lie within 3 km of the failure point, and the nearest is
 790 m from it - but that site impounds **nothing until a 100 m blockage**. Only
 four of twelve hold any water at 10 m.
+
+**That last row used to be second.** Ranking on volume per metre alone compared
+sites at different threshold heights, and because impounded volume grows faster
+than linearly with depth, a site needing 100 m could out-score one that starts
+filling at 10 m: 3.23/100 beats 0.21/10. A metric documented as favouring "sites
+a small landslide could dam" was doing the opposite. Sorting on threshold height
+first moves it from 2nd of twelve to last, which is where a reach that needs
+100 m of debris belongs on that axis.
+
+> Ranks here are recomputed from the committed `dam_sites_*.geojson` under the
+> corrected metric. A full re-run needs the DEM; the twelve sites and their
+> volumes are unchanged, only their order is.
 
 ### Testing it somewhere else entirely
 
@@ -964,7 +1177,13 @@ registered; the run needs terrain only.
 |---|------|----------------------|------|------|------|-------|-------|
 | 1 | 46.4507 N, 7.7500 E | 6.31 | 0.37 | 2.20 | 7.95 | 30.19 | 66.55 |
 | 2 | 46.4086 N, 7.7984 E | 2.08 | 0.34 | 2.67 | 10.10 | 38.20 | 85.14 |
-| 4 | 46.4179 N, 7.8141 E | **0.50** | **-** | 0.73 | 2.94 | 9.78 | 18.90 |
+| 4 | 46.4272 N, 7.8383 E | 1.62 | 0.27 | 1.70 | 6.72 | 28.31 | 68.28 |
+| **7** | 46.4179 N, 7.8141 E | **0.50** | **-** | 0.73 | 2.94 | 9.78 | 18.90 |
+
+Under the corrected ranking the site nearest the village drops from 4th to 7th,
+below every reach that responds at 10 m - which is the right answer for a
+small-blockage screen, and it sharpens the failure below rather than softening
+it.
 
 All four areas at the same heights. Volumes are the **largest at each height
 across all twelve sites**, which is not necessarily site 1 - the ranking is by
@@ -974,7 +1193,7 @@ efficiency, so a lower-ranked reach can hold more water at a big blockage:
 |-----|-------------------------|------|------|------|-------|-------|
 | Source zone | 4 / 12 | 0.44 | 2.06 | 5.72 | 14.62 | 29.63 |
 | Langtang | 2 / 12 | 0.32 | 1.77 | 6.13 | 23.22 | 50.34 |
-| Lhende (control) | 1 / 12 | 0.58 | 2.67 | 9.65 | 35.18 | 72.08 |
+| **Lhende Khola** - where the river actually dammed | **1 / 12** | 0.58 | 2.67 | 9.65 | 35.18 | 72.08 |
 | **Blatten** | **6 / 12** | 0.37 | 2.67 | 10.10 | 38.20 | 85.14 |
 
 **Read that table across, not down.** The ratio between any two areas depends
@@ -984,6 +1203,30 @@ is **2.87x** at 150 m and **0.85x** at 10 m - the source zone is the more
 dammable of the two once the blockage is small. Quoting a single "twice as
 dammable" figure would be an artefact of choosing 150 m, in the same way the
 seasonal noise claim was an artefact of not controlling for track.
+
+### Scored against the dam that actually formed
+
+The Lhende Khola blocked and breached on 26 August 2026. That makes its row
+above a prediction, and the prediction is the weakest of the four areas:
+**one reach of twelve responds to a 10 m blockage**, against six at Blatten.
+On the tool's own preferred axis - small-blockage sensitivity - it ranked the
+valley that dammed *last*.
+
+Three readings, and we cannot yet separate them:
+
+1. **The blockage was not small.** The reported surge was fed by an ice-rock
+   avalanche of a scale that could impose far more than 10 m of debris, in which
+   case a 10 m screen is simply the wrong question and the 25-50 m columns
+   (1.81 and 9.65 Mm3 at the best reach) are the relevant ones.
+2. **The grid floor bites here too.** At ~105 m cells from SRTM 30 m the tool
+   established at Blatten that it cannot resolve a blockage below about 25 m.
+   The Lhende Khola is a narrow upper-catchment reach; the same floor applies.
+3. **The susceptibility map is wrong at this site.** Possible, and it is the
+   reading that would matter most.
+
+Distinguishing them needs the deposit outline and a finer DEM, neither of which
+we have. What we will not do is quietly relabel the valley a control, which is
+what the previous version did and what made the test disappear.
 
 **The column that actually separates them is the first one.** Six of twelve
 Loetschental reaches impound water from a 10 m blockage, against two in Langtang
@@ -1067,6 +1310,7 @@ ours. Open an issue.
 ```bash
 python -m pytest tests/ -q      # the runner reports the count
 python tests/mutate.py          # every mutation must be caught
+
 ```
 
 A test that passes proves nothing on its own - it may assert something that was
@@ -1109,6 +1353,10 @@ Worth being exact about, because the two are easy to blur.
 The second row is the intended data spine for a multi-hazard system, not code
 that exists in this repository. Nothing in the results depends on it.
 
+`pixel_stack.py` is exploratory and no result on this page depends on it. It is
+kept because the per-pixel search is the natural next step once a common
+reference exists across the stack, not because it is part of the pipeline.
+
 **There is no machine learning here either.** The dependency list is numpy,
 h5py, asf_search, rasterio, pyproj and matplotlib. Every result comes from
 physics, geometry and statistics. That is a description, not an apology - the
@@ -1120,36 +1368,74 @@ central finding is a measurement limit, and a model would not have found it.
 
 Stated here rather than left for a reader to find.
 
-1. **The final seven days before the failure are unobserved**, and the interval
-   covering late August is a 24-day average.
-2. **Every L2 time series has zero redundancy.** No internal error estimate is
-   possible without a custom pair network from RSLC.
-3. **Sensitivity is undetermined below ~10 degrees of slope**, which affects the
+1. **The failure point is estimated, not derived.** 28.28771 N 85.52809 E came
+   from the reported location. Its elevation matches the published ~5,200 m
+   detachment, but the scar is roughly 1.4 km wide on the north face while the
+   SRTM aspect at that single pixel reads west-facing - and the aspect sets
+   every sensitivity number. The fix is to derive the scar polygon from the
+   co-event decorrelation footprint and report the aspect distribution across
+   it rather than one value at one cell.
+2. **Every GOFF pair is referenced and deramped independently.**
+   `find_common_reference()` exists and its own docstring says SBAS requires a
+   common datum across the stack, but `timeseries.py` never calls it. Each pair
+   picks its own reference block and its own plane, so differential atmosphere
+   between two different blocks enters the series as a step at that epoch.
+   This is the largest unfixed defect in the pipeline and it sits underneath
+   the headline bound.
+3. **The final seven days before the failure are unobserved**, and the interval
+   covering late August is a 24-day average. The floor is `3 * MAD / span`, so
+   a longer span mechanically lowers it - which is why that 24-day pair has the
+   best AOI floor in the archive and the worst one at the failure point.
+4. **Every L2 time series has zero redundancy.** The network is a chain, so the
+   inversion fits every observation exactly and the formal error bars are not
+   error bars. No internal error estimate is possible without a custom pair
+   network from RSLC. Run `--jackknife` and believe what it says.
+5. **Velocity uncertainties from the inversion are not usable.** They are an
+   ordinary least-squares slope error on a *cumulative* series, whose residuals
+   are correlated by construction, and on the summer blocks the only degrees of
+   freedom come from a routine/urgent duplicate of the same two acquisitions.
+   Every significance claim here is a ratio against a measured floor instead.
+6. **The floor gates the wrong estimator, and conservatively.** `3 * MAD /
+   span` is the 3-sigma floor for a *single pixel*, but it gates a *median* over
+   thousands of them. The empirical repeatability of the ascending AOI-median
+   velocity across eight routine pairs over nine months is 2.2 mm/day standard
+   deviation, so a 3-sigma floor on that estimator would be ~6.6 mm/day, not
+   19.8. We quote the per-pixel floor because the target is one hillside rather
+   than an area - but the choice was never stated and the two differ threefold.
+7. **Sensitivity is undetermined below ~10 degrees of slope**, which affects the
    multi-geometry table and every downslope magnitude derived by division.
-4. **The stratified troposphere is measured but not removed** from the GUNW
+8. **The stratified troposphere is measured but not removed** from the GUNW
    series - 21% of variance, up to 77 mm over the relief. The tool to remove it
    exists; it is held back because the valid pixels span only ~1.1 km of a 4.0
    km elevation range, so the fit is extrapolated across ~3.4x its own IQR. A
    correction set by a minority of pixels is an error bar, not a correction.
-5. **Impoundment has a grid floor of roughly 25 m of blockage** at ~105 m cells.
-   Established at Blatten, where the observed 10 m lake is below what the terrain
-   grid can represent. A finer DEM would move it; a better algorithm would not.
-6. **The co-event footprint is not a scar map.** It is broader and less
+9. **Impoundment has a grid floor of roughly 25 m of blockage** at ~105 m cells.
+   Established at Blatten, where the observed 10 m lake is below what the
+   terrain grid can represent. A finer DEM would move it; a better algorithm
+   would not.
+10. **The Lhende impoundment prediction is unscored.** That valley dammed and
+   breached, and the tool ranked it last of the four areas for small-blockage
+   sensitivity. Whether that is the grid floor, the wrong question, or a wrong
+   map needs the deposit outline and a finer DEM. It is the one genuinely
+   falsifiable test this project has against the event.
+11. **The co-event footprint is not a scar map.** It is broader and less
    terrain-selective than the failure, and peak monsoon is a confound we can
    argue against but not eliminate.
-7. **GOFF displacement values are not reproducible between processing chains**
+12. **GOFF displacement values are not reproducible between processing chains**
    at this site (median difference +218 mm, scatter 267 mm). Coverage is; use it.
-8. **No independent ground validation.** No GNSS, no field survey, no optical
+13. **No independent ground validation.** No GNSS, no field survey, no optical
    confirmation of the deformation field.
-9. **The forecast cutoff is date-based, not scene-based.** It drops intervals
+14. **The forecast cutoff is date-based, not scene-based.** It drops intervals
    ending on or after the event date, which is right when the date is known.
    In an operational setting the date is what you are trying to predict, so the
-   protection would have to come from processing latency instead.
-10. **Every floor other than the headline one is still AOI-wide.** The pre-event
-   bound is now quoted at the failure point (33.4 mm/day, 1.7x the 82 km2
-   figure), but the co-event decorrelation statistics, the coverage table and
-   the troposphere fits are all area aggregates. Where a hazard is localised,
-   expect the local number to be worse.
+   protection would have to come from processing latency instead. Measuring
+   lead time from the last acquisition rather than an interval midpoint is a
+   second, date-free guard: a fit whose predicted failure precedes its own last
+   observation is rejected on its own terms.
+15. **Every floor other than the headline one is still AOI-wide.** The pre-event
+   bound is quoted at the failure point, but the co-event decorrelation
+   statistics, the coverage table and the troposphere fits are all area
+   aggregates. Where a hazard is localised, expect the local number to be worse.
 
 The inverse-velocity detector's single scalar floor was on this list until
 `--floors` landed; each interval is now gated against the floor of the pair that
@@ -1239,6 +1525,7 @@ src/     nisar_acquisition.py   catalogue search + download
          gunw_reader.py         GUNW -> LOS displacement
          goff_reader.py         GOFF -> pixel offsets, measured noise floor
          pixel_stack.py         per-pixel velocity, correlation-length null
+                                (exploratory - no result on this page uses it)
          timeseries.py          SBAS inversion, network, jackknife
          inverse_velocity.py    Fukuzono forecasting with a significance gate
          geometry_merge.py      LOS -> downslope, sensitivity
@@ -1251,4 +1538,6 @@ REPRODUCE_RESULTS.md            products -> commands -> expected numbers
 data/    nisar_l2/  dem/        products (gitignored)
 outputs/                        GeoTIFFs, quicklooks, CSVs (derived stats kept)
 tests/   synth.py mutate.py     fixtures built from a known answer
+         test_geometry_merge.py test_detectability.py
+         test_impoundment.py    test_coverage.py
 ```
