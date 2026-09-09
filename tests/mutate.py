@@ -319,25 +319,20 @@ MUTATIONS = [
 
     ("detector does not report how many windows it tested",
      "detectability.py",
-     '            tested += 1
-',
-     '',
+     "            tested += 1",
+     "            tested += 0",
      "test_the_detector_reports_how_many_windows_it_tested"),
 
     ("failure date bounded even when the slope is not resolved",
      "inverse_velocity.py",
-     "    if A <= 0:
-        return (float(\"nan\"), float(\"nan\"), False)   # slope not resolved",
-     "    if False:
-        return (float(\"nan\"), float(\"nan\"), False)",
+     "    if A <= 0:",
+     "    if False:",
      "test_a_three_point_fit_on_noise_does_not_bound_a_failure_date"),
 
     ("non-finite per-pair floor reaches the gate",
      "inverse_velocity.py",
-     "            if not math.isfinite(probe) or probe <= 0:
-                continue",
-     "            if False:
-                continue",
+     "            if not math.isfinite(probe) or probe <= 0:",
+     "            if False:",
      "test_a_non_finite_floor_is_rejected_not_parsed"),
 
     ("local floor reported without a sampling interval",
@@ -348,12 +343,8 @@ MUTATIONS = [
 
     ("track dropped from the derived statistics",
      "gunw_reader.py",
-     '    m = TRACK_RE.search(str(name))
-    if not m:
-        return ""',
-     '    m = None
-    if not m:
-        return ""',
+     "    m = TRACK_RE.search(str(name))",
+     "    m = None",
      "test_track_is_recovered_from_the_granule_name"),
 ]
 
