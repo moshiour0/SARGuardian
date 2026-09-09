@@ -114,6 +114,44 @@ def window(arr: np.ndarray, row: int, col: int, radius: int) -> np.ndarray:
     return arr[r0:r1, c0:c1]
 
 
+def floor_ci(values_mm: np.ndarray, span_days: float, n_boot: int = 2000,
+             seed: int = 20260909) -> tuple:
+    """
+    Percentile-bootstrap 95% interval for the detection floor.
+
+    Why a floor needs an interval
+    ----------------------------
+    The floor is 3*MAD-sigma/span, and a MAD from a few dozen pixels is an
+    estimate with real sampling error - roughly 15% relative at n = 50, and
+    far worse below that. The pre-event pairs that matter most here are the
+    ones with the FEWEST valid pixels in the window (26 and 19 of 169), so the
+    headline bound rests on exactly the samples where a point estimate is
+    least trustworthy. Quoting "40.4 mm/day" to three figures from 49 pixels
+    asserts a precision the data does not carry.
+
+    One caveat this interval does NOT cover: GOFF layers come from overlapping
+    correlation windows, so neighbouring offset estimates share input pixels
+    and are not independent. The effective sample size is smaller than the
+    pixel count, so this interval is a LOWER bound on the true uncertainty.
+    Reported as such rather than corrected, because the correlation length of
+    the offset field is not measured here.
+    """
+    v = values_mm[np.isfinite(values_mm)]
+    n = v.size
+    if n < MIN_PX or span_days <= 0:
+        return (float("nan"), float("nan"))
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n, size=(n_boot, n))
+    samp = v[idx]
+    med = np.median(samp, axis=1, keepdims=True)
+    mad = np.median(np.abs(samp - med), axis=1)
+    floors = 3.0 * 1.4826 * mad / span_days
+    good = floors[np.isfinite(floors)]
+    if good.size == 0:
+        return (float("nan"), float("nan"))
+    return (float(np.percentile(good, 2.5)), float(np.percentile(good, 97.5)))
+
+
 def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
     """
     Both floors and the ratio between them, from one pair.
@@ -128,12 +166,16 @@ def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
            "window_total_px": int(win_mm.size),
            "aoi_floor_mm_day": float("nan"),
            "local_floor_mm_day": float("nan"),
+           "local_floor_ci_lo": float("nan"),
+           "local_floor_ci_hi": float("nan"),
            "ratio": float("nan"), "usable": False}
     if a.size < MIN_PX or w.size < MIN_PX:
         return out
     fa = detection_floor(a, span_days)
     fl = detection_floor(w, span_days)
+    lo, hi = floor_ci(w, span_days)
     out.update(aoi_floor_mm_day=fa, local_floor_mm_day=fl,
+               local_floor_ci_lo=lo, local_floor_ci_hi=hi,
                ratio=(fl / fa) if fa > 0 else float("nan"), usable=True)
     return out
 
@@ -164,6 +206,12 @@ def main() -> int:
                          "artefact of one window size")
     ap.add_argument("--exclude", nargs="*", default=[],
                     help="substrings to skip, e.g. a co-event pair")
+    ap.add_argument("--include", nargs="*", default=[],
+                    help="keep only files matching one of these substrings. "
+                         "Export filenames carry no track field, so this is "
+                         "how you restrict a run to one geometry - and you "
+                         "should, because pooling tracks whose floors differ "
+                         "fivefold gives a median that describes neither")
     ap.add_argument("--csv", metavar="OUT.csv")
     args = ap.parse_args()
 
@@ -178,6 +226,8 @@ def main() -> int:
     if args.match:
         files = [f for f in files if args.match in f.name]
     files = [f for f in files if not any(x in f.name for x in args.exclude)]
+    if args.include:
+        files = [f for f in files if any(x in f.name for x in args.include)]
     if not files:
         logger.error("No matching .tif under %s", args.dir)
         return 1
@@ -193,9 +243,9 @@ def main() -> int:
     for radius in radii:
         print(f"  --- window radius {radius} px "
               f"({2*radius+1}x{2*radius+1}) ---")
-        print(f"  {'PAIR':<24}{'span':>5}{'AOI':>9}{'point':>9}{'ratio':>8}"
-              f"{'valid':>12}")
-        print("  " + "-" * 68)
+        print(f"  {'PAIR':<24}{'span':>5}{'AOI':>9}{'point':>9}"
+              f"{'95% CI':>12}{'ratio':>7}{'valid':>11}")
+        print("  " + "-" * 78)
         block = []
         for f in files:
             span = span_from_name(f.name)
@@ -208,6 +258,14 @@ def main() -> int:
                     arr[arr == s.nodata] = np.nan
                 tf = Transformer.from_crs(4326, s.crs.to_epsg(), always_xy=True)
                 row, col = s.index(*tf.transform(args.lon, args.lat))
+            # "too few valid pixels" and "the point is not in this raster" are
+            # different failures and used to print the same line. A target
+            # outside the footprint is a setup error the caller must fix; a
+            # target inside a nodata hole is a measurement fact about the site.
+            if not (0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]):
+                print(f"  {DATE.search(f.name).group(0):<24}{span:>5.0f}"
+                      f"   TARGET OUTSIDE RASTER - check --lat/--lon")
+                continue
             win = window(arr, row, col, radius)
             c = compare(arr, win, span)
             name = DATE.search(f.name).group(0)
@@ -215,9 +273,11 @@ def main() -> int:
                 print(f"  {name:<24}{span:>5.0f}   too few valid pixels "
                       f"({c['window_px']}/{c['window_total_px']})")
                 continue
+            ci = (f"[{c['local_floor_ci_lo']:.0f}-{c['local_floor_ci_hi']:.0f}]"
+                  if np.isfinite(c["local_floor_ci_lo"]) else "-")
             print(f"  {name:<24}{span:>5.0f}{c['aoi_floor_mm_day']:>9.1f}"
-                  f"{c['local_floor_mm_day']:>9.1f}{c['ratio']:>8.2f}"
-                  f"{c['window_px']:>8}/{c['window_total_px']}")
+                  f"{c['local_floor_mm_day']:>9.1f}{ci:>12}{c['ratio']:>7.2f}"
+                  f"{c['window_px']:>7}/{c['window_total_px']}")
             block.append(c)
             rows.append({"file": f.name, "radius_px": radius, **c})
 
@@ -227,7 +287,18 @@ def main() -> int:
         fa = np.array([b["aoi_floor_mm_day"] for b in block])
         fl = np.array([b["local_floor_mm_day"] for b in block])
         frac = np.array([b["window_px"] / b["window_total_px"] for b in block])
-        print("  " + "-" * 68)
+        # Geometry dominates the floor here - ascending and descending differ
+        # by about 5x over this AOI - so a median across both describes no
+        # real observing configuration. This module used to pool them
+        # silently, which is the same trap the GOFF season analysis documents
+        # and then avoids. Detect the spread and say so.
+        if fa.size >= 4 and np.nanmin(fa) > 0 and np.nanmax(fa) / np.nanmin(fa) > 3.0:
+            print(f"  ! AOI floors span {np.nanmin(fa):.1f} to {np.nanmax(fa):.1f} "
+                  f"mm/day ({np.nanmax(fa)/np.nanmin(fa):.1f}x).")
+            print(f"    That is a geometry difference, not a seasonal one.")
+            print(f"    A median across both tracks describes neither -"
+                  f" re-run with --include to select one.")
+        print("  " + "-" * 78)
         print(f"  median AOI floor   {np.median(fa):6.1f} mm/day")
         print(f"  median point floor {np.median(fl):6.1f} mm/day"
               f"   ratio {np.median(fl)/np.median(fa):.2f}x")

@@ -136,3 +136,52 @@ def test_min_px_guard_applies_to_both_sides():
     assert tiny.size < MIN_PX
     assert not compare(tiny, big, 12.0)["usable"]
     assert not compare(big, tiny, 12.0)["usable"]
+
+
+# ---------------------------------------------------------------------------
+# A floor without an interval asserts a precision the pixels do not carry.
+# ---------------------------------------------------------------------------
+def test_the_bootstrap_interval_brackets_the_point_estimate():
+    """
+    The published bound is 40.4 mm/day from 49 valid pixels. A MAD from that
+    many samples carries roughly 15% relative error, so the point estimate
+    needs an interval around it or the third significant figure is invented.
+    """
+    from local_floor import floor_ci, detection_floor
+    rng = np.random.default_rng(7)
+    v = rng.normal(0.0, 100.0, size=49)
+    point = detection_floor(v, 12.0)
+    lo, hi = floor_ci(v, 12.0)
+    assert lo < point < hi
+    assert hi > lo
+
+
+def test_fewer_pixels_widen_the_interval():
+    """
+    The pairs that matter most here are the ones with the fewest valid pixels
+    in the window. The interval must say so rather than staying flat.
+    """
+    from local_floor import floor_ci
+    rng = np.random.default_rng(11)
+    big = rng.normal(0.0, 100.0, size=400)
+    small = rng.normal(0.0, 100.0, size=20)
+    wb = float(np.subtract(*reversed(floor_ci(big, 12.0))))
+    ws = float(np.subtract(*reversed(floor_ci(small, 12.0))))
+    assert ws > wb
+
+
+def test_a_window_below_the_minimum_gets_no_interval():
+    """MIN_PX gates the interval exactly as it gates the floor."""
+    from local_floor import floor_ci
+    lo, hi = floor_ci(np.array([1.0, 2.0, 3.0]), 12.0)
+    assert not np.isfinite(lo) and not np.isfinite(hi)
+
+
+def test_compare_reports_the_interval_alongside_the_floor():
+    """A caller must not have to recompute the uncertainty separately."""
+    rng = np.random.default_rng(3)
+    aoi = rng.normal(0.0, 80.0, size=2000)
+    win = rng.normal(0.0, 160.0, size=169)
+    c = compare(aoi, win, 12.0)
+    assert c["usable"]
+    assert c["local_floor_ci_lo"] < c["local_floor_mm_day"] < c["local_floor_ci_hi"]
