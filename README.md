@@ -1728,19 +1728,44 @@ Methods this project uses, rather than a survey.
    [nhess.copernicus.org](https://nhess.copernicus.org/articles/26/2579/2026/)
    - the peer-reviewed treatment of the same L-band monitoring.
 
+9. **Shirzaei, M.** (Virginia Tech). Sentinel-1 InSAR analysis of Langtang
+   Lirung, 8 January - 18 August 2026, reported September 2026. Measured
+   pre-collapse creep of about **10 mm/month** with acceleration over the final
+   weeks, and stated that the acceleration alone could not show whether failure
+   was imminent. **This is the ground truth for the precursor this project
+   could not see**, and the reason "It was not there" was retracted. Reported
+   in *Nature* news and in general coverage; the underlying analysis had not
+   appeared as a paper at the time of writing, so it is cited as reported.
+
+10. **Copernicus Sentinel-2 MSI, Level-2A.** Used for the scar mapping in
+    `scar_map.py`, via the Element84 Earth Search STAC and the public
+    `sentinel-cogs` bucket.
+    [earth-search.aws.element84.com](https://earth-search.aws.element84.com/v1)
+
 ### Still to verify
 
-Two figures quoted here are **not yet checked against a source**, and are marked
-as such rather than presented as sourced:
+- **The Kleines Nesthorn creep rates** - now sourced. ESA's eo4society report on
+  the Blatten avalanche gives displacement signals dating back to **2017**,
+  velocities rising to **~50 cm/yr by 2023** and **exceeding 150 cm/yr in
+  August 2024**, from L-band ALOS-2 PALSAR-2 and SAOCOM-1 rather than
+  Sentinel-1. That is the 1.4-4.1 mm/day figure this page now uses as Blatten's
+  usable-lead-time precursor, and it is 10-30x below our floor.
 
-- **The Blatten velocity record** in the calibration table - 0.5-0.8 m/day at
-  six days before failure, 10 m/day at one day. Unsourced. The entire
-  detectability argument is calibrated against it, so this is the most important
-  gap in the reference list.
-- **The Kleines Nesthorn creep rates** quoted in "Two regimes, two instruments"
-  as ~50 cm/yr by 2023 and >150 cm/yr by August 2024. References 7 and 8 cover
-  the observation; the specific numbers have not been confirmed against either
-  text and should be read from the paper before being quoted again.
+- **The Blatten velocity record at six days out** - still unsourced. The
+  calibration table quotes 0.5-0.8 m/day at six days before failure and 10
+  m/day at one day. The ~10 m/day figure near failure is corroborated (rapid
+  ice-flow acceleration reported from 13 May 2025, reaching about 10 m/day by
+  26 May). **The 0.5-0.8 m/day at six days is not**, and the detectability
+  preset is calibrated on it, so it remains the most important gap in the
+  reference list. Note that nothing on this page now depends on it: the
+  comparison that matters is against the long-lead rates above, which are
+  sourced.
+
+- **The scar location** - no longer open. Mapped from Sentinel-2 in
+  [Result 6](REPRODUCE_RESULTS.md); see
+  [mapping the scar](#mapping-the-scar-from-optical-imagery). What remains
+  unverified is that it is the *only* detachment, since half the AOI is never
+  cloud-free after the event.
 
 ---
 

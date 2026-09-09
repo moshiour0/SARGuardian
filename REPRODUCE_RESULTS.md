@@ -168,7 +168,7 @@ blockage at the reach where it happened. That is the grid floor.
 
 ---
 
-## Result 4 - no motion above 40.4 mm/day at the failure point
+## Result 4 - no motion above the floor at the failure point
 
 **Needs: 16 NISAR L2 GOFF products, about 17 GB.**
 
@@ -379,10 +379,61 @@ Expect `18 0.12`.
 
 ---
 
+## Result 6 - the scar is 1.09 km from the assumed failure point
+
+**Needs: nothing but a network connection.** Free Sentinel-2 from the
+Element84 STAC and the public `sentinel-cogs` bucket, no credentials.
+
+```bash
+python src/scar_map.py --survey
+python src/scar_map.py --map --csv outputs/scar_source.csv
+python src/scar_map.py --probe 28.28771 85.52809
+```
+
+`--survey` should show that **cloud over the AOI is not cloud over the scene**.
+2026-08-12 is 18.7% cloudy as a 110 km scene and **2.6%** over the source zone;
+2026-09-08 is 62.7% and 74.2% the other way. If you rank on the scene column
+you throw away the best pre-event image in the archive.
+
+`--map` should report a feature of **0.68 km2** centred on **28.27802 N
+85.52963 E**, 1,390 m N-S by 1,218 m E-W, **99.8%** snow or ice beforehand,
+median NDSI change **-0.374**, at 5,203-5,730 m with a circular-mean aspect of
+**342 deg**. Comparable coverage is 50.3% of the AOI and the AOI-wide
+scar-like rate is 7.46%, against 90% inside the feature.
+
+`--probe` on the assumed failure point must print **NOT A SCAR**:
+
+```
+  usable pixels     121
+  NDSI change       median +0.379, min +0.139
+  was snow or ice   0.0%
+  scar-like         0.0%  against 7.46% across the AOI
+```
+
+121 usable pixels is the part that matters - the point is observed, so this is
+absence of a scar and not absence of data.
+
+**Then re-measure the floor where the scar actually is**, because Result 4 was
+measured 1.09 km away:
+
+```bash
+python src/local_floor.py --dir outputs/export_goff_src --match layer2     --lat 28.27802 --lon 85.52963 --sweep 6 --exclude 20260828 _UR_     --include 20251128 20251210 20251222 20260103               20260702 20260714 20260726 20260819
+```
+
+**Expect** the three intervals covering the seven weeks before failure to read
+**32.0, 26.0 and 7.8 mm/day** on 71, 60 and 60 valid pixels - against 40.4,
+19.2 and 34.3 on 49, 65 and 26 at the abandoned point. The worst is the bound,
+so **32.0 mm/day** in line of sight, and 68 mm/day of downslope motion at a
+NISAR ascending sensitivity of -0.472.
+
+---
+
+
 ## What you cannot reproduce, and why
 
-- **Independent ground truth.** There is none. No GNSS, no field survey, no
-  optical confirmation of the deformation field. The bound is what the satellite
+- **Independent ground truth for the DEFORMATION.** There is none: no GNSS, no
+  field survey, no optical confirmation of the displacement field. Result 6
+  confirms where the scar is, not how fast it moved beforehand. The bound is what the satellite
   can say, not what the ground did.
 - **A tighter bound than the floor.** Any precursor slower than the measured
   floor is invisible to this product. That is the point of quoting the floor.
