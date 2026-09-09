@@ -693,6 +693,12 @@ def main() -> int:
                     help="report sensitivity across DEM stencil widths rather "
                          "than at one scale. Slower (one SRTM query per width) "
                          "and the honest way to quote it")
+    ap.add_argument("--aspect", type=float, default=None,
+                    help="override the SRTM aspect, in degrees azimuth of "
+                         "steepest descent. Use it to test the north-face "
+                         "hypothesis against the west-facing DEM pixel")
+    ap.add_argument("--slope", type=float, default=None,
+                    help="override the SRTM slope, in degrees")
     ap.add_argument("--min-sensitivity", type=float, default=0.3,
                     help="reject tracks below this |slope_hat . los_hat|")
     ap.add_argument("--csv", metavar="OUT.csv")
@@ -706,6 +712,21 @@ def main() -> int:
         if args.lat is None or args.lon is None:
             ap.error("--sensitivity needs --lat and --lon")
         slope, aspect, elev = slope_aspect(args.lat, args.lon)
+        # The aspect at this point is the single largest open uncertainty in
+        # the whole analysis: SRTM reads west-facing at the estimated failure
+        # pixel, while the published accounts put the scar on the NORTH face of
+        # Langtang Lirung. Every sensitivity below is a dot product with the
+        # downslope vector, so aspect decides which tracks are called blind -
+        # and until these flags existed the alternative could be stated but not
+        # tested. Overriding is not cheating; refusing to check is.
+        if args.aspect is not None:
+            print(f"[OVERRIDE] aspect {aspect:.0f} deg from SRTM -> "
+                  f"{args.aspect:.0f} deg as given")
+            aspect = args.aspect
+        if args.slope is not None:
+            print(f"[OVERRIDE] slope {slope:.1f} deg from SRTM -> "
+                  f"{args.slope:.1f} deg as given")
+            slope = args.slope
         rows = sensitivities(args.lat, args.lon, slope, aspect, args.min_sensitivity)
         report_sensitivity(args.lat, args.lon, slope, aspect, elev, rows, args.min_sensitivity)
         if args.stencil_sweep:

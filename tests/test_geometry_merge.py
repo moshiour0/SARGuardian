@@ -247,3 +247,36 @@ def test_map_offers_the_analysis_aoi():
     text = open(src).read()
     block = text.split('mode.add_argument("--map"')[1].split(")")[0]
     assert '"source"' in block
+
+
+# ---------------------------------------------------------------------------
+# The aspect at the failure point is the largest open uncertainty, so it has
+# to be testable rather than merely declared.
+# ---------------------------------------------------------------------------
+def test_a_north_facing_scar_blinds_both_nisar_tracks():
+    """
+    Every published account puts the 26 Aug 2026 scar on the NORTH face of
+    Langtang Lirung; SRTM at the assumed failure pixel reads west-facing at
+    every stencil from 60 m to 300 m. Sensitivity is a dot product with the
+    downslope vector, so that disagreement decides which tracks are usable.
+
+    On a due-north face both NISAR geometries fall below the 0.3 threshold and
+    the mission has no usable look direction at the scar - only Sentinel-1
+    does. The bound on downslope motion weakens by about 3x. This test holds
+    the consequence so it cannot quietly stop being true.
+    """
+    from geometry_merge import sensitivities
+    rows = sensitivities(28.28771, 85.52809, 27.4, 0.0, 0.3)
+    by = {r["track"]: r for r in rows}
+    nisar = [v for k, v in by.items() if "NISAR" in k]
+    assert nisar and all(abs(r["sensitivity"]) < 0.3 for r in nisar)
+    s1 = [v for k, v in by.items() if k.startswith("S1")]
+    assert s1 and all(abs(r["sensitivity"]) > 0.3 for r in s1)
+
+
+def test_the_west_facing_pixel_keeps_nisar_ascending_usable():
+    """The two hypotheses must give different answers, or the flag is pointless."""
+    from geometry_merge import sensitivities
+    rows = sensitivities(28.28771, 85.52809, 27.4, 273.0, 0.3)
+    asc = [r for r in rows if "NISAR ASC" in r["track"]][0]
+    assert abs(asc["sensitivity"]) > 0.8
