@@ -33,8 +33,19 @@ number that made the published bound look strongest. At the failure point that
 same pair has a floor of 34.3 mm/day and only 26 of 169 valid pixels.
 
 The bound survives: nothing measured at the point exceeds even the local floor,
-in windows of 250 m, 500 m and 1 km. But the bound is 33.4 mm/day there, not
-18.6, and quoting the AOI figure at the failure point overstates it by 1.7x.
+in windows of 250 m, 500 m and 1 km.
+
+But do not quote 33.4 as the bound. It is the median across all eight
+ascending pairs, five of them winter pairs from November to January, outside
+the seven-week window being bounded. Over that window the three covering
+intervals read 40.4, 19.2 and 34.3 at the point, and a bound that holds across
+a window is set by its weakest interval, so **40.4 mm/day** is the figure - and
+`40.4 [21-55]` once the bootstrap interval is attached, because it rests on 49
+valid pixels. Expressed as downslope motion rather than line of sight it
+weakens further, to as much as 143 mm/day, because the aspect at this point is
+unconfirmed; see the README.
+
+The AOI figure of 18.6 understates all of these.
 
 The general lesson, which is the same one this project keeps relearning: a
 statistic aggregated over terrain that did not fail describes terrain that did
