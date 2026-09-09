@@ -73,6 +73,18 @@ NISAR_L_BAND_HZ = 1_257_500_000.0          # fallback if not in the file
 # depends on it. Products carry their own centre frequency; read_wavelength()
 # uses it when present and falls back here when not.
 NISAR_LAMBDA_M = SPEED_OF_LIGHT / NISAR_L_BAND_HZ      # 0.23840 m
+
+TRACK_RE = re.compile(r"NISAR_L2_(?:PR|UR)_[A-Z]+_\d+_(\d{3})_([AD])_")
+
+
+def track_of(name: str) -> str:
+    """'ASC 098' / 'DESC 048' from a granule name; '' when it is not one."""
+    m = TRACK_RE.search(str(name))
+    if not m:
+        return ""
+    return ("ASC " if m.group(2) == "A" else "DESC ") + m.group(1)
+
+
 DEFAULT_COHERENCE = 0.3
 
 # Areas of interest. Select at runtime with --aoi.
@@ -86,8 +98,21 @@ DEFAULT_COHERENCE = 0.3
 # the southern edge of the Lhende box.
 #
 # Every result computed with --aoi lhende therefore describes ground that does
-# not contain the failure. LHENDE_RING is kept only as a labelled control
-# region where nothing happened; it is no longer the analysis AOI.
+# not contain the DETACHMENT. It is no longer the analysis AOI.
+#
+# SECOND CORRECTION (9 Sep 2026). The line that replaced it called Lhende "a
+# labelled control region where nothing happened", and that is also wrong, in
+# a way that would quietly poison any control measured there. The avalanche
+# ran INTO the Lhende Khola: it dammed the channel, the barrier breached, and
+# the outburst scoured 22 km of valley in about seven minutes. Enormous
+# geomorphic change happened there - just not the detachment.
+#
+# So Lhende is the RUNOUT AND IMPOUNDMENT CORRIDOR. It is a legitimate AOI for
+# studying the dam-and-breach step, and it is disqualified as a stable-ground
+# control for exactly the period this project measures. A post-event noise
+# floor taken there is measuring a rearranged valley floor, not instrument
+# noise. Nothing in this repository may use it as a reference or a control.
+LHENDE_IS_A_CONTROL = False
 LANGTANG_RING = [
     (85.46683434336315, 28.324709534140283),
     (85.45910958140026, 28.277704299412660),
@@ -622,7 +647,15 @@ def report(result: dict) -> dict:
              # check_consistency sizes a fringe from this. It was never
              # written, so the fringe test always fell back to the module
              # constant instead of the wavelength the product reports.
-             "wavelength_m": round(float(result["wavelength_m"]), 6)}
+             "wavelength_m": round(float(result["wavelength_m"]), 6),
+             # Track, from the granule name, because nothing downstream can
+             # recover it from an export filename and geometry is the largest
+             # single control on data quality here. Without this column every
+             # consumer that pools pairs is pooling ascending with descending,
+             # whose floors differ about fivefold - the exact trap the GOFF
+             # season analysis documents and then avoids.
+             "track": track_of(result.get("file", "")),
+             "processing": "UR" if "_UR_" in str(result.get("file", "")) else "PR"}
 
     if n == 0:
         print("\n  NO VALID PIXELS. Lower --coh-threshold or check the AOI overlaps the frame.")

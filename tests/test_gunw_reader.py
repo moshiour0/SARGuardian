@@ -281,3 +281,27 @@ def test_consistency_check_runs_on_reader_output_keys(tmp_path):
     check_consistency([row, dict(row)])                # must not raise
     for key in ("reference", "secondary", "median", "mean_coherence", "file"):
         assert key in row, f"report() no longer emits {key!r}"
+
+
+# ---------------------------------------------------------------------------
+# Track has to survive into the derived statistics.
+# ---------------------------------------------------------------------------
+def test_track_is_recovered_from_the_granule_name():
+    """
+    Export filenames carry only dates, so nothing downstream can recover the
+    geometry - and geometry is the largest single control on data quality
+    here, with floors differing about fivefold between the two tracks. Pooling
+    them gives a median that describes neither, which is the trap the GOFF
+    season analysis documents and local_floor.py fell into.
+    """
+    from gunw_reader import track_of
+    assert track_of("NISAR_L2_PR_GOFF_006_098_A_016_007_4000_SH_20251128T233919") == "ASC 098"
+    assert track_of("NISAR_L2_PR_GUNW_006_048_D_074_007_2000_SH_20251125T125813") == "DESC 048"
+    assert track_of("NISAR_L2_UR_GOFF_028_098_A_016_029_4000_SH_20260819T233918") == "ASC 098"
+
+
+def test_a_name_that_is_not_a_granule_yields_no_track():
+    """Silence beats a wrong label: an empty track is visibly missing."""
+    from gunw_reader import track_of
+    assert track_of("GOFF_20251128_20251210_PR_HH-layer2.tif") == ""
+    assert track_of("") == ""
