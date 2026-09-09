@@ -23,6 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from inverse_velocity import analyse_block, fit_inverse_velocity, velocities
@@ -422,3 +423,71 @@ def test_summary_says_so_when_it_falls_back_to_the_scalar(tmp_path):
                   "--ts", str(ts), "--noise-floor", "18.6"],
                  capture_output=True, text=True, check=True).stdout
     assert "fallback floor" in out.lower() or "no per-pair floors" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# The failure date is a ratio, and a ratio needs a Fieller interval.
+# ---------------------------------------------------------------------------
+def test_a_three_point_fit_on_noise_does_not_bound_a_failure_date():
+    """
+    The x-intercept is -b/a, a ratio of correlated estimates. When the slope
+    is not resolved from zero the interval is genuinely unbounded, and the
+    delta method reports a small symmetric sigma anyway. With window=3 the
+    residual variance has ONE degree of freedom, which is exactly that regime.
+    Reporting a confident date there is the failure mode this guards.
+    """
+    from inverse_velocity import fieller_intercept_ci
+    t = np.array([0.0, 12.0, 24.0])
+    y = np.array([0.050, 0.049, 0.051])          # flat: no acceleration
+    a, b = np.polyfit(t, y, 1)
+    ss_res = float(np.sum((y - (a * t + b)) ** 2))
+    lo, hi, bounded = fieller_intercept_ci(t, y, float(a), float(b), ss_res)
+    assert bounded is False
+
+
+def test_a_clean_acceleration_does_bound_a_failure_date():
+    """The interval must not be unbounded for every input, or it says nothing."""
+    from inverse_velocity import fieller_intercept_ci
+    t = np.array([0.0, 12.0, 24.0, 36.0, 48.0])
+    # Falling hard, with a little scatter - a noiseless line makes the Fieller
+    # discriminant exactly zero and the test would only be probing rounding.
+    y = 0.10 - 0.0018 * t + np.array([2e-4, -1e-4, 1e-4, -2e-4, 1e-4])
+    a, b = np.polyfit(t, y, 1)
+    ss_res = float(np.sum((y - (a * t + b)) ** 2))
+    lo, hi, bounded = fieller_intercept_ci(t, y, float(a), float(b), ss_res)
+    assert bounded is True
+    assert lo < (-b / a) < hi
+
+
+def test_the_t_table_is_not_the_normal_approximation_at_small_dof():
+    """
+    1 dof is 12.7, not 1.96. Using the normal there would shrink every
+    interval by a factor of six and manufacture bounded forecasts.
+    """
+    from inverse_velocity import t_crit_95
+    assert t_crit_95(1) > 12.0
+    assert t_crit_95(2) > 4.0
+    assert abs(t_crit_95(500) - 1.96) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# A non-finite floor must never reach the gate.
+# ---------------------------------------------------------------------------
+def test_a_non_finite_floor_is_rejected_not_parsed(tmp_path):
+    """
+    An infinite floor puts every velocity below the gate and manufactures a
+    non-detection silently - the direction of the published conclusion, which
+    is the one direction this project cannot afford to fail in. The old guard
+    compared the raw string against ("nan", "inf") and missed "NaN" and "-inf".
+    """
+    from inverse_velocity import load_floors
+    p = tmp_path / "floors.csv"
+    p.write_text(
+        "reference,secondary,layer,detect_floor_mm_day\n"
+        "20260702,20260714,HH/layer2,NaN\n"
+        "20260714,20260726,HH/layer2,-inf\n"
+        "20260726,20260819,HH/layer2,Infinity\n"
+        "20260819,20260831,HH/layer2,15.6\n", encoding="utf-8")
+    floors = load_floors(p, "layer2")
+    assert len(floors) == 1
+    assert all(np.isfinite(v) and v > 0 for v in floors.values())

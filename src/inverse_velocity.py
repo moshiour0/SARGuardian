@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import math
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -109,7 +110,19 @@ def load_floors(path: Path, layer: str | None = None) -> dict[tuple[date, date],
             if layer and row.get("layer") and layer not in row["layer"]:
                 continue
             raw = row.get("detect_floor_mm_day")
-            if not raw or raw in ("nan", "inf"):
+            if not raw:
+                continue
+            # A string comparison against ("nan", "inf") misses "NaN", "-inf",
+            # "1e400" and anything else that parses to a non-finite float. An
+            # infinite floor would put every velocity below the gate and
+            # manufacture a non-detection silently - the one direction of error
+            # this project cannot afford, since it is the direction of the
+            # published conclusion.
+            try:
+                probe = float(raw)
+            except ValueError:
+                continue
+            if not math.isfinite(probe) or probe <= 0:
                 continue
             try:
                 a = datetime.strptime(row["reference"], "%Y%m%d").date()
@@ -140,12 +153,83 @@ def velocities(rows: list[dict], floors: dict | None = None) -> list[dict]:
     return out
 
 
+# Two-sided 95% Student-t critical values by degrees of freedom. A lookup
+# table rather than scipy, which this project deliberately does not depend on.
+# dof 1 is the default window=3 case, and its value of 12.7 is the honest
+# reason a three-point forecast rarely bounds anything.
+_T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447,
+        7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179,
+        13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101,
+        19: 2.093, 20: 2.086, 25: 2.060, 30: 2.042}
+
+
+def t_crit_95(dof: int) -> float:
+    if dof <= 0:
+        return float("nan")
+    if dof in _T95:
+        return _T95[dof]
+    if dof > 30:
+        return 1.960
+    return _T95[max(k for k in _T95 if k < dof)]
+
+
+def fieller_intercept_ci(t: np.ndarray, y: np.ndarray, a: float, b: float,
+                         ss_res: float) -> tuple:
+    """
+    Exact 95% confidence interval for the x-intercept -b/a, by Fieller's theorem.
+
+    Why not the delta method
+    ------------------------
+    The x-intercept is a RATIO of two correlated estimates, so its sampling
+    distribution is heavy-tailed - Cauchy-like when the slope is poorly
+    determined - and has no finite variance in that regime. First-order
+    propagation reports a small symmetric sigma there anyway, which is a
+    confident-looking number for a date the data does not constrain at all.
+    With the default window of 3 the residual variance carries ONE degree of
+    freedom, which is exactly the regime where that failure occurs.
+
+    Fieller inverts the test |a*theta + b| <= t_crit * se(a*theta + b), giving
+    a quadratic in theta. When the leading coefficient a^2 - t_crit^2*Var(a) is
+    not positive the slope is not resolved from zero at 95%, the interval is
+    unbounded, and the honest report is "not bounded" rather than a number.
+
+    Returns (low, high, bounded).
+    """
+    n = len(t)
+    dof = n - 2
+    if dof < 1 or a == 0:
+        return (float("nan"), float("nan"), False)
+    tc = t_crit_95(dof)
+    X = np.vstack([t, np.ones_like(t)]).T
+    try:
+        xtx_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        return (float("nan"), float("nan"), False)
+    s2 = ss_res / dof
+    v_aa = s2 * xtx_inv[0, 0]
+    v_bb = s2 * xtx_inv[1, 1]
+    v_ab = s2 * xtx_inv[0, 1]
+
+    A = a * a - tc * tc * v_aa
+    B = 2.0 * (a * b - tc * tc * v_ab)
+    C = b * b - tc * tc * v_bb
+    if A <= 0:
+        return (float("nan"), float("nan"), False)   # slope not resolved
+    disc = B * B - 4.0 * A * C
+    if disc < 0:
+        return (float("nan"), float("nan"), False)
+    root = math.sqrt(disc)
+    lo, hi = (-B - root) / (2.0 * A), (-B + root) / (2.0 * A)
+    return (min(lo, hi), max(lo, hi), True)
+
+
 def fit_inverse_velocity(win: list[dict]) -> dict:
     """
-    Least-squares 1/v against time, with the x-intercept and its uncertainty.
+    Least-squares 1/v against time, with the x-intercept and a Fieller interval.
 
-    t_f = -b/a for the line 1/v = a*t + b. Uncertainty by first-order
-    propagation from the covariance of (a, b).
+    t_f = -b/a for the line 1/v = a*t + b. The interval is exact for a ratio
+    (see fieller_intercept_ci) rather than first-order propagation, which
+    understates it badly at the small windows this tool runs on.
     """
     t = np.array([(w["mid"] - win[0]["mid"]).days for w in win], dtype=float)
     # SPEED, not signed velocity. Fukuzono was written for an extensometer
@@ -180,11 +264,17 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
         except np.linalg.LinAlgError:
             pass
 
+    ci_lo, ci_hi, bounded = fieller_intercept_ci(t, inv, a, b, ss_res)
+    d0 = win[0]["mid"]
     return {"slope": a, "intercept": b, "r2": r2,
             "t_fail_days_from_window_start": t_fail_rel,
-            "t_fail_date": win[0]["mid"] + timedelta(days=t_fail_rel)
+            "t_fail_date": d0 + timedelta(days=t_fail_rel)
                            if np.isfinite(t_fail_rel) else None,
-            "sigma_days": sigma_tf, "n": n}
+            "sigma_days": sigma_tf, "n": n,
+            "ci_bounded": bounded,
+            "ci_low_date": d0 + timedelta(days=ci_lo) if bounded else None,
+            "ci_high_date": d0 + timedelta(days=ci_hi) if bounded else None,
+            "ci_width_days": (ci_hi - ci_lo) if bounded else float("nan")}
 
 
 def _spans(ws) -> list[tuple]:
@@ -288,7 +378,11 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
             else:
                 runs.append(cur); cur = [b]
         runs.append(cur)
-        longest = max(runs, key=len)
+        # Ties go to the MOST RECENT run, not the earliest. `max` returns the
+        # first maximum, which on a tie preferred a stale excursion months back
+        # over the one happening now - the wrong way round for a slope said to
+        # be accelerating toward failure.
+        longest = max(reversed(runs), key=len)
         if len(longest) < len(usable):
             print(f"\n  {len(usable)} intervals clear the floor but change direction; "
                   f"keeping the longest\n  consistent run of {len(longest)}. A slope "
@@ -359,8 +453,20 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     print(f"    (interval midpoints {win[0]['mid']} .. {win[-1]['mid']}; the fit "
           f"is on midpoints,\n     the lead time is from the acquisition)")
     print(f"    1/v slope {fit['slope']:+.5f} per day, R2 {fit['r2']:.3f}")
-    pm = f" +/- {fit['sigma_days']:.1f}" if np.isfinite(fit["sigma_days"]) else ""
-    print(f"    predicted failure {fit['t_fail_date']}{pm} days")
+    print(f"    predicted failure {fit['t_fail_date']}")
+    if fit.get("ci_bounded"):
+        print(f"    95% interval (Fieller) {fit['ci_low_date']} .. "
+              f"{fit['ci_high_date']}  ({fit['ci_width_days']:.0f} days wide)")
+    else:
+        print(f"    95% interval (Fieller): UNBOUNDED - the 1/v slope is not "
+              f"resolved from")
+        print(f"      zero at 95% on {fit['n']} points, so the data does not "
+              f"constrain a failure")
+        print(f"      date. The point estimate above is a fitted value, not a "
+              f"forecast.")
+    if np.isfinite(fit["sigma_days"]):
+        print(f"    (delta-method sigma {fit['sigma_days']:.1f} d, shown only "
+              f"for comparison - it understates a ratio)")
     print(f"    lead time {lead} days from the last observation ({last_obs})")
     if event_date:
         err = (fit["t_fail_date"] - event_date).days
@@ -368,6 +474,9 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     return {"alarm": True, "predicted": fit["t_fail_date"], "lead_days": lead,
             "last_observation": last_obs,
             "r2": fit["r2"], "sigma_days": fit["sigma_days"],
+            "ci_bounded": fit.get("ci_bounded", False),
+            "ci_low_date": fit.get("ci_low_date"),
+            "ci_high_date": fit.get("ci_high_date"),
             "dropped": dropped, "intervals": _spans(vs), "usable": _spans(usable),
             "fitted": _spans(win)}
 
@@ -409,7 +518,7 @@ def plot(series, noise_floor, sig_multiple, out: Path, event_date=None):
 def main() -> int:
     ap = argparse.ArgumentParser(description="Inverse-velocity forecasting on measured data")
     ap.add_argument("--ts", required=True, help="CSV from timeseries.py --csv")
-    ap.add_argument("--noise-floor", type=float, required=True,
+    ap.add_argument("--noise-floor", type=float, default=None,
                     help="mm/day, from goff_reader.py --noise-floor (GOFF) "
                          "or the phase ceiling analysis (GUNW). Used only for "
                          "intervals with no per-pair floor - see --floors")
@@ -451,6 +560,19 @@ def main() -> int:
         floors = load_floors(resolve(args.floors), args.floors_layer)
         logger.info("Loaded %d per-pair floors from %s", len(floors), args.floors)
 
+    # --noise-floor is only needed for intervals that have no per-pair floor.
+    # When it is omitted and floors were supplied, fall back to the LARGEST of
+    # them: a pair whose own floor is unknown must not be gated more leniently
+    # than the noisiest pair that is known, or a missing measurement would
+    # improve the bound.
+    if args.noise_floor is None:
+        if not floors:
+            logger.error("Give --noise-floor, or --floors to supply per-pair floors")
+            return 2
+        args.noise_floor = max(floors.values())
+        logger.info("No --noise-floor given; falling back to the largest "
+                    "per-pair floor, %.1f mm/day", args.noise_floor)
+
     print(f"\n{len(series)} independent block(s) from {args.ts}")
     if floors:
         print(f"Per-pair floors from {args.floors}"
@@ -471,8 +593,10 @@ def main() -> int:
     fired = [r for r in results if r.get("alarm")]
     if fired:
         for r in fired:
+            ci = (f", 95% {r['ci_low_date']}..{r['ci_high_date']}"
+                  if r.get("ci_bounded") else ", 95% UNBOUNDED")
             print(f"  ALARM: predicted {r['predicted']}, lead {r['lead_days']} d, "
-                  f"R2 {r['r2']:.2f}")
+                  f"R2 {r['r2']:.2f}{ci}")
     else:
         print(f"  No alarm in any of {len(results)} blocks.")
         for r in results:
