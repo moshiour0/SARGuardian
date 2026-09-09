@@ -346,6 +346,30 @@ MUTATIONS = [
      "    m = TRACK_RE.search(str(name))",
      "    m = None",
      "test_track_is_recovered_from_the_granule_name"),
+    # ---- scar mapping from optical -------------------------------------
+    ("snow masked out with the clouds, removing the whole signal",
+     "scar_map.py",
+     "UNUSABLE = {0, 1, 3, 8, 9, 10}",
+     "UNUSABLE = {0, 1, 3, 8, 9, 10, 11}",
+     "test_snow_is_not_treated_as_unusable"),
+
+    ("grid transform at the wrong scale, placing the scar 600 m out",
+     "scar_map.py",
+     "    return tf_from_bounds(*b, width=GRID[1], height=GRID[0])",
+     "    return tf_from_bounds(*b, width=GRID[1]*2, height=GRID[0]*2)",
+     "test_the_grid_transform_comes_from_the_aoi_not_a_band"),
+
+    ("an unobserved location reported as observed",
+     "scar_map.py",
+     '        return {"lat": lat, "lon": lon, "n_usable": 0, "observed": False}',
+     '        return {"lat": lat, "lon": lon, "n_usable": 0, "observed": True}',
+     "test_an_unobserved_point_is_reported_as_untested_not_as_clean"),
+
+    ("centroid not weighted by the strength of the change",
+     "scar_map.py",
+     "    w = np.where(np.isfinite(dv), -dv, 0.0)",
+     "    w = np.ones_like(dv)",
+     "test_measure_reports_extent_and_a_change_weighted_centroid"),
 ]
 
 

@@ -44,18 +44,19 @@ Set that against what this project measured:
 | Precursory creep, measured by Sentinel-1 phase | **0.33** |
 | NISAR GOFF 3-sigma floor, AOI median, ascending | 19.8 |
 | NISAR GOFF 3-sigma floor, at the assumed failure point | 40.4 |
-| Same floor as a bound on **downslope** motion, worst credible geometry | **143** |
+| Same floor as a bound on **downslope** motion, at the mapped scar | **68** |
 
 The precursor sits **two to three orders of magnitude below** anything this
 product could resolve. So the null was real, the bound was sound, and the
 conclusion is unchanged - but the correct statement is not "nothing was
 happening". It is:
 
-> **A precursor existed at ~0.3 mm/day. Our measured floor at the failure point
-> is 40.4 mm/day in line of sight, and up to 143 mm/day expressed as downslope
-> motion once look geometry is accounted for. NISAR L2 offset tracking at
-> 12-day repeat was therefore between 120x and 430x too insensitive to see the
-> signal that was there. The gap is the result.**
+> **A precursor existed at ~0.33 mm/day. Our floor at the mapped scar is
+> 32.0 mm/day in line of sight, and 68 mm/day expressed as downslope motion
+> once look geometry is accounted for. NISAR L2 offset tracking at 12-day
+> repeat was therefore about 100x too insensitive in line of sight, and 200x
+> on the motion itself, to see the signal that was there. The gap is the
+> result.**
 
 That is a stronger claim than the one it replaces, because it is a measured
 requirement rather than an absence, and because an independent instrument
@@ -85,11 +86,24 @@ whole 82 km2 source polygon the same products give 18.6 mm/day, and quoting
 that number here would overstate what NISAR could see on the hillside that
 failed. See [the bound at the point](#the-bound-at-the-point-not-over-the-area).
 
-**And the failure point is a guess - which costs the bound a factor of three.**
-28.28771 N 85.52809 E was estimated from the reported location, not derived
-from the data. Its elevation (5,166 m) is close to the ~5,200 m detachment in
-the published accounts. But every published description puts the scar on the
-**north face** of Langtang Lirung, and SRTM at that pixel reads **west-facing**.
+### The failure point was a guess, and it was wrong. Here is the measured one.
+
+`28.28771 N 85.52809 E` was estimated from the reported location, never derived
+from data. It has now been tested against Sentinel-2 and **it is not on the
+scar** - see [mapping the scar](#mapping-the-scar-from-optical-imagery). The
+measured detachment is **1.09 km south-southwest**, at
+
+> **28.27802 N, 85.52963 E** - 0.68 km2, 1.39 km across, 5,203-5,730 m,
+> slope 39 deg, **aspect 342 deg (NNW)**, 99.8% ice-covered before the event.
+
+Everything below that depends on aspect changes with it, and the bound weakens
+by a factor of two. The old text of this section, kept because the reasoning
+still holds and only the input was wrong:
+
+**The aspect costs the bound a factor of three.** Its elevation (5,166 m) is
+close to the ~5,200 m detachment in the published accounts. But every published
+description puts the scar on the **north face** of Langtang Lirung, and SRTM at
+that pixel reads **west-facing**.
 
 That is not a stencil artefact. Aspect there is 268-279 degrees at every DEM
 stencil from 60 m to 300 m. The pixel is robustly west-facing, so it is
@@ -114,15 +128,26 @@ threshold**, and the mission has no usable look direction at the scar at all -
 only Sentinel-1 does, at -0.452. It is worth noting that the independent
 detection above was made with Sentinel-1.
 
-So the honest headline bound on **downslope** motion is the worst of these,
-**143 mm/day**, not the 45 mm/day the west-facing assumption would license. The
-argument survives comfortably either way - the measured precursor was 0.33
-mm/day, so even the weakest bound sits 430x above it - but the number quoted
-has to be the one that does not depend on an aspect nobody has confirmed.
+Neither bracket is the answer. The measured scar sits at aspect 342 deg, which
+is inside them:
 
-Fixing this needs the scar mapped from optical imagery, which is
-[still to verify](#still-to-verify). It is the largest open uncertainty in the
-analysis, and it is now quantified rather than merely declared.
+| Failing surface | NISAR ASC 098 | LOS floor | Downslope bound |
+|---|---|---|---|
+| West-facing 273 deg, assumed | -0.892 | 40.4 | 45 mm/day |
+| **Measured scar, 342 deg** | **-0.47 to -0.57** | **32.0** | **68 mm/day** |
+| Due north 0 deg | -0.283 blind | 40.4 | 143 mm/day |
+
+Both columns had to move, because the line-of-sight floor was also measured at
+the wrong place. At the mapped scar the three intervals covering the seven
+weeks before failure read **32.0, 26.0 and 7.8 mm/day**, against 40.4, 19.2 and
+34.3 at the abandoned point, and on more valid pixels (71/60/60 of 169 against
+49/65/26). A bound holding across a window is set by its weakest interval, so
+32.0 mm/day in line of sight becomes **68 mm/day of downslope motion**.
+
+So the headline bound is **68 mm/day**, measured on a surface that was mapped
+rather than assumed. The argument was never in danger - the precursor was 0.33
+mm/day, so even the weakest reading of the geometry sits hundreds of times
+above it - but the number is now derived from the ground that actually failed.
 
 That is a bounded null with a measured floor behind it, paired with a measured
 positive - and it is an argument about instruments and revisit, not about this
@@ -448,6 +473,105 @@ indicative on shallow ground.
 co-event GUNW pair, PR and UR give AOI medians of -85.93 mm and +251.00 mm - a
 336.93 mm gap, 2.76 fringes. `gunw_reader.py` catches this itself and refuses
 to average them. Keep the product that agrees with the rest of the stack.
+
+---
+
+## Mapping the scar from optical imagery
+
+`src/scar_map.py`. The aspect of the failing surface decides every sensitivity
+number in this repository, and until this module existed that aspect came from
+an SRTM pixel at a failure point that was itself read off a report. So it was
+measured instead, from Sentinel-2, which sees the scar rather than inferring it.
+
+```bash
+python src/scar_map.py --survey    # what imagery exists, and its AOI cloud
+python src/scar_map.py --map       # find and measure the scar
+python src/scar_map.py --probe 28.28771 85.52809
+```
+
+Free imagery, no credentials: the Element84 Earth Search STAC and the public
+`sentinel-cogs` bucket.
+
+**Cloud has to be scored over the AOI, not the scene.** They are not the same
+number in this terrain. 2026-09-08 is 62.7% cloudy as a 110 km scene and 74.2%
+over the 82 km2 source zone; 2026-08-12 is 18.7% as a scene and **2.6%** over
+the AOI. Ranking on the scene figure would have discarded the best pre-event
+image in the archive.
+
+One post-event scene covers a quarter of the AOI. Seven of them stacked, most
+recent clear pixel winning, reach **50.3%**. That is the honest ceiling on this
+analysis and the reason the result is stated as the largest feature that can be
+mapped, not the only one that exists.
+
+**The signal is the loss of snow.** The scar is ice and rock face replaced by
+bare rock, so NDSI falls hard. Fresh September snowfall pushes it the other
+way, which is what makes this robust: weather can hide the scar but cannot
+manufacture one.
+
+### What it found
+
+| | |
+|---|---|
+| Centroid | **28.27802 N, 85.52963 E** |
+| Area | 0.68 km2, 1,390 m N-S x 1,218 m E-W |
+| Elevation | 5,203 - 5,730 m |
+| Slope / aspect | 39 deg / **342 deg (NNW)** |
+| Was snow or ice | **99.8%** |
+| NDSI change | median -0.374, min -0.769 |
+| Scar-like pixels | **90%** inside, against **7.5%** across the AOI |
+
+Four things agree with the published accounts, none of which went into finding
+it: the detachment is described at about 5,200 m (measured 5,203 at its
+northern end), on the **north face** (measured 342 deg), on a rock face beneath
+a hanging glacier (measured 99.8% ice-covered before), and roughly 1.4 km
+across (measured 1.39 km).
+
+### The assumed failure point is not on it
+
+It is 1.09 km away, and the test is not ambiguous:
+
+```
+PROBE 28.28771 N 85.52809 E
+  usable pixels     121
+  NDSI change       median +0.379, min +0.139
+  was snow or ice   0.0%
+  scar-like         0.0%  against 7.46% across the AOI
+
+  NOT A SCAR. Observed, and the surface got brighter rather
+  than darker - fresh snow on ground that was never glaciated.
+```
+
+121 usable pixels means it is **observed**, not hidden - there is no cloud to
+appeal to. Not one pixel darkened. It was never glaciated. It is bare ground
+that took a dusting of fresh snow, which is the opposite of a scar in every
+respect that can be measured.
+
+### What it costs
+
+Both halves of the bound were measured in the wrong place, and both move:
+
+| | Assumed point | Mapped scar |
+|---|---|---|
+| Aspect | 273 deg (W) | **342 deg (NNW)** |
+| NISAR ASC 098 sensitivity | -0.892 | **-0.47 to -0.57** |
+| NISAR DESC 048 | +0.158 blind | -0.29 to -0.36 blind |
+| Worst pre-event LOS floor | 40.4 mm/day | **32.0 mm/day** |
+| Valid pixels, three intervals | 49 / 65 / 26 | **71 / 60 / 60** |
+| **Downslope bound** | 45 mm/day | **68 mm/day** |
+
+The floor itself improves - the scar is better observed than the guess was -
+while the geometry gets worse, and the geometry wins. NISAR ascending remains
+usable; NISAR descending is blind on this aspect either way, so **NISAR alone
+is one look direction here** and the multi-geometry solution needs Sentinel-1.
+
+### Limits
+
+Half the AOI is never seen cloud-free after the event. The comparison spans 12
+August to 8 September, so a fortnight of ordinary seasonal change sits inside
+it, and 7.5% of comparable ground looks scar-like on the same test. The
+identification rests on the enrichment, the terrain and the extent agreeing
+together, not on the change image alone. There is no published scar polygon to
+check it against, so this is the best available answer and not a verified one.
 
 ---
 
