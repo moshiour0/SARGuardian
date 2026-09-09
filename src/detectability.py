@@ -156,13 +156,22 @@ class Detector:
         used only to score the result.
         """
         if len(times) < self.window + 1:
-            return {"alarm": False, "reason": "too few samples"}
+            return {"alarm": False, "reason": "too few samples", "tested": 0}
 
         dt = np.diff(times)
         vel = np.diff(disp) / dt
         tau = times[:-1] + dt / 2.0        # velocity is a mid-interval quantity
 
+        # Every trailing window is a separate opportunity to alarm, and the
+        # count scales as 1/revisit: about 37 of them at daily sampling over a
+        # 30-day lead-in against 1 at 12-day. A per-window criterion applied
+        # 37 times is not the same test as one applied once, so the number is
+        # reported rather than left implicit - see `far_per_window` in
+        # simulate(), which is the multiplicity-free comparison.
+        tested = 0
+
         for k in range(self.window, len(vel) + 1):
+            tested += 1
             wt = tau[k - self.window:k]
             wv = vel[k - self.window:k]
             wdt = dt[k - self.window:k]
@@ -189,6 +198,7 @@ class Detector:
 
             return {
                 "alarm": True,
+                "tested": tested,
                 "alarm_day": float(now),
                 "warning_days": float(failure_day - now),
                 "predicted_failure_day": float(pred),
@@ -197,7 +207,8 @@ class Detector:
                 "n_samples_used": int(self.window),
             }
 
-        return {"alarm": False, "reason": "no qualifying trend before failure"}
+        return {"alarm": False, "reason": "no qualifying trend before failure",
+                "tested": tested}
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +235,16 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
     T = precursor.duration_days
     ceiling_mm = (wavelength_m / 4.0) * 1000.0 if wavelength_m else None
     warnings, errors, alarms, saturated, premature = [], [], 0, 0, 0
+    # Trials are silently dropped when the cadence puts too few samples in the
+    # record for a window to fit, and the drop rate is severe at long revisit:
+    # at a 7-day precursor, 12-day revisit and a 30-day lead-in, 11 of every 12
+    # trials never reach the detector. Dividing by n_trials therefore reported
+    # a saturation rate of ~9% where the truth was ~100% of the trials that ran,
+    # and moved with --lead-in, a parameter that changes no physics. Every rate
+    # below divides by the number of trials it actually describes.
+    n_eligible = 0        # enough samples to attempt at all
+    n_ran = 0             # reached the detector
+    windows_signal = 0    # alarm opportunities, summed over trials
 
     for _ in range(n_trials):
         # acquisitions on a fixed cadence with a random phase relative to onset
@@ -232,6 +253,7 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
         t = t[t < T]                       # nothing observed after failure
         if len(t) < detector.window + 1:
             continue
+        n_eligible += 1
 
         truth = np.where(t < 0, 0.0, precursor.displacement(np.maximum(t, 0.0)))
 
@@ -260,7 +282,9 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
 
         obs = truth + rng.normal(0.0, noise_mm, size=len(t))
 
+        n_ran += 1
         result = detector.run(t, obs, failure_day=T)
+        windows_signal += result.get("tested", 0)
         if result["alarm"]:
             # An alarm inside the stable lead-in is a FALSE alarm, whatever the
             # trial contains later. The detector scans from the earliest window
@@ -281,6 +305,9 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
     # measure, because every trial already carries a stable lead-in - so run
     # the same detector, same cadence, same noise, on a slope that never moves.
     false_alarms = 0
+    n_null_ran = 0
+    windows_null = 0
+    null_days = 0.0
     for _ in range(n_null):
         offset = rng.uniform(0, revisit_days)
         t = np.arange(-lead_in_days + offset, T, revisit_days)
@@ -288,14 +315,33 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
         if len(t) < detector.window + 1:
             continue
         obs = rng.normal(0.0, noise_mm, size=len(t))
-        if detector.run(t, obs, failure_day=T)["alarm"]:
+        n_null_ran += 1
+        null_days += float(t[-1] - t[0])
+        r = detector.run(t, obs, failure_day=T)
+        windows_null += r.get("tested", 0)
+        if r["alarm"]:
             false_alarms += 1
 
-    sat_rate = saturated / n_trials
-    far = false_alarms / n_null if n_null else float("nan")
+    sat_rate = saturated / n_eligible if n_eligible else float("nan")
+    far = false_alarms / n_null_ran if n_null_ran else float("nan")
+    # Three false-alarm rates, because the per-trial one is not comparable
+    # across revisits and that is exactly where this module once went wrong.
+    #
+    #   per trial   what a single monitored record risks. Depends on how long
+    #               the record is and on how many windows fit inside it.
+    #   per window  the per-decision rate, with multiplicity divided out. This
+    #               is the like-for-like comparison between cadences.
+    #   per 100 d   the operational rate: how often an analyst is called out.
+    #               A cadence that tests more often can hold the per-window
+    #               rate constant and still raise this one.
+    far_win = false_alarms / windows_null if windows_null else float("nan")
+    far_100d = 100.0 * false_alarms / null_days if null_days > 0 else float("nan")
     base = {"revisit_days": revisit_days, "saturation_rate": sat_rate,
-            "n_trials": n_trials, "false_alarm_rate": far, "n_null": n_null,
-            "premature_rate": premature / n_trials}
+            "n_trials": n_trials, "n_eligible": n_eligible, "n_ran": n_ran,
+            "false_alarm_rate": far, "far_per_window": far_win,
+            "far_per_100d": far_100d, "n_null": n_null, "n_null_ran": n_null_ran,
+            "windows_per_trial": (windows_null / n_null_ran) if n_null_ran else float("nan"),
+            "premature_rate": premature / n_ran if n_ran else float("nan")}
     if alarms == 0:
         return {**base, "detection_rate": 0.0, "warning_median": float("nan"),
                 "warning_p25": float("nan"), "warning_p75": float("nan"),
@@ -304,7 +350,7 @@ def simulate(precursor: Precursor, detector: Detector, revisit_days: float,
     w = np.array(warnings)
     return {
         **base,
-        "detection_rate": alarms / n_trials,
+        "detection_rate": alarms / n_ran if n_ran else 0.0,
         "warning_median": float(np.median(w)),
         "warning_p25": float(np.percentile(w, 25)),
         "warning_p75": float(np.percentile(w, 75)),
@@ -333,11 +379,11 @@ def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
                  else f"flat {detector.min_velocity_mm_day:g} mm/day")
         print(f"SIGNIFICANCE GATE: {gdesc}")
         print(f"{'='*74}")
-        print(f"{'REVISIT':>8}{'SAMPLES':>8}{'SATUR':>7}{'DETECT':>8}{'FALSE':>7}"
-              f"{'EARLY':>7}{'WARNING (days)':>22}{'|ERR|':>8}")
-        print(f"{'days':>8}{'in T':>8}{'rate':>7}{'rate':>8}{'ALARM':>7}"
-              f"{'rej.':>7}{'median [p25-p75]':>22}{'days':>8}")
-        print("-" * 82)
+        print(f"{'REVISIT':>8}{'RAN':>11}{'WIN':>6}{'SATUR':>7}{'DETECT':>8}"
+              f"{'FA/trial':>9}{'FA/win':>8}{'FA/100d':>9}{'WARNING (days)':>21}{'|ERR|':>7}")
+        print(f"{'days':>8}{'requested':>11}{'/tr':>6}{'rate':>7}{'rate':>8}"
+              f"{'':>9}{'':>8}{'':>9}{'median [p25-p75]':>21}{'days':>7}")
+        print("-" * 94)
         for dt in revisits:
             # A seed per cell, derived from the cell. The shared generator
             # was consumed in sequence, so a cell's numbers depended on
@@ -353,20 +399,25 @@ def sweep(precursor_days: list[float], revisits: list[float], noise_mm: float,
             r["gate"] = detector.gate
             r["gate_mm_day"] = round(detector.threshold(dt), 3)
             rows.append(r)
-            n_in = int(T // dt)
             rate = r["detection_rate"]
-            sat = f"{r.get('saturation_rate', 0):.0%}"
+            ran = f"{r['n_ran']}/{r['n_trials']}"
+            wins = (f"{r['windows_per_trial']:.0f}"
+                    if np.isfinite(r["windows_per_trial"]) else "-")
+            sat = (f"{r['saturation_rate']:.0%}"
+                   if np.isfinite(r.get("saturation_rate", float("nan"))) else "-")
             far = f"{r['false_alarm_rate']:.1%}"
-            early = f"{r['premature_rate']:.0%}"
+            farw = f"{r['far_per_window']:.2%}" if np.isfinite(r["far_per_window"]) else "-"
+            far100 = f"{r['far_per_100d']:.2f}" if np.isfinite(r["far_per_100d"]) else "-"
             if rate == 0:
-                print(f"{dt:>8g}{n_in:>8}{sat:>7}{'never':>8}{far:>7}{early:>7}"
-                      f"{'-':>22}{'-':>8}")
+                print(f"{dt:>8g}{ran:>11}{wins:>6}{sat:>7}{'never':>8}"
+                      f"{far:>9}{farw:>8}{far100:>9}{'-':>21}{'-':>7}")
             else:
                 # a handful of lucky alarms is not detection - do not round it to 0%
                 shown = "<1%" if rate < 0.005 else f"{rate:.0%}"
                 band = f"{r['warning_median']:.1f} [{r['warning_p25']:.1f}-{r['warning_p75']:.1f}]"
-                print(f"{dt:>8g}{n_in:>8}{sat:>7}{shown:>8}{far:>7}{early:>7}"
-                      f"{band:>22}{r['abs_pred_error_median']:>8.1f}")
+                print(f"{dt:>8g}{ran:>11}{wins:>6}{sat:>7}{shown:>8}"
+                      f"{far:>9}{farw:>8}{far100:>9}{band:>21}"
+                      f"{r['abs_pred_error_median']:>7.1f}")
         # where does it stop working
         # Detection is only real when it beats its own false-alarm rate. A cell
         # detecting 10% against an 11.9% null has found nothing, however
@@ -576,9 +627,12 @@ def main() -> int:
 
     if args.csv:
         keys = ["precursor_days", "revisit_days", "detection_rate",
-                "false_alarm_rate", "premature_rate", "warning_median",
-                "warning_p25", "warning_p75", "abs_pred_error_median",
-                "noise_mm", "creep_mm", "n_trials", "gate", "gate_mm_day"]
+                "false_alarm_rate", "far_per_window", "far_per_100d",
+                "windows_per_trial", "saturation_rate", "premature_rate",
+                "warning_median", "warning_p25", "warning_p75",
+                "abs_pred_error_median", "noise_mm", "creep_mm",
+                "n_trials", "n_eligible", "n_ran", "n_null", "n_null_ran",
+                "gate", "gate_mm_day"]
         with open(args.csv, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")
             w.writeheader(); w.writerows(rows)

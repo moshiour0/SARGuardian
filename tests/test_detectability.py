@@ -223,3 +223,57 @@ def test_gradient_fraction_relaxes_the_phase_ceiling():
                        gradient_fraction=0.02)["saturation_rate"]
     assert blatten > 0.9, (
         "at 27 m of creep in 7 days phase saturates even at 2% of the gradient")
+
+
+# ---------------------------------------------------------------------------
+# Rates must divide by the trials they describe.
+# ---------------------------------------------------------------------------
+def test_skipped_trials_leave_the_denominator():
+    """
+    A cadence that puts too few samples in the record never reaches the
+    detector, and those trials used to stay in the denominator anyway. At a
+    7-day precursor, 12-day revisit and a 30-day lead-in that is 11 trials in
+    12, so a saturation rate of ~100% was published as ~9% - and it moved with
+    --lead-in, a parameter that changes no physics.
+    """
+    from detectability import Detector, Precursor, simulate
+    rng = np.random.default_rng(1)
+    r = simulate(Precursor(7.0, 27000.0), Detector(noise_mm=5.0), 12.0,
+                 5.0, 200, rng, lead_in_days=30.0, wavelength_m=0.2384,
+                 n_null=100)
+    assert r["n_ran"] <= r["n_eligible"] <= r["n_trials"]
+    assert r["n_eligible"] < r["n_trials"]          # trials really are dropped
+    # the rate describes the trials that ran, so it is not diluted to ~1/12
+    assert r["saturation_rate"] > 0.5
+
+
+def test_the_window_count_scales_inversely_with_revisit():
+    """
+    Every trailing window is a separate opportunity to alarm. The count goes
+    as 1/revisit, so a per-window criterion applied 37 times at daily sampling
+    is not the same test as one applied once at 12-day. The multiplicity is
+    reported rather than left implicit.
+    """
+    from detectability import Detector, Precursor, simulate
+    rng = np.random.default_rng(2)
+    fast = simulate(Precursor(10.0), Detector(noise_mm=5.0), 1.0, 5.0, 50, rng,
+                    n_null=50)
+    slow = simulate(Precursor(10.0), Detector(noise_mm=5.0), 4.0, 5.0, 50, rng,
+                    n_null=50)
+    assert fast["windows_per_trial"] > 3 * slow["windows_per_trial"]
+
+
+def test_the_detector_reports_how_many_windows_it_tested():
+    """Without this the per-window false-alarm rate cannot be formed at all."""
+    from detectability import Detector
+    d = Detector(noise_mm=5.0)
+    t = np.arange(0.0, 20.0, 1.0)
+    out = d.run(t, np.zeros_like(t), failure_day=20.0)
+    assert out["tested"] == len(t) - 1 - d.window + 1
+
+
+def test_too_few_samples_reports_zero_windows_tested():
+    from detectability import Detector
+    d = Detector(noise_mm=5.0)
+    t = np.array([0.0, 1.0])
+    assert d.run(t, np.zeros_like(t), failure_day=5.0)["tested"] == 0
