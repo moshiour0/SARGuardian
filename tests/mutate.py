@@ -310,6 +310,51 @@ MUTATIONS = [
      '        leaked = [w for w in vs if w["t1"] >= cutoff]',
      '        leaked = [w for w in vs if w["t1"] > cutoff]',
      "test_an_interval_ending_exactly_on_the_event_is_excluded"),
+    # ---- restart2: fixes found in the 9 Sep 2026 audit --------------------
+    ("rates divide by requested trials, not trials that ran",
+     "detectability.py",
+     'sat_rate = saturated / n_eligible if n_eligible else float("nan")',
+     'sat_rate = saturated / n_trials',
+     "test_skipped_trials_leave_the_denominator"),
+
+    ("detector does not report how many windows it tested",
+     "detectability.py",
+     '            tested += 1
+',
+     '',
+     "test_the_detector_reports_how_many_windows_it_tested"),
+
+    ("failure date bounded even when the slope is not resolved",
+     "inverse_velocity.py",
+     "    if A <= 0:
+        return (float(\"nan\"), float(\"nan\"), False)   # slope not resolved",
+     "    if False:
+        return (float(\"nan\"), float(\"nan\"), False)",
+     "test_a_three_point_fit_on_noise_does_not_bound_a_failure_date"),
+
+    ("non-finite per-pair floor reaches the gate",
+     "inverse_velocity.py",
+     "            if not math.isfinite(probe) or probe <= 0:
+                continue",
+     "            if False:
+                continue",
+     "test_a_non_finite_floor_is_rejected_not_parsed"),
+
+    ("local floor reported without a sampling interval",
+     "local_floor.py",
+     "    return (float(np.percentile(good, 2.5)), float(np.percentile(good, 97.5)))",
+     "    return (float(np.median(good)), float(np.median(good)))",
+     "test_the_bootstrap_interval_brackets_the_point_estimate"),
+
+    ("track dropped from the derived statistics",
+     "gunw_reader.py",
+     '    m = TRACK_RE.search(str(name))
+    if not m:
+        return ""',
+     '    m = None
+    if not m:
+        return ""',
+     "test_track_is_recovered_from_the_granule_name"),
 ]
 
 

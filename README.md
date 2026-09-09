@@ -12,20 +12,65 @@ the reason is the result.
 
 **Spaceborne L-band SAR has four regimes over this terrain, and the failure
 falls in the one where both products stop working.** Interferometric phase
-measures slow creep and only in winter, because in the monsoon it retains 0-3%
-of its pixels. Offset tracking survives the monsoon but its floor is 19 mm/day,
-a thousand times slower than a failing slope. When the slope actually goes, the
-surface is destroyed, correlation collapses, and offset tracking loses the
-ground it was tracking - which is itself the only signal either product records
-of the event.
+measures slow creep and only in winter: over the source zone it holds **52% of
+the AOI on ascending in winter and 2% in the monsoon**. Offset tracking survives
+the monsoon but its 3-sigma floor is 19.8 mm/day over the AOI and worse at a
+point, hundreds of times faster than the creep that precedes a failure like
+this. When the slope actually goes, the surface is destroyed, correlation
+collapses, and offset tracking loses the ground it was tracking - which is
+itself the only signal either product records of the event.
 
-So the answer to "can NISAR give warning of a collapse like this one" is: not
-at 12-day repeat, not with L2 products, and we can say precisely which limit
-stopped each one. **No motion above 40.4 mm/day at the failure point in the
-seven weeks before failure**, on the one NISAR geometry with a stable floor,
-with the last observation seven days out. A Blatten-class precursor - 0.5-0.8
-m/day at six days out - would have exceeded that floor by **12-20x**. It was
-not there.
+So the answer to "can NISAR L2 give warning of a collapse like this one" is no,
+and we can say precisely which limit stopped each product.
+
+### The precursor was there. We could not have seen it.
+
+This page used to end that paragraph with *"It was not there."* **That was
+wrong, and it is the most important correction in this repository.**
+
+Precursory motion at Langtang Lirung **was** detected - by someone else, with a
+different instrument, after the event. Manoochehr Shirzaei (Virginia Tech)
+measured the glacier-rock system creeping at roughly **10 mm/month, about 0.33
+mm/day**, from Sentinel-1 interferometry spanning 8 January to 18 August 2026,
+with part of the slope accelerating over the final weeks. The researchers are
+explicit that this is hindsight and not a forecast: the acceleration "could not
+show whether a failure was imminent", and the pattern became legible only after
+the collapse.
+
+Set that against what this project measured:
+
+| | mm/day |
+|---|---|
+| Precursory creep, measured by Sentinel-1 phase | **0.33** |
+| NISAR GOFF 3-sigma floor, AOI median, ascending | 19.8 |
+| NISAR GOFF 3-sigma floor, at the assumed failure point | 40.4 |
+| Same floor as a bound on **downslope** motion, worst credible geometry | **143** |
+
+The precursor sits **two to three orders of magnitude below** anything this
+product could resolve. So the null was real, the bound was sound, and the
+conclusion is unchanged - but the correct statement is not "nothing was
+happening". It is:
+
+> **A precursor existed at ~0.3 mm/day. Our measured floor at the failure point
+> is 40.4 mm/day in line of sight, and up to 143 mm/day expressed as downslope
+> motion once look geometry is accounted for. NISAR L2 offset tracking at
+> 12-day repeat was therefore between 120x and 430x too insensitive to see the
+> signal that was there. The gap is the result.**
+
+That is a stronger claim than the one it replaces, because it is a measured
+requirement rather than an absence, and because an independent instrument
+supplies the ground truth. It also names the fix: the detection was made with
+**phase**, not offsets, and this project reached for offsets partly because a
+coverage bug made winter phase look like a 3% scrap when it is more than half
+the AOI. See [the coverage correction](#product-coverage).
+
+**A Blatten-class precursor would not have saved us either.** The comparison
+this page used to draw - 0.5-0.8 m/day at six days out, which clears the floor
+by 12-20x - uses only the *final days* of that event. Blatten's usable-lead-time
+precursor was 50 cm/yr in 2023 rising past 150 cm/yr in August 2024, which is
+**1.4-4.1 mm/day**, and it too was found with L-band phase. That is 10-30x
+*below* our floor. Both events say the same thing: offset tracking is the wrong
+instrument for precursor detection, and the useful signal lives in phase.
 
 That bound is the **worst** of the three intervals covering those seven weeks
 (40.4, 19.2 and 34.3 mm/day at the failure point), because a bound that holds
@@ -40,13 +85,44 @@ whole 82 km2 source polygon the same products give 18.6 mm/day, and quoting
 that number here would overstate what NISAR could see on the hillside that
 failed. See [the bound at the point](#the-bound-at-the-point-not-over-the-area).
 
-**And the failure point is a guess.** 28.28771 N 85.52809 E was estimated from
-the reported location, not derived from the data. Its elevation (5,166 m)
-matches the ~5,200 m detachment in the published accounts, but the reported
-scar is roughly 1.4 km wide on the **north face** of Langtang Lirung while the
-SRTM aspect at that single pixel reads west-facing. The aspect drives every
-sensitivity number below, so this is the largest open uncertainty in the
-analysis and it is stated rather than buried.
+**And the failure point is a guess - which costs the bound a factor of three.**
+28.28771 N 85.52809 E was estimated from the reported location, not derived
+from the data. Its elevation (5,166 m) is close to the ~5,200 m detachment in
+the published accounts. But every published description puts the scar on the
+**north face** of Langtang Lirung, and SRTM at that pixel reads **west-facing**.
+
+That is not a stencil artefact. Aspect there is 268-279 degrees at every DEM
+stencil from 60 m to 300 m. The pixel is robustly west-facing, so it is
+probably not on the surface that failed. Searching the surrounding 2 km, the
+nearest terrain that matches the published description - steep, north-facing,
+at the right elevation - is about **550 m south**, at 28.27771 N 85.52809 E:
+5,374 m, slope 39.8 degrees, aspect 351 degrees.
+
+Aspect decides every sensitivity number in this repository, because sensitivity
+is a dot product with the downslope vector. Run it three ways
+(`geometry_merge.py --sensitivity --aspect ...`, which exists so this can be
+tested rather than asserted):
+
+| Failing surface | NISAR ASC 098 sensitivity | LOS floor -> downslope bound |
+|---|---|---|
+| West-facing, 273 deg (assumed point, as SRTM reads it) | -0.892, usable | 40.4 -> **45 mm/day** |
+| North-facing, 351 deg (nearest matching terrain) | -0.509, usable | 40.4 -> **79 mm/day** |
+| Due north, 0 deg (published description taken literally) | **-0.283, BLIND** | 40.4 -> **143 mm/day** |
+
+**On a due-north face both NISAR geometries fall below the 0.3 usability
+threshold**, and the mission has no usable look direction at the scar at all -
+only Sentinel-1 does, at -0.452. It is worth noting that the independent
+detection above was made with Sentinel-1.
+
+So the honest headline bound on **downslope** motion is the worst of these,
+**143 mm/day**, not the 45 mm/day the west-facing assumption would license. The
+argument survives comfortably either way - the measured precursor was 0.33
+mm/day, so even the weakest bound sits 430x above it - but the number quoted
+has to be the one that does not depend on an aspect nobody has confirmed.
+
+Fixing this needs the scar mapped from optical imagery, which is
+[still to verify](#still-to-verify). It is the largest open uncertainty in the
+analysis, and it is now quantified rather than merely declared.
 
 That is a bounded null with a measured floor behind it, paired with a measured
 positive - and it is an argument about instruments and revisit, not about this
@@ -138,8 +214,18 @@ unwrapped and geocoded:
 So the first displacement time series needs **no SNAP, no ISCE2, no DEM, no
 orbit files, no burst handling**.
 
-L-band (lambda = 23.84 cm) penetrates vegetation far better than Sentinel-1's
-C-band (5.55 cm) and raises the unwrapping ceiling roughly fourfold.
+L-band penetrates vegetation far better than Sentinel-1's C-band (5.55 cm) and
+raises the unwrapping ceiling roughly fourfold.
+
+**Read the wavelength from the product, not from the mission page.** The band
+centre is 1.2575 GHz, which is lambda = 23.84 cm, and that is the number this
+README used to quote throughout. The sixteen products actually used here carry
+**lambda = 24.196 cm and 24.393 cm** in their own metadata - two different
+values, 0.8% apart from each other and up to 2.3% from the nominal figure.
+`gunw_reader.read_wavelength()` has always used the product's value and only
+falls back to the constant when a file does not carry one, so no measurement
+was ever affected. The documentation was wrong, not the code, and the
+quarter-wavelength ceiling below is quoted from the products.
 
 **Two constraints worth knowing before you plan anything.** The NISAR archive
 starts mid-2025; for anything earlier, use Sentinel-1 C-band. And NISAR L2 ships
@@ -573,16 +659,24 @@ against a purely seasonal explanation but does not eliminate one.
 
 ### Product coverage
 
-Valid-pixel fraction over the source zone, all 15 GUNW pairs. The denominator
-is the **12,818 cells the 82 km2 AOI covers** at 80 m posting, not the 18-27
-million cells of the surrounding frame:
+Valid-pixel fraction over the source zone, the **14 routine (PR) pairs**. The
+denominator is the **12,800 cells the 82 km2 AOI covers** at 80 m posting, not
+the 18-27 million cells of the surrounding frame:
 
-| Season | Track | Median | Range |
-|--------|-------|--------|-------|
-| Winter | ASC 098 | **55%** | 49-59% |
-| Winter | DESC 048 | 21% | 17-21% |
-| Monsoon | ASC 098 | 2% | 1-3% |
-| Monsoon | DESC 048 | 6% | 3-11% |
+| Season | Track | Median | Range | n |
+|--------|-------|--------|-------|---|
+| Winter | ASC 098 | **52.3%** | 49.0-59.3% | 4 |
+| Winter | DESC 048 | 18.9% | 16.9-20.8% | 2 |
+| Monsoon | ASC 098 | 2.1% | 1.2-3.0% | 4 |
+| Monsoon | DESC 048 | 7.6% | 3.0-11.3% | 4 |
+
+Regenerated 9 Sep 2026 from `outputs/gunw_stats_source.csv`, which now carries a
+`track` column so this table can be rebuilt without inferring geometry from
+acquisition dates. The medians moved by 2-3 points from the figures first
+published with the coverage fix (55 / 21 / 2 / 6): those were taken over all 15
+rows, which counts the 20260816-20260828 pair twice because it exists as both a
+routine and an urgent-response product. Reprocessing the same acquisitions must
+not vote twice.
 
 **A correction, because it changed a regime.** These used to read 3% and 0%.
 `report()` divided valid pixels by the size of the whole product and the
@@ -625,8 +719,8 @@ computes p and now prints that caveat under the table, because it separates "a
 trend exists" from "nothing at all" and nothing more.
 
 Over the relief each pair actually spans, the phase term reaches a median of
-**33 mm and a maximum of 77 mm**, against a quarter-wavelength ceiling of 59.5
-mm per 12-day pair.
+**33 mm and a maximum of 77 mm**, against a quarter-wavelength ceiling of
+60.5-61.0 mm per 12-day pair (from the wavelength the products carry).
 
 **The variance column is the evidence. The sign-reversal count is not, and this
 page used to lead with it.** The claim was *"the fitted slope alternates sign on
@@ -745,8 +839,13 @@ sets a ceiling on the resolvable phase gradient:
 
 | Band | lambda | lambda/4 | at 12 d | at 4 d | at 1 d |
 |------|--------|----------|---------|--------|--------|
-| L (NISAR) | 23.84 cm | 5.96 cm | 5.0 mm/day | 14.9 mm/day | 59.6 mm/day |
+| L (NISAR, as flown) | 24.20-24.39 cm | 6.05-6.10 cm | 5.0 mm/day | 15.1 mm/day | 60.5-61.0 mm/day |
 | C (Sentinel-1) | 5.55 cm | 1.39 cm | 1.2 mm/day | 3.5 mm/day | 13.9 mm/day |
+
+The L row is the range the products themselves report, not the 23.84 cm band
+centre. It moves the ceiling by about 2%, which changes no conclusion on this
+page - but a ceiling quoted from a mission page rather than from the file is a
+number nobody has checked, and this project has already been caught by one.
 
 **Decorrelation, which binds first and harder.** At 0.65 m/day over a 12-day
 pair the surface moves roughly 7.8 m. That rearranges the scatterers inside
@@ -876,26 +975,30 @@ one an agency can actually act on.
 
 ```bash
 # phase-limited
-python src/detectability.py --sweep --precursor 7 --creep 27000 \
-    --noise 5 --wavelength 0.2384 --revisit 1 2 4 6 12
+python src/detectability.py --sweep --blatten --noise 5 --wavelength 0.2384
 
 # same event, offset tracking
-python src/detectability.py --sweep --precursor 7 --creep 27000 \
-    --noise 300 --revisit 1 2 4 6 12
+python src/detectability.py --sweep --blatten --noise 300
 ```
 
 | Measurement | Revisit | Saturation | Detection | False alarm | Warning |
 |-------------|---------|------------|-----------|-------------|---------|
-| Phase, L-band | 1 d | **100%** | never | 10.5% | - |
+| Phase, L-band | 1 d | **100%** | never | 0.0% | - |
 | Phase, L-band | 4 d | **100%** | never | 0.0% | - |
-| Offset tracking | 1 d | 0% | 89% | 14.1% | 4.8 d (err 3.2 d) |
-| Offset tracking | 2 d | 0% | 94% | 7.2% | 2.6 d (err 1.2 d) |
-| Offset tracking | 4 d | 0% | 5% | 2.6% | - |
+| Offset tracking | 1 d | 0% | **100%** | 0.0% | 3.9 d (err 1.4 d) |
+| Offset tracking | 2 d | 0% | **100%** | 0.0% | 2.4 d (err 1.0 d) |
+| Offset tracking | 4 d | 0% | never | 0.0% | - |
 
 Phase saturates the moment the slope runs away. Offset tracking survives to
-failure and needs 1-2 day revisit to give useful warning - but note that even
-at 1 day the predicted failure date carries a 3.2-day error against a 7-day
-precursor.
+failure and needs 1-2 day revisit to give useful warning; at 1 day the
+predicted failure date carries a 1.4-day error against a 7-day precursor.
+
+**These figures were stale until 9 Sep 2026.** The table used to carry
+false-alarm rates of 10.5%, 14.1%, 7.2% and 2.6%, and a 3.2-day prediction
+error. Those came from the flat-gate detector retracted two sections above:
+the commit that corrected the main sweep did not recompute this subsection, so
+the page argued against its own numbers. Every cell here is now printed by the
+commands directly above it.
 
 **These are model results.** Absolute warning times depend on the assumed
 precursor duration, creep amplitude and measurement noise.
@@ -998,7 +1101,7 @@ combining *measurements*, not phase.
 That denominator is the **sensitivity**. Near zero the track is blind and
 dividing by it amplifies noise without limit.
 
-### At the failure point, four of five tracks are blind
+### At the failure point, three of five tracks can see
 
 ```bash
 python src/geometry_merge.py --sensitivity --lat 28.2877 --lon 85.5281

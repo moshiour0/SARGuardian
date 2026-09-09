@@ -117,6 +117,20 @@ The `--stencil-sweep` output should show the sign **stable** across DEM stencil
 widths here. Run it at `--lat 28.27484 --lon 85.47405` instead and it is not -
 that is the gentle-terrain limit, and the tool refuses to give a verdict there.
 
+### And then run the hypothesis the DEM disagrees with
+
+Published accounts put the scar on the **north face**; SRTM reads west-facing
+at this pixel at every stencil from 60 m to 300 m. Both cannot be right, and
+the answer changes which mission can see the slope at all:
+
+```bash
+python src/geometry_merge.py --sensitivity --lat 28.28771 --lon 85.52809 --aspect 0
+```
+
+**Expect both NISAR tracks to go blind** at -0.283, leaving only Sentinel-1 at
+-0.452. That is why the headline bound is quoted as 143 mm/day of downslope
+motion and not 45 - see [the finding](README.md#the-finding).
+
 ---
 
 ## Result 3 - the impoundment grid floor, found at Blatten
@@ -252,8 +266,16 @@ and the answer changes by 1.7x:
 
 ```bash
 python src/local_floor.py --dir outputs/export_goff_src --match layer2 \
-    --lat 28.28771 --lon 85.52809 --sweep 3 6 12 --exclude 20260828 _UR_
+    --lat 28.28771 --lon 85.52809 --sweep 3 6 12 --exclude 20260828 _UR_ \
+    --include 20251128 20251210 20251222 20260103 \
+              20260702 20260714 20260726 20260819
 ```
+
+**`--include` is not optional.** Export filenames carry no track field, so
+without it the tool globs ascending and descending together and takes a median
+across two geometries whose floors differ fivefold - which gives 23.8 / 42.8,
+describing neither. Those eight dates are the ascending path 098 acquisitions.
+Run it without `--include` and the tool now prints a warning saying so.
 
 **Expect** an ASC 098 median floor of **19.8 mm/day over the AOI against 33.4 at
 the point**, and the last pre-event pair `20260726_20260819` to go from **8.9 to
@@ -261,6 +283,10 @@ the point**, and the last pre-event pair `20260726_20260819` to go from **8.9 to
 the archive is the worst one at the failure point. At radius 3 that pair holds
 2 valid pixels and is refused; at radius 12 it recovers, because the window has
 pulled in terrain that did not fail.
+
+**Every floor now carries a 95% bootstrap interval**, because a MAD from a few
+dozen pixels is an estimate. The headline pair reads `40.4 [21-55]` on 49
+pixels. Quote the interval; the third significant figure is not there.
 
 **The bound to quote is 40.4 mm/day, not 33.4.** 33.4 is the median across all
 eight ascending pairs, five of them winter pairs outside the window being
