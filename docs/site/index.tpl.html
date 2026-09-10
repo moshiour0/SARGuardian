@@ -768,25 +768,44 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
   $('#s5pairs').innerHTML=pairs.map((p,i)=>
     `<button class="btn ghost sm" data-i="${i}">${p.ref.slice(4,6)}/${p.ref.slice(6)}→${p.sec.slice(4,6)}/${p.sec.slice(6)}</button>`).join('');
 
+  // The graph is built in step with the console rather than painted at the end.
+  // A scatter that simply appears tells you nothing about where a floor comes
+  // from; watching the cloud land, then the median drop through it, then the
+  // envelope open out to 3 sigma, is the explanation.
+  let ST={};
   async function run(i){
     const p=pairs[i],v=p.sample_mm.map(Number);
-    const P=Proc.begin('#p5');
+    const med=median(v), mad=median(v.map(x=>Math.abs(x-med)));
+    const sig=1.4826*mad, floor=3*sig/p.span_days;
+    ST={v,med,mad,sig,floor,lim:Math.max(sig*4,50),shown:0,stage:0};
+    const P=Proc.begin('#p5',11000);
+
+    frame();
     await P.cmd(`read GOFF_${p.ref}_${p.sec} layer2 — range offsets, AOI clip`);
     await P.line(`  <span class="hl">${p.n_total.toLocaleString()}</span> valid pixels, sampling `
       +`<span class="hl">${v.length.toLocaleString()}</span> of them`);
+    // the cloud lands in chunks, and skips to full if we are out of budget
+    for(let f=1;f<=14;f++){
+      ST.shown=Math.round(v.length*f/14); frame();
+      if(P.rushing){ ST.shown=v.length; frame(); break; }
+      await sleep(34*P.mult);
+    }
+    ST.shown=v.length;
+
     await P.cmd('median');
-    const med=median(v);
+    ST.stage=1; frame();
     await P.line(`  ........................ <span class="hl">${fmt(med,2)} mm</span>`
       +`  <span class="dim">the bulk shift, removed</span>`);
     await P.cmd('MAD = median(|v - median|)');
-    const mad=median(v.map(x=>Math.abs(x-med)));
-    await P.line(`  ........................ <span class="hl">${fmt(mad,2)} mm</span>`);
+    ST.stage=2; frame();
+    await P.line(`  ........................ <span class="hl">${fmt(mad,2)} mm</span>`
+      +`  <span class="dim">half the points fall inside this</span>`);
     await P.cmd('sigma = 1.4826 x MAD');
-    const sig=1.4826*mad;
+    ST.stage=3; frame();
     await P.line(`  ........................ <span class="hl">${fmt(sig,2)} mm</span>`
       +`  <span class="dim">robust: outliers cannot inflate it</span>`);
     await P.cmd(`floor = 3 sigma / ${p.span_days} days`);
-    const floor=3*sig/p.span_days;
+    ST.stage=4; frame();
     await P.line(`  ........................ <span class="no">${fmt(floor,2)} mm/day</span>`);
     const ref=D.reference.floors[p.pair];
     const ok=Math.abs(sig-ref.sigma_mm)<0.05&&Math.abs(floor-ref.floor_mm_day)<0.05;
@@ -799,7 +818,6 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
     $('#s5med').textContent=fmt(med,1)+' mm';
     $('#s5sig').textContent=fmt(sig,1)+' mm';
     $('#s5floor').textContent=fmt(floor,1);
-    draw(v,med,sig);
 
     const cover=pairs.filter(q=>q.pre_event&&q.span_days>0&&q.ref>='20260629')
       .map(q=>detectionFloor(q.sample_mm.map(Number),q.span_days));
@@ -814,24 +832,64 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
     $('#s5insight').style.display='block';
     T.res.floor=floor;T.res.worstAoi=worstAoi;T.res.worstFloor=worstPoint;save();complete(5);
   }
-  function draw(v,med,sig){
+  // One frame of the build. ST.shown is how much of the cloud has landed,
+  // ST.stage is how far the explanation has got: 1 median, 2 MAD, 3 sigma,
+  // 4 the floor itself.
+  function frame(){
+    const {v,med,mad,sig,lim,shown,stage}=ST;
+    if(!v) return;
     const W=cv.width,H=cv.height,c=getComputedStyle(document.documentElement);
     const edge=c.getPropertyValue('--edge'),dim=c.getPropertyValue('--dim'),
-          live=c.getPropertyValue('--live'),alarm=c.getPropertyValue('--alarm');
-    const lim=Math.max(sig*4,50),mid=H/2,sc=(H/2-34)/lim;
+          live=c.getPropertyValue('--live'),alarm=c.getPropertyValue('--alarm'),
+          snow=c.getPropertyValue('--snow');
+    const mid=H/2, sc=(H/2-34)/lim, L=66, R=W-28;
     cx.clearRect(0,0,W,H);
-    cx.strokeStyle=edge;cx.beginPath();cx.moveTo(66,mid);cx.lineTo(W-28,mid);cx.stroke();
-    cx.fillStyle=live;cx.globalAlpha=.28;
+    cx.strokeStyle=edge;cx.lineWidth=1;
+    cx.beginPath();cx.moveTo(L,mid);cx.lineTo(R,mid);cx.stroke();
+
+    if(stage>=2){                       // the MAD band, drawn under the points
+      cx.fillStyle=live;cx.globalAlpha=.10;
+      cx.fillRect(L,mid-mad*sc,R-L,2*mad*sc);cx.globalAlpha=1;
+    }
     const step=Math.max(1,Math.floor(v.length/1100));
-    for(let n=0;n<v.length;n+=step){
-      const x=66+(n/v.length)*(W-96),y=mid-(v[n]-med)*sc;
-      cx.beginPath();cx.arc(x,Math.max(5,Math.min(H-5,y)),3,0,7);cx.fill();}
+    cx.fillStyle=live;cx.globalAlpha=.30;
+    for(let n=0;n<shown;n+=step){
+      const x=L+(n/v.length)*(R-L),y=mid-(v[n]-med)*sc;
+      cx.beginPath();cx.arc(x,Math.max(5,Math.min(H-5,y)),3,0,7);cx.fill();
+    }
     cx.globalAlpha=1;
-    [[sig,'1σ',dim,[4,5]],[3*sig,'3σ — the floor',alarm,[10,7]]].forEach(([s,lab,col,dash])=>{
-      cx.strokeStyle=col;cx.lineWidth=2;cx.setLineDash(dash);
-      [-1,1].forEach(k=>{const y=mid-k*s*sc;cx.beginPath();cx.moveTo(66,y);cx.lineTo(W-28,y);cx.stroke();});
-      cx.setLineDash([]);cx.fillStyle=col;cx.font='700 20px "JetBrains Mono",monospace';
-      cx.fillText(lab,W-280,mid-s*sc-9);});
+    if(shown<v.length){                 // a leading edge, so it reads as landing
+      const x=L+(shown/v.length)*(R-L);
+      cx.strokeStyle=live;cx.globalAlpha=.5;cx.lineWidth=2;
+      cx.beginPath();cx.moveTo(x,18);cx.lineTo(x,H-18);cx.stroke();cx.globalAlpha=1;
+    }
+    if(stage>=1){
+      cx.strokeStyle=snow;cx.lineWidth=2;
+      cx.beginPath();cx.moveTo(L,mid);cx.lineTo(R,mid);cx.stroke();
+      cx.fillStyle=snow;cx.font='700 19px "JetBrains Mono",monospace';
+      cx.fillText('median',L+6,mid-10);
+    }
+    if(stage>=2){
+      cx.strokeStyle=live;cx.lineWidth=2;cx.setLineDash([3,4]);
+      [-1,1].forEach(k=>{const y=mid-k*mad*sc;
+        cx.beginPath();cx.moveTo(L,y);cx.lineTo(R,y);cx.stroke();});
+      cx.setLineDash([]);cx.fillStyle=live;cx.font='700 19px "JetBrains Mono",monospace';
+      cx.fillText('MAD',R-300,mid-mad*sc-9);
+    }
+    if(stage>=3){
+      cx.strokeStyle=dim;cx.lineWidth=2;cx.setLineDash([4,5]);
+      [-1,1].forEach(k=>{const y=mid-k*sig*sc;
+        cx.beginPath();cx.moveTo(L,y);cx.lineTo(R,y);cx.stroke();});
+      cx.setLineDash([]);cx.fillStyle=dim;cx.font='700 19px "JetBrains Mono",monospace';
+      cx.fillText('1σ = 1.4826 × MAD',R-300,mid-sig*sc-9);
+    }
+    if(stage>=4){
+      cx.strokeStyle=alarm;cx.lineWidth=3;cx.setLineDash([10,7]);
+      [-1,1].forEach(k=>{const y=mid-k*3*sig*sc;
+        cx.beginPath();cx.moveTo(L,y);cx.lineTo(R,y);cx.stroke();});
+      cx.setLineDash([]);cx.fillStyle=alarm;cx.font='700 21px "JetBrains Mono",monospace';
+      cx.fillText('3σ — below this line, motion is noise',R-560,mid-3*sig*sc-11);
+    }
     cx.fillStyle=dim;cx.font='18px "JetBrains Mono",monospace';cx.fillText('offset, mm',10,24);
   }
   $$('#s5pairs button').forEach(b=>b.onclick=()=>{
