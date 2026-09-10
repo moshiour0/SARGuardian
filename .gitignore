@@ -18,6 +18,14 @@ outputs/*
 *.png
 *.csv
 
+# ...except the documentation figures. The README embeds these, so a blanket
+# *.png rule leaves every image on the front page broken on GitHub while it
+# looks perfect locally - nobody notices until someone opens the repository.
+# This is the same way the source-zone results went missing in 4fc6518, and
+# it is worth a rule rather than a second rediscovery.
+!docs/figures/*.png
+!docs/*.png
+
 # ...except the derived measurements. These are a few kilobytes each and
 # they are the scientific result: every statistic, time series and noise
 # floor the analysis rests on. Regenerating one means re-downloading a
