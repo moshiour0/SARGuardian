@@ -370,6 +370,18 @@ MUTATIONS = [
      "    w = np.where(np.isfinite(dv), -dv, 0.0)",
      "    w = np.ones_like(dv)",
      "test_measure_reports_extent_and_a_change_weighted_centroid"),
+    # ---- the demo ------------------------------------------------------
+    ("demo lets an event-spanning interval into its pre-event window",
+     "../demo.py",
+     "              if spans(r)[1] < EVENT and (EVENT - spans(r)[0]).days <= 60]",
+     "              if spans(r)[0] < EVENT and (EVENT - spans(r)[0]).days <= 60]",
+     "test_no_pre_event_interval_may_end_after_the_collapse"),
+
+    ("demo quotes the median interval rather than the weakest",
+     "../demo.py",
+     "    worst = max(float(r[\"local_floor_mm_day\"]) for r in summer) if summer else float(\"nan\")",
+     "    worst = min(float(r[\"local_floor_mm_day\"]) for r in summer) if summer else float(\"nan\")",
+     "test_the_bound_is_the_weakest_pre_event_interval"),
 ]
 
 

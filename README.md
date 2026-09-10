@@ -1,7 +1,51 @@
 # SARGuardian
 
-Multi-hazard Earth intelligence from SAR. Built on NASA NISAR L-band
-interferometry, tested against the **26 August 2026 Langtang massif collapse**.
+**How much warning could NISAR have given before the Langtang collapse?**
+We measured the answer instead of assuming it: **none, and we can say by how
+much.** Built on NASA NISAR L-band products, tested against the 26 August 2026
+Langtang Lirung failure that killed more than a thousand people.
+
+![The detection floor against the precursor that existed](docs/figures/ladder.png)
+
+On 26 August 2026 a rock and ice face detached from Langtang Lirung, fell
+1,200 m, dammed the Lhende Khola and burst. We had sixteen NISAR L2 products
+over that slope.
+
+A precursor **did** exist: Sentinel-1 interferometry measured the slope
+creeping at about **0.33 mm/day**, accelerating over the final weeks. Our
+measured detection floor at the scar - which we located ourselves from
+Sentinel-2, 1.09 km from where the reports put it - is **32 mm/day** in line of
+sight and **68 mm/day** as downslope motion.
+
+**NISAR L2 offset tracking at 12-day repeat was about 200x too insensitive to
+see the signal that was there.** That gap is the result. It is not "nothing was
+happening"; it is a measured requirement, and it names the fix: precursor
+detection here needs interferometric *phase*, not offset tracking, and two
+orders of magnitude more sensitivity.
+
+### See it in thirty seconds
+
+```bash
+git clone https://github.com/moshiour0/SARGuardian.git && cd SARGuardian
+pip install -r requirements.txt
+python demo.py
+```
+
+No credentials, no downloads, no 51 GB archive. Every number it prints is
+computed live from committed measurements. Then:
+
+```bash
+python -m pytest tests/ -q     # 149 tests
+python tests/mutate.py         # 56 historical bugs reintroduced; all must be caught
+```
+
+| | |
+|---|---|
+| **Where it failed** | [mapped from Sentinel-2](#mapping-the-scar-from-optical-imagery) - and the assumed point was wrong |
+| **What we could see** | [the floor at the point](#the-bound-at-the-point-not-over-the-area), with intervals |
+| **Why phase, not offsets** | [the four regimes](#the-four-regimes) |
+| **Reproduce every number** | [REPRODUCE_RESULTS.md](REPRODUCE_RESULTS.md) |
+| **What is still wrong** | [known limitations](#known-limitations) |
 
 ---
 
@@ -209,6 +253,8 @@ that in advance. Both are analysis AOIs. Neither is a control.
 ---
 
 ## The four regimes
+
+![The four regimes matrix](docs/figures/regimes.png)
 
 Measured over the source zone, on real products, except where marked.
 
@@ -477,6 +523,8 @@ to average them. Keep the product that agrees with the rest of the stack.
 ---
 
 ## Mapping the scar from optical imagery
+
+![Sentinel-2 before, after and change, with the mapped scar and the assumed point](docs/figures/scar.png)
 
 `src/scar_map.py`. The aspect of the failing surface decides every sensitivity
 number in this repository, and until this module existed that aspect came from
