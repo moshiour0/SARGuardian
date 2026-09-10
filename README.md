@@ -13,12 +13,12 @@ over that slope.
 
 A precursor **did** exist: Sentinel-1 interferometry measured the slope
 creeping at about **0.33 mm/day**, accelerating over the final weeks. Our
-measured detection floor at the scar - which we located ourselves from
-Sentinel-2, 1.09 km from where the reports put it - is **32 mm/day** in line of
-sight and **68 mm/day** as downslope motion.
+measured detection floor is **32 mm/day** in line of sight and **60-119 mm/day**
+as downslope motion, depending on which of four candidate detachment surfaces
+is the real one - none of which is where the reports put it.
 
-**NISAR L2 offset tracking at 12-day repeat was about 200x too insensitive to
-see the signal that was there.** That gap is the result. It is not "nothing was
+**NISAR L2 offset tracking at 12-day repeat was 180x to 360x too insensitive
+to see the signal that was there.** That gap is the result. It is not "nothing was
 happening"; it is a measured requirement, and it names the fix: precursor
 detection here needs interferometric *phase*, not offset tracking, and two
 orders of magnitude more sensitivity.
@@ -88,18 +88,19 @@ Set that against what this project measured:
 | Precursory creep, measured by Sentinel-1 phase | **0.33** |
 | NISAR GOFF 3-sigma floor, AOI median, ascending | 19.8 |
 | NISAR GOFF 3-sigma floor, at the assumed failure point | 40.4 |
-| Same floor as a bound on **downslope** motion, at the mapped scar | **68** |
+| Same floor as a bound on **downslope** motion, across four candidate scars | **60 - 119** |
 
 The precursor sits **two to three orders of magnitude below** anything this
 product could resolve. So the null was real, the bound was sound, and the
 conclusion is unchanged - but the correct statement is not "nothing was
 happening". It is:
 
-> **A precursor existed at ~0.33 mm/day. Our floor at the mapped scar is
-> 32.0 mm/day in line of sight, and 68 mm/day expressed as downslope motion
-> once look geometry is accounted for. NISAR L2 offset tracking at 12-day
-> repeat was therefore about 100x too insensitive in line of sight, and 200x
-> on the motion itself, to see the signal that was there. The gap is the
+> **A precursor existed at ~0.33 mm/day. Our floor is 32.0 mm/day in line of
+> sight, and 60 to 119 mm/day expressed as downslope motion once look geometry
+> is accounted for - a range, because four candidate detachment surfaces
+> survive the evidence and we cannot pick between them. NISAR L2 offset
+> tracking at 12-day repeat was therefore 180x to 360x too insensitive to see
+> the signal that was there, whichever candidate is the scar. The gap is the
 > result.**
 
 That is a stronger claim than the one it replaces, because it is a measured
@@ -133,16 +134,15 @@ failed. See [the bound at the point](#the-bound-at-the-point-not-over-the-area).
 ### The failure point was a guess, and it was wrong. Here is the measured one.
 
 `28.28771 N 85.52809 E` was estimated from the reported location, never derived
-from data. It has now been tested against Sentinel-2 and **it is not on the
-scar** - see [mapping the scar](#mapping-the-scar-from-optical-imagery). The
-measured detachment is **1.09 km south-southwest**, at
+from data. It has now been tested against Sentinel-2 and **it is not a scar** -
+121 usable pixels, no cloud, and its snow index went UP. See
+[mapping the scar](#mapping-the-scar-from-optical-imagery).
 
-> **28.27802 N, 85.52963 E** - 0.68 km2, 1.39 km across, 5,203-5,730 m,
-> slope 39 deg, **aspect 342 deg (NNW)**, 99.8% ice-covered before the event.
-
-Everything below that depends on aspect changes with it, and the bound weakens
-by a factor of two. The old text of this section, kept because the reasoning
-still holds and only the input was wrong:
+What replaced it is **not one location**. Four clusters survive as
+detachment-like, and nothing in the data picks between them. But all four lie
+**within 13 degrees of north**, so the west-facing assumption fails whichever is
+the scar, and the bound weakens from 36 to **60-119 mm/day**. The reasoning
+below still holds; only the input was wrong:
 
 **The aspect costs the bound a factor of three.** Its elevation (5,166 m) is
 close to the ~5,200 m detachment in the published accounts. But every published

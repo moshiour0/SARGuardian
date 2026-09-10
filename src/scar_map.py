@@ -33,74 +33,88 @@ Method
 3. Take the clearest pre-event scene, and composite the post-event scenes,
    most recent clear pixel winning. One post-event scene covers a quarter of
    the AOI; seven of them stacked reach half.
-4. Difference the Normalised Difference Snow Index. The scar is ice and snow
-   replaced by bare rock, so NDSI falls hard. Fresh September snowfall moves it
-   the OTHER way, which is what makes this robust: weather cannot manufacture
-   the signal, it can only hide it.
-5. Region-grow from the strongest change, requiring each pixel to have been
-   snow or ice beforehand.
+4. Difference the Normalised Difference Snow Index. Snow and ice are bright in
+   green and nearly black in SWIR, so NDSI is high; rock, mud and debris are
+   not, so it is low. A surface that stops being snow drops hard.
+5. Enumerate EVERY connected cluster of that drop, and classify each by terrain.
 
-What it found
-=============
-A feature of 0.68 km2 spanning 1,390 m north-south and 1,218 m east-west,
-centred on 28.27802 N 85.52963 E:
+What NDSI cannot do, which decides how this must be read
+========================================================
+NDSI answers one question - "was this snow, and is it still" - and it cannot
+answer any of these:
 
-    was snow or ice before      99.8%
-    median NDSI change          -0.374
-    scar-like pixel rate        90% inside, against 7.5% across the AOI
-    elevation                   5,203 - 5,730 m
-    slope                       27 - 52 deg, mean 39
-    aspect                      298 - 354 deg, circular mean 342
+    exposed bedrock vs mud vs debris      all read the same: not snow
+    a scar (ice off rock) vs a deposit    identical sign, identical magnitude
+      (debris onto snow)
+    the event vs the season               the comparison window here is 12 Aug
+                                          to 8 Sep, and a snowline retreats
 
-Four independent checks agree with the published accounts, none of which went
-into finding it: the detachment is described at about 5,200 m (measured 5,203
-at its northern end), on the north face (measured 342 deg), on a rock face
-under a hanging glacier (measured 99.8% ice-covered before), and roughly 1.4 km
-across (measured 1.39 km).
+So a strong negative change is necessary and nowhere near sufficient. Across
+this AOI, 7.5% of comparable ground looks scar-like on that test alone, in 36
+separate clusters. Terrain is what separates the three causes:
 
-The assumed failure point is 1.09 km away and is not on it. That location is
-fully observed in both epochs - 121 usable pixels, no cloud to hide behind -
-and its NDSI went UP by 0.379. Not one pixel fell. It was never glaciated. It
-is bare ground that got a dusting of fresh snow, which is the opposite of a
-scar in every respect.
+    DETACHMENT   steep and high, and not sun-facing
+    deposit      low angle - debris and mud come to rest, they do not cling to
+                 a 40 degree face at 5,500 m
+    melt         south-facing, which is where late-summer snow goes first
 
-What this changes
-=================
-At the mapped scar NISAR ASC 098 has a sensitivity of -0.47 at the centroid and
--0.57 on the mean aspect: usable, but two to four times noisier than the -0.892
-the west-facing guess implied. NISAR descending is blind either way.
+What it found, and what it cannot say
+=====================================
+Twelve clusters large enough to look at. **Four of them are detachment-like**,
+and nothing in this data picks between them:
 
-The line-of-sight floor also has to be re-measured, because the old one was
-taken at the wrong place. Over the seven weeks before failure the three
-covering intervals give 32.0, 26.0 and 7.8 mm/day AT THE SCAR, against 40.4,
-19.2 and 34.3 at the abandoned point. A bound holding across a window is set by
-its weakest interval, so the line-of-sight bound is 32.0 mm/day and the
-downslope bound is
+    #    km2    lat        lon        elev    slope  aspect
+    1    1.54   28.26459   85.49739   6255 m  52 deg   12
+    4    0.68   28.27799   85.52983   5370 m  37 deg  351
+    5    0.19   28.27020   85.51853   6009 m  39 deg  347
+    9    0.11   28.25460   85.47591   6099 m  33 deg    9
 
-    32.0 / 0.472  =  68 mm/day
+An earlier version of this module reported #4 alone as "the mapped scar", with
+an area and a centroid to five decimal places. That was an artefact of method:
+it region-grew from a seed placed near #4, and a seeded grow finds whatever it
+is pointed at. #1 is more than twice the size and equally consistent with the
+published description. Use --seed-report to reproduce the old behaviour and see
+it happen.
 
-between the 45 the west-facing assumption licensed and the 143 the due-north
-reading forced, and now resting on a surface that was measured rather than
-guessed. The pixel counts are healthier too: 71, 60 and 60 of 169 at the scar
-against 49, 65 and 26 at the old point.
+The SAR does not break the tie either. Of these four, none loses coherence in
+the GOFF pair spanning 26 August; the only cluster that does is #6, at 4,000 m
+on a 10 degree slope - which is a runout deposit, not a source. The co-event
+decorrelation footprint maps disturbance, as the README already says.
 
-The conclusion is untouched. The precursor Sentinel-1 recorded was about 0.33
-mm/day, which is 200x below 68.
+What DOES survive, and it is the part that matters
+==================================================
+**Every detachment-like candidate lies within 13 degrees of NORTH.** The SRTM
+pixel at the reported failure point reads 273 degrees - west-facing - at every
+stencil from 60 m to 300 m. So that assumption is wrong regardless of which
+cluster is the scar, and the bound has to move:
 
-Limits, which are real
-======================
-Half the AOI is never seen cloud-free after the event, so this is the largest
-feature that can be mapped with confidence, not provably the only one. The
-comparison spans 12 August to 8 September, so a fortnight of ordinary seasonal
-change sits inside it, and 7.5% of comparable ground looks scar-like on the
-same test. The identification rests on the enrichment, the terrain and the
-extent agreeing together - not on the change image alone. There is no published
-scar polygon to check it against.
+    surface                     NISAR ASC 098      downslope bound
+    west-facing 273 deg (assumed)   -0.892           36 mm/day
+    the four candidates         -0.27 to -0.53    60 to 119 mm/day
+
+The conclusion is untouched by the ambiguity. The precursor Sentinel-1 recorded
+was about 0.33 mm/day, which is 180x to 360x below every one of those bounds.
+Where the slope failed is still open; whether NISAR L2 could have seen it is
+not.
+
+The reported failure point is separately excluded
+=================================================
+28.28771 N 85.52809 E is not any of the four. It is fully observed in both
+epochs - 121 usable pixels, no cloud to hide behind - its NDSI went UP by
+0.379, not one pixel fell, and it was never glaciated. Fresh snow on bare
+ground. That is a negative result about one location and it is solid; it is not
+a positive identification of another.
+
+Limits
+======
+Half the AOI is never seen cloud-free after the event, so there may be
+candidates nobody can see. There is no published scar polygon to check against.
+Nothing here is validated against ground truth.
 
 Usage
 -----
     python src/scar_map.py --survey                 # what imagery exists
-    python src/scar_map.py --map                    # find and measure the scar
+    python src/scar_map.py --map                    # enumerate every candidate
     python src/scar_map.py --probe 28.28771 85.52809   # test one location
 """
 
@@ -231,6 +245,79 @@ def composite(features: list[dict]) -> tuple:
     return out, filled
 
 
+def enumerate_candidates(both, pre, d, drop, was_snow, min_px):
+    """Every connected change cluster at least `min_px` cells, largest first."""
+    mask = both & (pre > was_snow) & (d < drop)
+    H, W = d.shape
+    seen = np.zeros((H, W), bool)
+    out = []
+    for r0 in range(H):
+        for c0 in range(W):
+            if not mask[r0, c0] or seen[r0, c0]:
+                continue
+            seen[r0, c0] = True
+            q, cells = deque([(r0, c0)]), []
+            while q:
+                r, c = q.popleft()
+                cells.append((r, c))
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        rr, cc = r + dr, c + dc
+                        if (0 <= rr < H and 0 <= cc < W and mask[rr, cc]
+                                and not seen[rr, cc]):
+                            seen[rr, cc] = True
+                            q.append((rr, cc))
+            if len(cells) >= min_px:
+                out.append(cells)
+    out.sort(key=len, reverse=True)
+    return out
+
+
+def classify(clusters, d, pre, tf, limit=12):
+    """
+    Terrain reading for each cluster.
+
+    NDSI says a surface stopped being snow. It does not say what replaced it,
+    so these three causes are indistinguishable spectrally and have to be told
+    apart by where they sit:
+
+        DETACHMENT   steep and high, and not sun-facing
+        deposit      low angle - debris and mud come to rest, they do not
+                     cling to a 40 degree face at 5,500 m
+        melt         south-facing, which is where an August-to-September
+                     snowline retreats first
+    """
+    from geometry_merge import slope_aspect
+    from rasterio.transform import xy
+    from rasterio.warp import transform as warp_transform
+    rows = []
+    for i, cells in enumerate(clusters[:limit], 1):
+        rr = np.array([c[0] for c in cells])
+        cc = np.array([c[1] for c in cells])
+        xs, ys = xy(tf, rr, cc)
+        lon, lat = warp_transform("EPSG:32645", "EPSG:4326",
+                                  np.atleast_1d(xs), np.atleast_1d(ys))
+        la, lo = float(np.mean(lat)), float(np.mean(lon))
+        try:
+            sl, asp, el = slope_aspect(la, lo)
+        except Exception:
+            continue
+        off_n = min(abs(asp), abs(asp - 360))
+        if sl >= 28 and el >= 5000 and off_n <= 60:
+            reading = "DETACHMENT-like"
+        elif sl < 20:
+            reading = "deposit / flat"
+        elif 135 < asp < 225:
+            reading = "south-facing -> melt"
+        else:
+            reading = "ambiguous"
+        rows.append({"id": i, "n_px": len(cells), "area_km2": len(cells) * 400 / 1e6,
+                     "lat": la, "lon": lo, "elev_m": el, "slope_deg": sl,
+                     "aspect_deg": asp, "reading": reading,
+                     "d_ndsi_median": float(np.nanmedian(d[rr, cc]))})
+    return rows
+
+
 def grow(mask: np.ndarray, seed_rc: tuple) -> list[tuple]:
     """8-connected region grow from a seed. Plain BFS; scipy is not a dep."""
     H, W = mask.shape
@@ -336,6 +423,16 @@ def main() -> int:
                     help="NDSI fall required to join the feature")
     ap.add_argument("--was-snow", type=float, default=0.35,
                     help="pre-event NDSI required to join the feature")
+    ap.add_argument("--min-px", type=int, default=40,
+                    help="smallest cluster to consider, in 20 m cells. 40 is "
+                         "1.6 ha")
+    ap.add_argument("--top", type=int, default=12,
+                    help="how many clusters to look up terrain for")
+    ap.add_argument("--seed-report", action="store_true",
+                    help="also measure the single cluster under --seed. Kept "
+                         "because it is how the first version of this module "
+                         "worked, and it is worth being able to show that a "
+                         "seeded grow finds whatever it is pointed at")
     ap.add_argument("--los-floor", type=float, default=32.0,
                     help="line-of-sight detection floor at the scar, mm/day, for "
                          "converting to a downslope bound. The default 32.0 is "
@@ -399,6 +496,60 @@ def main() -> int:
             print("  than darker - fresh snow on ground that was never glaciated.")
         return 0
 
+    # -----------------------------------------------------------------
+    # Every candidate, not one. A seeded region-grow finds whatever it is
+    # pointed at and says nothing about what else is there - which is how the
+    # first version of this module reported a single "mapped scar" when the
+    # AOI holds four clusters that are equally detachment-like on terrain.
+    #
+    # NDSI answers "was this snow, and is it still" and nothing more. It cannot
+    # separate exposed bedrock from mud or debris, so a deposit dumped ON snow
+    # reads exactly like ice stripped OFF rock; and the comparison window here
+    # is 27 days wide, so ordinary snowline retreat is inside it too. Terrain
+    # is what separates them: a detachment is steep and high, a deposit lies
+    # low and flat, and seasonal melt prefers the sun-facing side.
+    # -----------------------------------------------------------------
+    clusters = enumerate_candidates(both, pre, d, args.drop, args.was_snow,
+                                    args.min_px)
+    print(f"\n{len(clusters)} change clusters of at least "
+          f"{args.min_px * 400 / 1e4:.1f} ha")
+    rank = classify(clusters, d, pre, tf, limit=args.top)
+    det = [r for r in rank if r["reading"] == "DETACHMENT-like"]
+
+    print(f"\n{'#':>3}{'km2':>7}{'lat':>10}{'lon':>10}{'dNDSI':>8}"
+          f"{'elev':>7}{'slope':>7}{'aspect':>8}  reading")
+    print("-" * 78)
+    for r in rank:
+        print(f"{r['id']:>3}{r['area_km2']:>7.2f}{r['lat']:>10.5f}{r['lon']:>10.5f}"
+              f"{r['d_ndsi_median']:>8.3f}{r['elev_m']:>7.0f}{r['slope_deg']:>7.1f}"
+              f"{r['aspect_deg']:>8.0f}  {r['reading']}")
+
+    if det:
+        from geometry_merge import sensitivities
+        print(f"\n{len(det)} of {len(rank)} are DETACHMENT-like: steep, high, and "
+              f"not sun-facing.")
+        print(f"No single one of them can be called the scar on this evidence.")
+        print(f"\n{'#':>3}{'NISAR ASC98':>13}{'downslope bound':>18}")
+        print("-" * 36)
+        bounds = []
+        for r in det:
+            sn = [x for x in sensitivities(r["lat"], r["lon"], r["slope_deg"],
+                                           r["aspect_deg"], 0.3)
+                  if "NISAR ASC" in x["track"]][0]["sensitivity"]
+            b = args.los_floor / abs(sn)
+            bounds.append(b)
+            print(f"{r['id']:>3}{sn:>13.3f}{b:>15.0f} mm/day")
+        offn = [min(abs(r["aspect_deg"]), abs(r["aspect_deg"] - 360)) for r in det]
+        print(f"\n  aspect: every candidate lies within {max(offn):.0f} deg of NORTH.")
+        print(f"  The west-facing assumption at the reported failure point is")
+        print(f"  wrong whichever of these is the scar - and that is the part of")
+        print(f"  this result that does not depend on picking one.")
+        print(f"\n  downslope bound: {min(bounds):.0f} to {max(bounds):.0f} mm/day"
+              f"   (a west-facing surface would give {args.los_floor/0.892:.0f})")
+
+    if not args.seed_report:
+        return 0
+
     from rasterio.transform import rowcol
     from rasterio.warp import transform as warp_transform
     x, y = warp_transform("EPSG:4326", "EPSG:32645", [args.seed[1]], [args.seed[0]])
@@ -408,6 +559,10 @@ def main() -> int:
     if not cells:
         print("\nNo feature grown from that seed - it is not in the mask.")
         return 1
+    print(f"\n{'='*68}\nSEEDED FEATURE at {args.seed[0]:.5f} N {args.seed[1]:.5f} E")
+    print("This is what a region-grow finds when pointed at one candidate. It")
+    print("is a measurement of that cluster, not evidence that it is the scar.")
+    print("=" * 68)
     s = measure(cells, d, pre, tf)
     print(f"\nMAPPED SCAR")
     print(f"  area              {s['area_km2']:.2f} km2 ({s['n_px']:,} px at 20 m)")

@@ -170,8 +170,12 @@ def main() -> int:
 
     # ---------------------------------------------------------------- 0:24
     s.rule("4.  THE ANSWER")
-    sens = 0.472                      # NISAR ASC 098 at the mapped scar
-    downslope = worst / sens
+    # Four candidate detachment surfaces survive the optical evidence and
+    # nothing picks between them, so the bound is a range. All four are within
+    # 13 degrees of north, which is what makes the range small enough to be
+    # useful and the west-facing assumption wrong regardless.
+    sens_hi, sens_lo = 0.533, 0.268   # NISAR ASC 098 across the four candidates
+    lo_bound, hi_bound = worst / sens_hi, worst / sens_lo
     precursor = 0.33                  # Sentinel-1, Shirzaei, Jan-Aug 2026
     s.say(f"  A precursor {s.c('b')}did{s.c('0')} exist. Sentinel-1 interferometry"
           f" measured the slope")
@@ -181,11 +185,12 @@ def main() -> int:
     s.say(f"     what was there          {s.c('c')}{precursor:8.2f} mm/day{s.c('0')}")
     s.say(f"     what we could see       {s.c('r')}{worst:8.1f} mm/day{s.c('0')}"
           f"  (line of sight)")
-    s.say(f"     as downslope motion     {s.c('r')}{downslope:8.1f} mm/day{s.c('0')}"
-          f"  (sensitivity {sens:.3f})")
+    s.say(f"     as downslope motion     {s.c('r')}{lo_bound:5.0f}-{hi_bound:.0f} mm/day"
+          f"{s.c('0')}  (four candidate scars)")
     s.say()
     s.say(f"  {s.c('b')}NISAR L2 offset tracking at 12-day repeat was "
-          f"{downslope/precursor:.0f}x too insensitive.{s.c('0')}", 1.5)
+          f"{lo_bound/precursor:.0f}x to {hi_bound/precursor:.0f}x too "
+          f"insensitive.{s.c('0')}", 1.5)
     s.say()
     s.say(f"  {s.c('d')}That is not 'nothing was happening'. It is a measured"
           f" requirement:{s.c('0')}")

@@ -71,8 +71,17 @@ def test_the_detector_really_runs_and_finds_nothing():
 
 
 def test_the_headline_ratio_is_derived_not_typed():
-    """floor / sensitivity / precursor must agree with the printed multiple."""
+    """
+    floor / sensitivity / precursor must agree with the printed multiple, at
+    both ends of the range. The range exists because four candidate detachment
+    surfaces survive the optical evidence; quoting a single figure there was
+    the over-claim this test now guards against.
+    """
     out = run()
-    downslope = float(out.stdout.split("as downslope motion")[1].split("mm/day")[0])
-    mult = float(out.stdout.split("repeat was")[1].split("x too")[0])
-    assert abs(mult - downslope / 0.33) < 1.0
+    span = out.stdout.split("as downslope motion")[1].split("mm/day")[0]
+    lo, hi = (float(x) for x in span.strip().split("-"))
+    mult = out.stdout.split("repeat was")[1].split("too")[0]
+    m_lo, m_hi = (float(x.strip().rstrip("x")) for x in mult.split(" to "))
+    assert abs(m_lo - lo / 0.33) < 2.0
+    assert abs(m_hi - hi / 0.33) < 2.0
+    assert hi > lo, "the bound must be reported as a range, not a point"
