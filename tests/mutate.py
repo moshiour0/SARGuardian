@@ -420,13 +420,21 @@ def main() -> int:
     escaped = []
     for label, fname, find, repl, expect in MUTATIONS:
         path = SRC / fname
-        original = path.read_text(encoding="utf-8")
+        # newline="" on both read and write, so the file goes back byte for
+        # byte. write_text() uses the platform newline, which on Windows turns
+        # every LF into CRLF - the content is identical but git sees the file
+        # as modified, the tree is left dirty, and the NEXT run of this script
+        # refuses to start because it insists on a clean tree. A harness that
+        # sabotages the next invocation of itself is worse than no harness.
+        with open(path, encoding="utf-8", newline="") as fh:
+            original = fh.read()
         try:
             if find not in original:
                 print(f"  {label:<46}{'-':<12}TARGET GONE - update mutate.py")
                 escaped.append(label)
                 continue
-            path.write_text(original.replace(find, repl, 1), encoding="utf-8")
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(original.replace(find, repl, 1))
             failed = failing_tests()
             if expect in failed:
                 print(f"  {label:<46}{'yes':<12}caught ({len(failed)} failed)")
@@ -434,7 +442,8 @@ def main() -> int:
                 print(f"  {label:<46}{'NO':<12}ESCAPED")
                 escaped.append(label)
         finally:
-            path.write_text(original, encoding="utf-8")
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(original)
             for junk in SRC.rglob("__pycache__"):
                 for f in junk.glob("*"):
                     f.unlink()

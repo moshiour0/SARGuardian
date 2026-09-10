@@ -87,7 +87,7 @@ Set that against what this project measured:
 |---|---|
 | Precursory creep, measured by Sentinel-1 phase | **0.33** |
 | NISAR GOFF 3-sigma floor, AOI median, ascending | 19.8 |
-| NISAR GOFF 3-sigma floor, at the assumed failure point | 40.4 |
+| NISAR GOFF 3-sigma floor, at a candidate scar | 32.0 |
 | Same floor as a bound on **downslope** motion, across four candidate scars | **60 - 119** |
 
 The precursor sits **two to three orders of magnitude below** anything this
@@ -163,41 +163,50 @@ tested rather than asserted):
 
 | Failing surface | NISAR ASC 098 sensitivity | LOS floor -> downslope bound |
 |---|---|---|
-| West-facing, 273 deg (assumed point, as SRTM reads it) | -0.892, usable | 40.4 -> **45 mm/day** |
-| North-facing, 351 deg (nearest matching terrain) | -0.509, usable | 40.4 -> **79 mm/day** |
-| Due north, 0 deg (published description taken literally) | **-0.283, BLIND** | 40.4 -> **143 mm/day** |
+| West-facing, 273 deg (assumed point, as SRTM reads it) | -0.892, usable | 32.0 -> **36 mm/day** |
+| North-facing, 351 deg (a candidate) | -0.475, usable | 32.0 -> **67 mm/day** |
+| Due north, 0 deg (published description taken literally) | **-0.283, BLIND** | 32.0 -> **113 mm/day** |
 
 **On a due-north face both NISAR geometries fall below the 0.3 usability
 threshold**, and the mission has no usable look direction at the scar at all -
 only Sentinel-1 does, at -0.452. It is worth noting that the independent
 detection above was made with Sentinel-1.
 
-Neither bracket is the answer. The measured scar sits at aspect 342 deg, which
-is inside them:
+Neither bracket is the answer, and neither is a single figure between them.
+**Four clusters survive as detachment-like** and nothing in the data picks
+between them, so the bound is a range over all four:
 
-| Failing surface | NISAR ASC 098 | LOS floor | Downslope bound |
-|---|---|---|---|
-| West-facing 273 deg, assumed | -0.892 | 40.4 | 45 mm/day |
-| **Measured scar, 342 deg** | **-0.47 to -0.57** | **32.0** | **68 mm/day** |
-| Due north 0 deg | -0.283 blind | 40.4 | 143 mm/day |
+| Candidate | km2 | Elevation | Aspect | NISAR ASC 098 | Downslope bound |
+|---|---|---|---|---|---|
+| 1 | 1.54 | 6,255 m | 12 deg | -0.488 | 66 mm/day |
+| 4 | 0.68 | 5,370 m | 351 deg | -0.475 | 67 mm/day |
+| 5 | 0.19 | 6,009 m | 347 deg | -0.533 | **60 mm/day** |
+| 9 | 0.11 | 6,099 m | 9 deg | -0.268 | **119 mm/day** |
 
 Both columns had to move, because the line-of-sight floor was also measured at
-the wrong place. At the mapped scar the three intervals covering the seven
+the wrong place. At a candidate scar the three intervals covering the seven
 weeks before failure read **32.0, 26.0 and 7.8 mm/day**, against 40.4, 19.2 and
 34.3 at the abandoned point, and on more valid pixels (71/60/60 of 169 against
 49/65/26). A bound holding across a window is set by its weakest interval, so
-32.0 mm/day in line of sight becomes **68 mm/day of downslope motion**.
+the line-of-sight bound is **32.0 mm/day**.
 
-So the headline bound is **68 mm/day**, measured on a surface that was mapped
-rather than assumed. The argument was never in danger - the precursor was 0.33
-mm/day, so even the weakest reading of the geometry sits hundreds of times
-above it - but the number is now derived from the ground that actually failed.
+So the headline bound is **60 to 119 mm/day** of downslope motion - a range,
+because the location is still open. The argument was never in danger: the
+precursor was 0.33 mm/day, so even the most generous candidate sits 180x above
+it and the least generous 360x. **What the range does not depend on is picking
+one**, and that is the point - every candidate faces north, so the west-facing
+assumption fails whichever is the scar.
+
+An earlier version of this section quoted a single **68 mm/day** from one
+"measured scar" at 342 deg. That was cluster 4 alone, found because the search
+was seeded next to it, and it is withdrawn - see
+[mapping the scar](#mapping-the-scar-from-optical-imagery).
 
 That is a bounded null with a measured floor behind it, paired with a measured
 positive - and it is an argument about instruments and revisit, not about this
 one mountain.
 
-<img src="docs/regimes.svg" alt="Velocity ladder: interferometric phase works below the 5 mm/day L-band ceiling and only in winter; offset tracking works above its measured 40.4 mm/day floor at the failure point; between them is a band neither product can see. A Blatten-class precursor at 500-800 mm/day sits far above both." width="100%">
+<img src="docs/regimes.svg" alt="Velocity ladder: interferometric phase works below the 5 mm/day L-band ceiling and only in winter; offset tracking works above its measured 32 mm/day floor at a candidate scar; between them is a band neither product can see. A Blatten-class precursor at 500-800 mm/day sits far above both." width="100%">
 
 ---
 
@@ -605,7 +614,7 @@ Both halves of the bound were measured in the wrong place, and both move:
 | NISAR DESC 048 | +0.158 blind | -0.29 to -0.36 blind |
 | Worst pre-event LOS floor | 40.4 mm/day | **32.0 mm/day** |
 | Valid pixels, three intervals | 49 / 65 / 26 | **71 / 60 / 60** |
-| **Downslope bound** | 45 mm/day | **68 mm/day** |
+| **Downslope bound** | 36 mm/day | **60 - 119 mm/day** |
 
 The floor itself improves - the scar is better observed than the guess was -
 while the geometry gets worse, and the geometry wins. NISAR ascending remains

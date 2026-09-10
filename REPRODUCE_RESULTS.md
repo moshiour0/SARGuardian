@@ -288,7 +288,10 @@ pulled in terrain that did not fail.
 dozen pixels is an estimate. The headline pair reads `40.4 [21-55]` on 49
 pixels. Quote the interval; the third significant figure is not there.
 
-**The bound to quote is 40.4 mm/day, not 33.4.** 33.4 is the median across all
+**Neither 40.4 nor 33.4 is the bound to quote now.** Both were measured at a
+point 1.09 km from any candidate scar; Result 6 replaces them with 32.0 mm/day
+measured where the change actually is. Kept here because the reasoning still
+holds and only the location was wrong: 33.4 is the median across all
 eight ascending pairs, five of them winter pairs outside the window being
 bounded. Over the seven weeks before failure the three covering intervals give
 40.4, 19.2 and 34.3 at the point, and a bound that holds across a window is set
@@ -423,8 +426,11 @@ python src/local_floor.py --dir outputs/export_goff_src --match layer2     --lat
 **Expect** the three intervals covering the seven weeks before failure to read
 **32.0, 26.0 and 7.8 mm/day** on 71, 60 and 60 valid pixels - against 40.4,
 19.2 and 34.3 on 49, 65 and 26 at the abandoned point. The worst is the bound,
-so **32.0 mm/day** in line of sight, and 68 mm/day of downslope motion at a
-NISAR ascending sensitivity of -0.472.
+so **32.0 mm/day** in line of sight. Expressed as downslope motion that is
+**60 to 119 mm/day** across the four candidate scars, whose NISAR ascending
+sensitivities run -0.268 to -0.533 - a range, because which cluster is the scar
+is still open. Every one of them faces north, which is the part that does not
+depend on choosing.
 
 ---
 

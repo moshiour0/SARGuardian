@@ -2,7 +2,7 @@
      font-family="'IBM Plex Sans','Helvetica Neue',Arial,sans-serif" role="img"
      aria-label="Velocity ladder showing where NISAR L2 phase and offset tracking work, and the blind band between them">
   <title>What NISAR L2 can measure, by velocity</title>
-  <desc>Interferometric phase is limited above about 5 mm/day by the L-band quarter-wavelength ceiling at 12-day repeat. Offset tracking has a measured floor of 40.4 mm/day at the 26 August 2026 failure point. Between them is a band neither product can see. The Blatten precursor sits far above both, in the regime where phase has no coherence at all.</desc>
+  <desc>Interferometric phase is limited above about 5 mm/day by the L-band quarter-wavelength ceiling at 12-day repeat. Offset tracking has a measured floor of 32 mm/day at a candidate scar for the 26 August 2026 collapse. Between them is a band neither product can see. The precursor that was actually recorded, 0.33 mm/day, sits far below the offset floor and is invisible to it.</desc>
 
   <style>
     .bg   { fill: #FFFFFF; }
@@ -44,15 +44,15 @@
   <!-- ============ bands (x = 40..880 maps log10 v from -1 to 4) ============ -->
   <!-- x(v) = 40 + (log10(v)+1)/5 * 840 -->
   <!-- 5 mm/day -> 40 + (0.699+1)/5*840 = 325.4 -->
-  <!-- 40.4     -> 40 + (1.606+1)/5*840 = 477.8 -->
+  <!-- 32.0     -> 40 + (1.505+1)/5*840 = 460.9 -->
   <!-- 500      -> 40 + (2.699+1)/5*840 = 661.4 -->
   <rect class="bandPhase"  x="40"    y="96" width="285.4" height="86"/>
-  <rect class="bandBlind"  x="325.4" y="96" width="152.4" height="86"/>
+  <rect class="bandBlind"  x="325.4" y="96" width="135.5" height="86"/>
   <rect class="bandOffset" x="477.8" y="96" width="402.2" height="86"/>
 
   <text class="lbl blue" x="52"  y="116">Phase works</text>
   <text class="s ink"    x="52"  y="136">GUNW, winter only</text>
-  <text class="s mut"    x="52"  y="152">55% of the AOI ascending;</text>
+  <text class="s mut"    x="52"  y="152">52% of the AOI ascending;</text>
   <text class="s mut"    x="52"  y="167">1–3% in the monsoon</text>
 
   <text class="lbl gap" x="337" y="116">Neither</text>
@@ -91,15 +91,15 @@
   <text class="num blue" x="331" y="204">5.0</text>
   <text class="s blue"   x="331" y="90">λ/4 ceiling, 12-day</text>
 
-  <!-- 40.4 the bound -->
-  <line class="redS" x1="477.8" y1="96" x2="477.8" y2="212" stroke-width="1.8"/>
-  <text class="num red" x="484" y="204">40.4</text>
-  <text class="s red"   x="484" y="90">measured floor at the failure point</text>
+  <!-- 32.0 the bound, measured at a candidate scar -->
+  <line class="redS" x1="460.9" y1="96" x2="460.9" y2="212" stroke-width="1.8"/>
+  <text class="num red" x="467" y="204">32.0</text>
+  <text class="s red"   x="467" y="90">measured floor at a candidate scar</text>
 
   <!-- 19.8 AOI floor -->
-  <line class="rule" x1="450.2" y1="212" x2="450.2" y2="268" stroke-width="1.2" stroke-dasharray="2 3"/>
-  <text class="num mut" x="450.2" y="282" text-anchor="middle">19.8</text>
-  <text class="s mut"   x="450.2" y="297" text-anchor="middle">over the AOI</text>
+  <line class="rule" x1="425.8" y1="212" x2="425.8" y2="268" stroke-width="1.2" stroke-dasharray="2 3"/>
+  <text class="num mut" x="425.8" y="282" text-anchor="middle">19.8</text>
+  <text class="s mut"   x="425.8" y="297" text-anchor="middle">over the AOI</text>
 
   <!-- Blatten 500-800 -->
   <rect class="bandOffset" x="661.4" y="196" width="34.5" height="16"/>
@@ -107,7 +107,7 @@
   <circle class="red" cx="678" cy="212" r="3.5"/>
   <text class="s ink" x="678" y="292" text-anchor="middle">Blatten, 6 days out</text>
   <text class="s mut" x="678" y="307" text-anchor="middle">500–800 mm/day</text>
-  <text class="s mut" x="678" y="322" text-anchor="middle">12–20× the bound</text>
+  <text class="s mut" x="678" y="322" text-anchor="middle">16–25× the bound</text>
 
   <!-- Blatten 1 day -->
   <circle class="red" cx="880" cy="212" r="3.5"/>
@@ -118,6 +118,6 @@
   <line class="rule" x1="40" y1="348" x2="880" y2="348" stroke-width="1"/>
   <text class="t ink" x="40" y="374">The 26 August 2026 failure falls in the fourth regime, off the right of this scale:</text>
   <text class="t mut" x="40" y="394">the surface is destroyed, coherence goes to zero, and offset tracking loses the ground it was tracking.</text>
-  <text class="t mut" x="40" y="414">Nothing above 40.4 mm/day appeared at the failure point in the seven weeks before it.</text>
-  <text class="t mut" x="40" y="434">A Blatten-class precursor would have been 12–20× that. It was not there.</text>
+  <text class="t mut" x="40" y="414">Nothing above 32 mm/day appeared at a candidate scar in the seven weeks before it — 60–119 mm/day as downslope motion.</text>
+  <text class="t mut" x="40" y="434">A precursor WAS there, at 0.33 mm/day on Sentinel-1 — 180–360× below that bound, and invisible to this product.</text>
 </svg>

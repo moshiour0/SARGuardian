@@ -29,14 +29,14 @@ words - deliberately under the slot, because the numbers need a beat to land.
 | **0:06-0:11** | Section 1, the mapped scar | "We found where it detached from satellite imagery - a kilometre from where the reports said." |
 | **0:12-0:18** | Section 2, the floors scrolling | "Then we measured what NISAR radar could actually see on that exact slope." |
 | **0:19-0:23** | Section 3, no alarm | "Our detector found nothing." |
-| **0:24-0:29** | Section 4, the three numbers | "Because the warning signal was there - and it was two hundred times too small for this satellite to see. That gap is the answer." |
+| **0:24-0:29** | Section 4, the three numbers | "Because the warning signal was there - and it was hundreds of times too small for this satellite to see. That gap is the answer." |
 
 ---
 
 ## If you only get one sentence
 
-> The precursor was 0.33 millimetres a day. Our floor was 68. NISAR could not
-> have warned, and now we know exactly by how much.
+> The precursor was 0.33 millimetres a day. Our floor was between 60 and 119.
+> NISAR could not have warned, and now we know exactly by how much.
 
 ---
 
@@ -60,9 +60,11 @@ In order, cut:
 - **Do not claim a warning system.** This is an instrument-capability study with
   a measured bound. Claiming an operational early-warning system invites a
   judge to ask for the operational evidence, and there is none.
-- **Do not quote 45 mm/day, 40.4, or 33.4.** Those are superseded: 45 assumed
-  the wrong aspect, 40.4 and 33.4 were measured at a point 1.09 km off the scar.
-  The live numbers are **32 mm/day** line-of-sight and **68 mm/day** downslope.
+- **Do not quote 45, 40.4, 33.4 or 68 mm/day.** All four are superseded. 45
+  assumed the wrong aspect; 40.4 and 33.4 were measured 1.09 km off any
+  candidate scar; 68 came from treating one of four candidates as the answer.
+  The live numbers are **32 mm/day** line-of-sight and **60-119 mm/day**
+  downslope - and say it as a range, because the range is the honest part.
 
 ---
 
