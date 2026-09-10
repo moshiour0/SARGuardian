@@ -1,0 +1,1040 @@
+<title>Run The Analysis Yourself</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root{
+  --night:#070c0f; --deep:#0c141a; --panel:#111d24; --panel2:#16242d; --edge:#1f313b;
+  --snow:#eef5f7; --mid:#9fb3bc; --dim:#6b8189;
+  --live:#5ad2e0; --pre:#ffab4d; --alarm:#ff6b5e; --go:#5fd39a; --ember:#ffab4d;
+}
+:root[data-theme="light"]{
+  --night:#eef2f4; --deep:#ffffff; --panel:#ffffff; --panel2:#f2f6f7; --edge:#d4dee3;
+  --snow:#0b1317; --mid:#42545c; --dim:#66787f;
+  --live:#0b6f7d; --pre:#a2620f; --alarm:#b5302a; --go:#2b7d51; --ember:#a2620f;
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --night:#eef2f4; --deep:#ffffff; --panel:#ffffff; --panel2:#f2f6f7; --edge:#d4dee3;
+  --snow:#0b1317; --mid:#42545c; --dim:#66787f;
+  --live:#0b6f7d; --pre:#a2620f; --alarm:#b5302a; --go:#2b7d51; --ember:#a2620f;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--night);color:var(--snow);
+  font-family:Archivo,"Helvetica Neue",Arial,sans-serif;font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased}
+.mono,code{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+h1,h2,.disp{font-family:"Instrument Serif",Georgia,serif;font-weight:400;letter-spacing:-.01em}
+h1{font-size:clamp(38px,6.6vw,74px);line-height:.98;margin:0 0 20px;text-wrap:balance}
+h2{font-size:clamp(26px,3.7vw,42px);line-height:1.06;margin:0 0 12px;text-wrap:balance}
+h3{font-size:15px;font-weight:600;margin:0 0 6px}
+p{margin:0 0 14px;color:var(--mid)}
+b,strong{color:var(--snow);font-weight:600}
+em{font-style:italic;color:var(--snow)}
+a{color:var(--live)}
+
+/* ---------------- layout ---------------- */
+.shell{display:grid;grid-template-columns:232px minmax(0,1fr);gap:0;min-height:100vh}
+.rail{border-right:1px solid var(--edge);background:var(--deep);position:sticky;top:0;
+  height:100vh;overflow-y:auto;padding:22px 16px}
+.stage{padding:0 30px 90px;max-width:920px}
+@media (max-width:880px){
+  .shell{grid-template-columns:1fr}
+  .rail{position:sticky;top:0;height:auto;border-right:0;border-bottom:1px solid var(--edge);
+    padding:10px 12px;z-index:40;display:flex;gap:7px;overflow-x:auto}
+  .rail .brand,.rail .railnote{display:none}
+  .stage{padding:0 18px 70px}
+}
+
+/* ---------------- rail ---------------- */
+.brand{font-family:"Instrument Serif",serif;font-size:20px;margin:0 0 4px;color:var(--snow)}
+.railsub{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--dim);margin:0 0 20px}
+.step{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-radius:9px;
+  cursor:pointer;border:1px solid transparent;margin-bottom:3px;white-space:nowrap}
+.step:hover{background:var(--panel)}
+.step.on{background:var(--panel);border-color:var(--edge)}
+.step .num{font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:700;
+  width:20px;height:20px;flex:0 0 20px;border-radius:50%;border:1px solid var(--edge);
+  color:var(--dim);display:flex;align-items:center;justify-content:center;margin-top:1px}
+.step.on .num{border-color:var(--live);color:var(--live)}
+.step.done .num{background:var(--go);border-color:var(--go);color:var(--night)}
+.step .t{font-size:12.5px;line-height:1.3;color:var(--mid)}
+.step.on .t{color:var(--snow);font-weight:600}
+.railnote{margin-top:18px;padding-top:14px;border-top:1px solid var(--edge);
+  font-family:"JetBrains Mono",monospace;font-size:10.5px;color:var(--dim);line-height:1.7}
+
+/* ---------------- station ---------------- */
+.station{padding:52px 0;border-bottom:1px solid var(--edge);scroll-margin-top:20px}
+.station:last-of-type{border-bottom:0}
+.eyebrow{display:flex;align-items:center;gap:10px;margin:0 0 14px;flex-wrap:wrap}
+.eyebrow .n{font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:700;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}
+.badge{font-family:"JetBrains Mono",monospace;font-size:9.5px;font-weight:700;letter-spacing:.13em;
+  padding:3px 8px;border-radius:20px;border:1px solid}
+.badge.live{color:var(--live);border-color:var(--live)}
+.badge.pre{color:var(--pre);border-color:var(--pre)}
+.lead{font-size:17.5px;line-height:1.5;color:var(--snow);max-width:660px}
+.body{max-width:660px}
+
+.panel{background:var(--panel);border:1px solid var(--edge);border-radius:13px;
+  padding:20px;margin:22px 0 0}
+.panel.pad0{padding:0;overflow:hidden}
+.ctl{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:0 0 16px}
+.btn{font-family:Archivo,sans-serif;font-size:14px;font-weight:600;padding:10px 20px;
+  border-radius:9px;border:1px solid var(--live);background:var(--live);color:var(--night);
+  cursor:pointer;transition:filter .15s}
+.btn:hover{filter:brightness(1.12)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.ghost{background:transparent;color:var(--live)}
+.btn.warn{border-color:var(--alarm);background:var(--alarm);color:#fff}
+.btn.warn.ghost{background:transparent;color:var(--alarm)}
+label.fld{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--dim);
+  display:flex;flex-direction:column;gap:5px}
+label.fld .val{color:var(--snow);font-size:14px;font-weight:700}
+input[type=range]{accent-color:var(--live);width:190px}
+.seg{display:inline-flex;border:1px solid var(--edge);border-radius:8px;overflow:hidden}
+.seg button{font-family:"JetBrains Mono",monospace;font-size:11.5px;padding:7px 13px;
+  background:transparent;color:var(--mid);border:0;cursor:pointer}
+.seg button.on{background:var(--live);color:var(--night);font-weight:700}
+.chk{display:flex;align-items:center;gap:8px;font-family:"JetBrains Mono",monospace;
+  font-size:11.5px;color:var(--mid);cursor:pointer}
+.chk input{accent-color:var(--live);width:15px;height:15px}
+
+canvas{display:block;max-width:100%;border-radius:8px;background:var(--night)}
+.cvwrap{overflow-x:auto}
+
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin:16px 0 0}
+.ro{background:var(--panel2);border:1px solid var(--edge);border-radius:9px;padding:12px 13px}
+.ro .k{font-family:"JetBrains Mono",monospace;font-size:9.5px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+.ro .v{font-family:"JetBrains Mono",monospace;font-size:20px;font-weight:700;color:var(--snow);line-height:1.1}
+.ro.good .v{color:var(--go)} .ro.bad .v{color:var(--alarm)} .ro.hi .v{color:var(--live)}
+
+.log{font-family:"JetBrains Mono",monospace;font-size:11.5px;line-height:1.75;color:var(--mid);
+  background:var(--night);border:1px solid var(--edge);border-radius:9px;padding:14px 16px;
+  margin:16px 0 0;max-height:210px;overflow-y:auto;white-space:pre-wrap}
+.log .ok{color:var(--go)} .log .no{color:var(--alarm)} .log .hl{color:var(--live)}
+.log .dim{color:var(--dim)}
+
+.insight{border-left:3px solid var(--live);background:var(--panel2);border-radius:0 10px 10px 0;
+  padding:15px 18px;margin:20px 0 0;max-width:680px}
+.insight.warn{border-left-color:var(--alarm)}
+.insight h3{color:var(--live)} .insight.warn h3{color:var(--alarm)}
+.insight p{margin:0;font-size:14.5px}
+.insight p+p{margin-top:9px}
+
+.next{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:26px 0 0;padding:16px 18px;
+  background:var(--panel2);border:1px solid var(--edge);border-radius:11px;max-width:680px}
+.next .lbl{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--dim)}
+.next .txt{flex:1;min-width:200px;font-size:14.5px;color:var(--mid)}
+.next .txt b{color:var(--snow)}
+.locked{opacity:.42;pointer-events:none;filter:saturate(.4)}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{font-family:"JetBrains Mono",monospace;font-size:10px;font-weight:700;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim);text-align:left;padding:10px 13px;
+  border-bottom:1px solid var(--edge)}
+td{padding:9px 13px;border-bottom:1px solid var(--edge);color:var(--mid)}
+tr:last-child td{border-bottom:0}
+td.k{color:var(--snow);font-family:"JetBrains Mono",monospace;font-size:12.5px;white-space:nowrap}
+td.n{font-family:"JetBrains Mono",monospace;text-align:right;white-space:nowrap}
+tr.dropped td{opacity:.32;text-decoration:line-through}
+tr.keep td.k{color:var(--go)}
+
+.verdict{font-family:"Instrument Serif",serif;font-size:clamp(24px,3.4vw,38px);line-height:1.15;
+  color:var(--snow);margin:26px 0 0;padding-top:22px;border-top:1px solid var(--edge)}
+.verdict span{color:var(--alarm)}
+.selfcheck{font-family:"JetBrains Mono",monospace;font-size:10.5px;color:var(--dim);margin-top:12px}
+.selfcheck b{color:var(--go)}
+.selfcheck.bad b{color:var(--alarm)}
+
+.hero{padding:72px 0 20px}
+.toll{display:flex;flex-wrap:wrap;gap:30px;margin:28px 0 0;padding-top:22px;border-top:1px solid var(--edge)}
+.toll .n{font-family:"JetBrains Mono",monospace;font-size:27px;font-weight:700;line-height:1}
+.toll .l{font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim);margin-top:7px}
+footer{padding:34px 0 0;border-top:1px solid var(--edge);margin-top:40px;
+  font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--dim);line-height:1.8}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div class="brand">SARGuardian</div>
+    <div class="railsub">Run it yourself</div>
+    <div id="steps"></div>
+    <div class="railnote" id="railnote">Nothing is pre-rendered.<br>Your browser does the arithmetic.</div>
+  </nav>
+
+  <main class="stage">
+
+  <!-- ============ 1 ============ -->
+  <section class="station" id="st1">
+    <div class="hero">
+      <div class="eyebrow"><span class="n">Station 1 of 8</span></div>
+      <h1>You have sixteen<br>radar images of<br>a mountain that<br>killed a thousand<br>people.</h1>
+      <p class="lead">On 26 August 2026 a rock and ice face broke off Langtang Lirung at about 5,000 m, fell more than a kilometre, dammed a river and burst it. The wave travelled 22 km in seven minutes.</p>
+      <p class="lead" style="margin-top:14px">NISAR was watching that slope for nine months beforehand. <b>Could it have seen this coming?</b></p>
+      <div class="toll">
+        <div><div class="n">1,000+</div><div class="l">killed</div></div>
+        <div><div class="n">1,200 m</div><div class="l">of fall</div></div>
+        <div><div class="n">22 km</div><div class="l">in 7 minutes</div></div>
+        <div><div class="n">16</div><div class="l">radar images</div></div>
+      </div>
+      <div class="insight">
+        <h3>How this works</h3>
+        <p>You are going to run the analysis. Eight stations, each one a real step we took. Your browser does the maths on the real measurements — the noise floors, the clustering, the geometry, the detector. Nothing here is a recording.</p>
+        <p>Where a step needed the 51 GB radar archive or a satellite download, it is marked <span class="badge pre">PRE-COMPUTED</span> and the result is carried in. Everything else is marked <span class="badge live">LIVE</span> and happens when you press the button.</p>
+      </div>
+      <div class="next"><span class="lbl">Next</span><span class="txt"><b>Find the imagery.</b> Before you can measure anything you have to know what the satellites actually saw — and the obvious way to pick images is a trap.</span><button class="btn" data-go="2">Begin →</button></div>
+    </div>
+  </section>
+
+  <!-- ============ 2 ============ -->
+  <section class="station locked" id="st2">
+    <div class="eyebrow"><span class="n">Station 2</span><span class="badge live">LIVE</span></div>
+    <h2>Find the imagery</h2>
+    <p class="lead">67 Sentinel-2 scenes cross this mountain between May and September. Most are useless — it is monsoon. You need the clearest one before the collapse and everything usable after.</p>
+    <p class="body">Every catalogue reports a cloud percentage. Drag the filter and watch which scenes survive.</p>
+    <div class="panel">
+      <div class="ctl">
+        <label class="fld">MAX CLOUD <span class="val" id="s2v">40%</span>
+          <input type="range" id="s2slider" min="0" max="100" value="40"></label>
+        <div class="seg" id="s2mode">
+          <button class="on" data-m="tile">Cloud over the TILE</button>
+          <button data-m="aoi">Cloud over OUR SLOPE</button>
+        </div>
+      </div>
+      <div class="cvwrap"><canvas id="s2canvas" width="1720" height="260" style="width:860px"></canvas></div>
+      <div class="readout">
+        <div class="ro"><div class="k">Scenes kept</div><div class="v" id="s2keep">–</div></div>
+        <div class="ro"><div class="k">Usable before event</div><div class="v" id="s2pre">–</div></div>
+        <div class="ro"><div class="k">Usable after event</div><div class="v" id="s2post">–</div></div>
+        <div class="ro hi"><div class="k">Clearest in the run-up</div><div class="v" id="s2best">–</div></div>
+      </div>
+    </div>
+    <div class="insight warn" id="s2insight" style="display:none">
+      <h3>That is the trap, and we nearly fell into it</h3>
+      <p id="s2itext"></p>
+    </div>
+    <div class="next" id="s2next" style="display:none"><span class="lbl">Next</span><span class="txt"><b>Find where the mountain broke.</b> You have the images. Now compare them and let the change find itself.</span><button class="btn" data-go="3">Continue →</button></div>
+  </section>
+
+  <!-- ============ 3 ============ -->
+  <section class="station locked" id="st3">
+    <div class="eyebrow"><span class="n">Station 3</span><span class="badge live">LIVE</span></div>
+    <h2>Find where it broke</h2>
+    <p class="lead">Snow and ice are bright to a satellite in visible light and nearly black in shortwave infrared. Rock is not. So a single index says whether a surface is snow — and a collapse strips snow off rock.</p>
+    <p class="body">Below is the real change grid: 275,000 cells, 20 m each, before against after. Set a threshold and let the clusters grow.</p>
+    <div class="panel">
+      <div class="ctl">
+        <label class="fld">SNOW LOST, AT LEAST <span class="val" id="s3v">0.25</span>
+          <input type="range" id="s3slider" min="10" max="60" value="25"></label>
+        <label class="chk"><input type="checkbox" id="s3snow" checked> require it to have been snow before</label>
+        <button class="btn" id="s3run">Find clusters</button>
+      </div>
+      <div class="cvwrap"><canvas id="s3canvas" width="914" height="1204" style="width:520px"></canvas></div>
+      <div class="readout">
+        <div class="ro"><div class="k">Comparable cells</div><div class="v" id="s3cmp">–</div></div>
+        <div class="ro"><div class="k">Cells flagged</div><div class="v" id="s3flag">–</div></div>
+        <div class="ro bad"><div class="k">Separate clusters</div><div class="v" id="s3clu">–</div></div>
+        <div class="ro"><div class="k">Largest</div><div class="v" id="s3big">–</div></div>
+      </div>
+      <div class="log" id="s3log"></div>
+    </div>
+    <div class="insight warn" id="s3insight" style="display:none">
+      <h3>So which one is the scar?</h3>
+      <p>That is the honest problem, and it is the one a reviewer caught us on. This index says a surface <em>stopped being snow</em>. It cannot say what replaced it — bedrock, mud, or debris dumped <em>on top of</em> clean snow all look identical. And the comparison spans 27 days, so ordinary late-summer melt is inside it too.</p>
+      <p><b>Three different causes, one signature.</b> You need something the index does not have.</p>
+    </div>
+    <div class="next" id="s3next" style="display:none"><span class="lbl">Next</span><span class="txt"><b>Use the terrain.</b> Debris comes to rest on flat ground. Melt prefers the sunny side. A detachment is steep, high, and neither.</span><button class="btn" data-go="4">Continue →</button></div>
+  </section>
+
+  <!-- ============ 4 ============ -->
+  <section class="station locked" id="st4">
+    <div class="eyebrow"><span class="n">Station 4</span><span class="badge pre">PRE-COMPUTED TERRAIN</span></div>
+    <h2>Narrow it down</h2>
+    <p class="lead">The browser cannot query an elevation model, so the slope, height and facing of each cluster are carried in. What you do with them is yours.</p>
+    <p class="body">Switch on the filters one at a time and watch the candidates fall away.</p>
+    <div class="panel pad0">
+      <div style="padding:18px 20px 0">
+        <div class="ctl">
+          <label class="chk"><input type="checkbox" class="s4f" data-f="slope"> steep — 28° or more</label>
+          <label class="chk"><input type="checkbox" class="s4f" data-f="elev"> high — above 5,000 m</label>
+          <label class="chk"><input type="checkbox" class="s4f" data-f="north"> facing north, not the sun</label>
+        </div>
+      </div>
+      <table id="s4tbl"><thead><tr><th>#</th><th class="n">km²</th><th class="n">Height</th><th class="n">Slope</th><th class="n">Faces</th><th>Reading</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="readout">
+      <div class="ro bad"><div class="k">Candidates left</div><div class="v" id="s4left">–</div></div>
+      <div class="ro"><div class="k">Facing range</div><div class="v" id="s4asp">–</div></div>
+      <div class="ro good"><div class="k">All face</div><div class="v" id="s4dir">–</div></div>
+    </div>
+    <div class="panel" id="s4probe" style="display:none">
+      <h3 style="font-size:15px;margin-bottom:10px">Now test the coordinate the news reports gave</h3>
+      <div class="ctl"><button class="btn ghost warn" id="s4probebtn">Probe 28.28771 N, 85.52809 E</button></div>
+      <div class="log" id="s4probelog" style="display:none"></div>
+    </div>
+    <div class="insight" id="s4insight" style="display:none">
+      <h3>Four candidates, and they all face north</h3>
+      <p id="s4itext"></p>
+    </div>
+    <div class="next" id="s4next" style="display:none"><span class="lbl">Next</span><span class="txt"><b>Measure what the radar could see.</b> You know roughly where. Now find the level below which the radar cannot tell motion from noise.</span><button class="btn" data-go="5">Continue →</button></div>
+  </section>
+
+  <!-- ============ 5 ============ -->
+  <section class="station locked" id="st5">
+    <div class="eyebrow"><span class="n">Station 5</span><span class="badge live">LIVE</span></div>
+    <h2>Measure the noise floor</h2>
+    <p class="lead">Every measurement has a level below which the answer is indistinguishable from noise. Nobody can tell you NISAR's floor on this hillside — you have to measure it, from the pixels.</p>
+    <p class="body">Pick a pair of radar images. Each dot is a real measured offset. Watch the floor form.</p>
+    <div class="panel">
+      <div class="ctl" id="s5pairs"></div>
+      <div class="cvwrap"><canvas id="s5canvas" width="1700" height="520" style="width:850px"></canvas></div>
+      <div class="readout">
+        <div class="k"></div>
+        <div class="ro"><div class="k">Pixels used</div><div class="v" id="s5n">–</div></div>
+        <div class="ro"><div class="k">Median offset</div><div class="v" id="s5med">–</div></div>
+        <div class="ro"><div class="k">Robust scatter σ</div><div class="v" id="s5sig">–</div></div>
+        <div class="ro bad"><div class="k">Detection floor</div><div class="v" id="s5floor">–</div></div>
+      </div>
+      <div class="log" id="s5log"></div>
+      <div class="selfcheck" id="s5check"></div>
+    </div>
+    <div class="insight" id="s5insight" style="display:none">
+      <h3>You just measured the floor</h3>
+      <p id="s5itext"></p>
+    </div>
+    <div class="next" id="s5next" style="display:none"><span class="lbl">Next</span><span class="txt"><b>Check the radar was even looking the right way.</b> A floor is worthless if the satellite cannot see motion in the direction the slope moves.</span><button class="btn" data-go="6">Continue →</button></div>
+  </section>
+
+  <!-- ============ 6 ============ -->
+  <section class="station locked" id="st6">
+    <div class="eyebrow"><span class="n">Station 6</span><span class="badge live">LIVE</span></div>
+    <h2>Which way is the slope facing?</h2>
+    <p class="lead">Radar measures motion <em>towards or away from itself</em> — nothing else. A slope sliding at right angles to the beam is invisible however fast it moves.</p>
+    <p class="body">Drag the dial. This is the single most consequential number in the whole analysis, and the original study assumed the wrong value.</p>
+    <div class="panel">
+      <div class="ctl">
+        <label class="fld">SLOPE FACES <span class="val" id="s6v">273° (west)</span>
+          <input type="range" id="s6slider" min="0" max="359" value="273"></label>
+        <button class="btn ghost" data-asp="273">Assumed</button>
+        <button class="btn ghost" data-asp="342">Measured</button>
+        <button class="btn ghost" data-asp="0">Due north</button>
+      </div>
+      <div class="cvwrap"><canvas id="s6canvas" width="1700" height="620" style="width:850px"></canvas></div>
+      <div class="readout">
+        <div class="ro hi"><div class="k">NISAR ASC 098</div><div class="v" id="s6n98">–</div></div>
+        <div class="ro"><div class="k">NISAR DESC 048</div><div class="v" id="s6n48">–</div></div>
+        <div class="ro"><div class="k">Tracks that can see</div><div class="v" id="s6ok">–</div></div>
+        <div class="ro bad"><div class="k">Floor becomes a bound of</div><div class="v" id="s6bound">–</div></div>
+      </div>
+      <div class="selfcheck" id="s6check"></div>
+    </div>
+    <div class="insight warn" id="s6insight" style="display:none">
+      <h3>That is a factor of three, from one assumption</h3>
+      <p id="s6itext"></p>
+    </div>
+    <div class="next" id="s6next" style="display:none"><span class="lbl">Next</span><span class="txt"><b>Run the detector.</b> You have the floor and the geometry. Now point the alarm at nine months of real measurements.</span><button class="btn" data-go="7">Continue →</button></div>
+  </section>
+
+  <!-- ============ 7 ============ -->
+  <section class="station locked" id="st7">
+    <div class="eyebrow"><span class="n">Station 7</span><span class="badge live">LIVE</span></div>
+    <h2>Run the alarm</h2>
+    <p class="lead">A slope about to fail speeds up. Plot one-over-speed against time and it falls in a straight line to zero — and where it crosses zero is the failure date. That is the method mines have used for forty years.</p>
+    <p class="body">Every measured velocity has to clear its own pair's floor before it is allowed into the fit. Press run.</p>
+    <div class="panel">
+      <div class="ctl">
+        <button class="btn" id="s7run">Run detector</button>
+        <label class="chk"><input type="checkbox" id="s7cut" checked> refuse data from after the collapse</label>
+      </div>
+      <div class="cvwrap"><canvas id="s7canvas" width="1700" height="560" style="width:850px"></canvas></div>
+      <div class="readout">
+        <div class="ro"><div class="k">Blocks examined</div><div class="v" id="s7blk">–</div></div>
+        <div class="ro"><div class="k">Velocities measured</div><div class="v" id="s7vel">–</div></div>
+        <div class="ro"><div class="k">Cleared their floor</div><div class="v" id="s7pass">–</div></div>
+        <div class="ro" id="s7alarmro"><div class="k">Alarms</div><div class="v" id="s7alarm">–</div></div>
+      </div>
+      <div class="log" id="s7log"></div>
+    </div>
+    <div class="insight warn" id="s7insight" style="display:none">
+      <h3 id="s7ititle">Now switch the cutoff off</h3>
+      <p id="s7itext"></p>
+    </div>
+    <div class="next" id="s7next" style="display:none"><span class="lbl">Next</span><span class="txt"><b>See what it all adds up to.</b> Everything you have measured, against what was actually happening on that slope.</span><button class="btn" data-go="8">Continue →</button></div>
+  </section>
+
+  <!-- ============ 8 ============ -->
+  <section class="station locked" id="st8">
+    <div class="eyebrow"><span class="n">Station 8</span><span class="badge live">YOUR NUMBERS</span></div>
+    <h2>What you just found</h2>
+    <p class="lead">Every figure below came out of the work you did in this page, not from a table we wrote.</p>
+    <div class="panel">
+      <div class="readout">
+        <div class="ro"><div class="k">Your floor</div><div class="v" id="s8floor">–</div></div>
+        <div class="ro"><div class="k">Your geometry</div><div class="v" id="s8sens">–</div></div>
+        <div class="ro bad"><div class="k">Your bound</div><div class="v" id="s8bound">–</div></div>
+        <div class="ro"><div class="k">Your alarms</div><div class="v" id="s8alarm">–</div></div>
+      </div>
+      <div class="cvwrap" style="margin-top:20px"><canvas id="s8canvas" width="1700" height="360" style="width:850px"></canvas></div>
+      <p class="verdict" id="s8verdict">–</p>
+    </div>
+    <div class="insight">
+      <h3>The precursor was real. It was measured — by somebody else.</h3>
+      <p>A separate study using Europe's Sentinel-1 satellite found this slope creeping at about <b>0.33 mm a day</b> from January to August 2026, speeding up in the final weeks. About the rate human hair grows.</p>
+      <p>So the honest conclusion is not "nothing was happening". It is: <b>a signal existed, and this instrument was two orders of magnitude away from resolving it.</b> That is a specification, not a failure — and it names the fix. Both this collapse and the 2025 Blatten collapse were caught by wave-pattern interferometry, never by the feature-tracking method whose floor you just measured.</p>
+    </div>
+    <div class="insight warn">
+      <h3>Three things we published and had to withdraw</h3>
+      <p><b>"Nothing was moving."</b> There was a precursor. We could not see it. A floor describes your instrument, never the world.</p>
+      <p><b>"The scar is at this coordinate."</b> You found four candidates in station 4. We had reported one, to five decimals, because we pointed the search at it.</p>
+      <p><b>"Frequent satellite passes cause false alarms."</b> An error in our own threshold. Corrected, the false-alarm rate is zero at every revisit we tested.</p>
+    </div>
+    <footer>
+      SARGuardian · Langtang Lirung, Nepal · 26 August 2026 · NASA Space Apps 2026<br>
+      Built on NASA NISAR L2 and Copernicus Sentinel-2. The precursor figure is someone else's measurement, cited.<br>
+      Half the mountain is never cloud-free after the collapse, so there may be candidates nobody can see. No ground survey exists to check any of this against.
+    </footer>
+  </section>
+
+  </main>
+</div>
+
+<script id="payload" type="application/json">{{DATA}}</script>
+<script>
+"use strict";
+const D = JSON.parse(document.getElementById('payload').textContent);
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const fmt = (x,n=1) => Number(x).toFixed(n);
+
+/* ============================ maths, mirrored from the Python ============ */
+const median = a => { const s=[...a].sort((x,y)=>x-y), m=s.length>>1;
+  return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
+// 1.4826 * MAD, the same constant local_floor.robust_sigma uses
+const robustSigma = a => { const m=median(a); return 1.4826*median(a.map(v=>Math.abs(v-m))); };
+// 3 sigma over the span: the constant velocity this pair could see at 3 sigma
+const detectionFloor = (a,span) => span>0 ? 3*robustSigma(a)/span : NaN;
+const rad = d => d*Math.PI/180;
+
+function downslopeUnit(slopeDeg, aspectDeg){
+  const b=rad(slopeDeg), a=rad(aspectDeg);
+  return [Math.sin(a)*Math.cos(b), Math.cos(a)*Math.cos(b), -Math.sin(b)];
+}
+function losUnit(headingDeg, incDeg, leftLooking){
+  // target-to-satellite. Right-looking: E=-sin0 cos(h), N=+sin0 sin(h).
+  // Left-looking flips both horizontals and leaves the vertical alone, which
+  // is why modelling Sentinel-1 as left-looking once inverted three verdicts.
+  const t=rad(incDeg), h=rad(headingDeg), s=leftLooking?-1:1;
+  return [-s*Math.sin(t)*Math.cos(h), s*Math.sin(t)*Math.sin(h), Math.cos(t)];
+}
+const dot = (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+function sensitivity(track, slopeDeg, aspectDeg){
+  return dot(downslopeUnit(slopeDeg,aspectDeg),
+             losUnit(track.heading, track.incidence, track.left_looking));
+}
+
+/* ============================ tour engine =============================== */
+const STEPS=[["The event",1],["Find the imagery",2],["Find where it broke",3],
+  ["Narrow it down",4],["Measure the floor",5],["Which way it faces",6],
+  ["Run the alarm",7],["What you found",8]];
+const T={at:1,done:new Set(),res:{}};
+let saving=false;
+try{ const s=JSON.parse(localStorage.getItem('sg_lab')||'{}');
+     if(s.done) T.done=new Set(s.done); if(s.res) T.res=s.res; }catch(e){}
+const save=()=>{try{localStorage.setItem('sg_lab',JSON.stringify(
+  {done:[...T.done],res:T.res}));}catch(e){}
+  // Station 8 is a view onto everything above it, so it repaints whenever any
+  // station changes a result - not only when it scrolls into view. Relying on
+  // the observer alone left it showing a sensitivity the visitor had already
+  // dragged past.
+  //
+  // The guard is load-bearing: station 8's paint() stores a result of its own
+  // and therefore calls save() again. Without it that is unbounded recursion,
+  // and the stack overflow killed the boot block that builds the progress rail.
+  if(window.__paintS8 && !saving){
+    saving = true;
+    try { window.__paintS8(); } finally { saving = false; }
+  }};
+
+function buildRail(){
+  $('#steps').innerHTML = STEPS.map(([t,n])=>
+    `<div class="step" data-n="${n}"><div class="num">${n}</div><div class="t">${t}</div></div>`).join('');
+  $$('.step').forEach(el=>el.onclick=()=>{ const n=+el.dataset.n;
+    if(n===1||T.done.has(n-1)||T.done.has(n)) go(n); });
+}
+function paintRail(){
+  $$('.step').forEach(el=>{ const n=+el.dataset.n;
+    el.classList.toggle('on', n===T.at);
+    el.classList.toggle('done', T.done.has(n)); });
+}
+function unlock(n){ const s=$('#st'+n); if(s) s.classList.remove('locked'); }
+function complete(n){ T.done.add(n); save(); unlock(n); unlock(n+1); paintRail();
+  const nx=$('#st'+n+' .next'); if(nx) nx.style.display='flex'; }
+function go(n){ T.at=n; unlock(n); paintRail();
+  const el=$('#st'+n); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }
+$$('[data-go]').forEach(b=>b.onclick=()=>{
+  // Station 1 has nothing to compute, so leaving it is what finishes it.
+  const to=+b.dataset.go; if(to>1) complete(to-1); go(to); });
+
+/* ============================ station 2 ================================= */
+(function(){
+  const cv=$('#s2canvas'), cx=cv.getContext('2d');
+  let mode='tile', maxc=40;
+  const EV=new Date('2026-08-26'), NEAR=60*864e5;
+  const scenes=D.scenes.map(s=>({...s,d:new Date(s.date)}));
+  const t0=+new Date('2026-05-01'), t1=+new Date('2026-09-30');
+  function draw(){
+    const W=cv.width,H=cv.height; cx.clearRect(0,0,W,H);
+    const css=getComputedStyle(document.documentElement);
+    const edge=css.getPropertyValue('--edge'), dim=css.getPropertyValue('--dim');
+    const live=css.getPropertyValue('--live'), alarm=css.getPropertyValue('--alarm');
+    cx.strokeStyle=edge; cx.lineWidth=2;
+    cx.beginPath(); cx.moveTo(60,H-52); cx.lineTo(W-30,H-52); cx.stroke();
+    const ex=60+(EV-t0)/(t1-t0)*(W-90);
+    cx.strokeStyle=alarm; cx.setLineDash([8,6]);
+    cx.beginPath(); cx.moveTo(ex,24); cx.lineTo(ex,H-52); cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle=alarm; cx.font='700 22px "JetBrains Mono",monospace';
+    cx.fillText('collapse', ex+10, 42);
+    cx.fillStyle=dim; cx.font='20px "JetBrains Mono",monospace';
+    ['May','Jun','Jul','Aug','Sep'].forEach((m,i)=>{
+      const t=+new Date(2026,4+i,1), x=60+(t-t0)/(t1-t0)*(W-90);
+      cx.fillText(m,x-14,H-22);
+    });
+    let kept=0,pre=0,post=0,best=null;
+    scenes.forEach(s=>{
+      const v = mode==='tile'? s.tile_cloud : s.aoi_cloud;
+      const ok = v<=maxc;
+      const x=60+(+s.d-t0)/(t1-t0)*(W-90);
+      const y=H-52-(100-v)/100*(H-120);
+      cx.beginPath(); cx.arc(x,y,ok?9:5,0,7);
+      cx.fillStyle = ok? live : edge; cx.globalAlpha= ok?1:.55; cx.fill(); cx.globalAlpha=1;
+      // "Best before" means best in the run-up, not best in the archive. A
+      // beautifully clear image from May tells you nothing about a slope that
+      // failed in August, so only the 60 days before the collapse count.
+      if(ok){ kept++;
+        if(+s.d<+EV){ pre++;
+          if(+EV-+s.d<=NEAR && (!best||s.aoi_cloud<best.aoi_cloud)) best=s;
+        } else post++; }
+    });
+    cx.fillStyle=dim; cx.font='19px "JetBrains Mono",monospace';
+    cx.save(); cx.translate(24,H/2); cx.rotate(-Math.PI/2);
+    cx.fillText('cloud  0% at top', -70,0); cx.restore();
+    $('#s2keep').textContent=kept;
+    $('#s2pre').textContent=pre;
+    $('#s2post').textContent=post;
+    $('#s2best').textContent = best? best.date.slice(5) : 'none';
+    if(mode==='aoi' && !T.done.has(2)){
+      const b=scenes.filter(s=>+s.d<+EV && +EV-+s.d<=NEAR)
+                    .sort((a,c)=>a.aoi_cloud-c.aoi_cloud)[0];
+      $('#s2itext').innerHTML =
+        `The catalogue's cloud figure covers a <b>110 km tile</b>. Our slope is 82 km² — a fiftieth of it. `+
+        `The best pre-event scene, <b>${b.date}</b>, is <b>${fmt(b.tile_cloud)}% cloudy as a tile</b> but `+
+        `<b>${fmt(b.aoi_cloud)}% over the mountain</b>. Rank on the tile figure and you throw away the clearest `+
+        `image in the archive. Every scene here was re-scored over the slope itself.`;
+      $('#s2insight').style.display='block';
+      complete(2);
+    }
+  }
+  $('#s2slider').oninput=e=>{ maxc=+e.target.value; $('#s2v').textContent=maxc+'%'; draw(); };
+  $$('#s2mode button').forEach(b=>b.onclick=()=>{
+    $$('#s2mode button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); mode=b.dataset.m; draw(); });
+  draw();
+})();
+
+/* ============================ station 3 ================================= */
+let GRID=null;
+(function(){
+  const cv=$('#s3canvas'), cx=cv.getContext('2d');
+  const W=D.meta.grid.w, H=D.meta.grid.h;
+  const img=new Image();
+  img.onload=()=>{
+    const off=document.createElement('canvas'); off.width=W; off.height=H;
+    const oc=off.getContext('2d'); oc.drawImage(img,0,0);
+    const px=oc.getImageData(0,0,W,H).data;
+    const d=new Float32Array(W*H), pre=new Float32Array(W*H), both=new Uint8Array(W*H);
+    for(let i=0,j=0;i<W*H;i++,j+=4){
+      d[i]=px[j]/127.5-1; pre[i]=px[j+1]/127.5-1; both[i]=px[j+2]>128?1:0;
+    }
+    GRID={d,pre,both,W,H};
+    $('#s3cmp').textContent=D.meta.grid.usable_pct+'%';
+    paint();
+  };
+  img.src='data:image/png;base64,'+D.change_png;
+
+  function paint(flag){
+    const {d,both}=GRID, im=cx.createImageData(W,H), o=im.data;
+    for(let i=0,j=0;i<W*H;i++,j+=4){
+      if(!both[i]){ o[j]=14;o[j+1]=20;o[j+2]=25;o[j+3]=255; continue; }
+      const v=d[i];
+      if(flag&&flag[i]){ o[j]=255;o[j+1]=90;o[j+2]=70;o[j+3]=255; continue; }
+      const t=Math.max(-1,Math.min(1,v));
+      if(t<0){ const k=-t; o[j]=180+60*k;o[j+1]=150-90*k;o[j+2]=145-90*k; }
+      else   { const k=t;  o[j]=170-110*k;o[j+1]=200-40*k;o[j+2]=225; }
+      o[j+3]=255;
+    }
+    cx.putImageData(im,0,0);
+  }
+
+  $('#s3slider').oninput=e=>{ $('#s3v').textContent=(-e.target.value/100).toFixed(2); };
+  $('#s3run').onclick=()=>{
+    if(!GRID) return;
+    const thr=-$('#s3slider').value/100, needSnow=$('#s3snow').checked;
+    const {d,pre,both}=GRID, N=W*H;
+    const flag=new Uint8Array(N); let nflag=0;
+    for(let i=0;i<N;i++){
+      if(both[i] && d[i]<thr && (!needSnow || pre[i]>0.35)){ flag[i]=1; nflag++; }
+    }
+    // connected components, 8-neighbour, iterative stack
+    const lab=new Int32Array(N).fill(0); let k=0; const sizes=[];
+    const st=new Int32Array(N);
+    for(let s=0;s<N;s++){
+      if(!flag[s]||lab[s]) continue;
+      k++; let sp=0; st[sp++]=s; lab[s]=k; let n=0;
+      while(sp){ const p=st[--sp]; n++;
+        const y=(p/W)|0, x=p-y*W;
+        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+          const yy=y+dy, xx=x+dx;
+          if(yy<0||yy>=H||xx<0||xx>=W) continue;
+          const q=yy*W+xx;
+          if(flag[q]&&!lab[q]){ lab[q]=k; st[sp++]=q; }
+        }
+      }
+      sizes.push(n);
+    }
+    const big=sizes.filter(n=>n>=40).sort((a,b)=>b-a);
+    paint(flag);
+    $('#s3flag').textContent=nflag.toLocaleString();
+    $('#s3clu').textContent=big.length;
+    $('#s3big').textContent=(big[0]*400/1e6).toFixed(2)+' km²';
+    const pct=(100*nflag/(D.meta.grid.usable_px)).toFixed(2);
+    $('#s3log').innerHTML =
+      `<span class="dim">threshold</span>  snow index fell by more than ${(-thr).toFixed(2)}\n`+
+      `<span class="dim">gate</span>       ${needSnow?'must have been snow or ice before':'no prior-snow gate'}\n`+
+      `<span class="hl">${nflag.toLocaleString()}</span> cells flagged — <span class="hl">${pct}%</span> of everything comparable\n`+
+      `<span class="no">${big.length}</span> separate clusters of 1.6 ha or more\n`+
+      `largest ${(big[0]*400/1e6).toFixed(2)} km², smallest counted ${(big[big.length-1]*400/1e6).toFixed(2)} km²`;
+    $('#s3insight').style.display='block';
+    T.res.clusters=big.length; save();
+    complete(3);
+  };
+})();
+
+/* ============================ station 4 ================================= */
+(function(){
+  const tb=$('#s4tbl tbody');
+  const C=D.clusters;
+  function render(){
+    const f={slope:false,elev:false,north:false};
+    $$('.s4f').forEach(c=>f[c.dataset.f]=c.checked);
+    let kept=[];
+    tb.innerHTML=C.map(c=>{
+      const offN=Math.min(Math.abs(c.aspect_deg),Math.abs(c.aspect_deg-360));
+      let drop=false;
+      if(f.slope && c.slope_deg<28) drop=true;
+      if(f.elev  && c.elev_m<5000)  drop=true;
+      if(f.north && offN>60)        drop=true;
+      if(!drop) kept.push(c);
+      const face = offN<=45?'N': (c.aspect_deg>135&&c.aspect_deg<225)?'S':
+                   (c.aspect_deg<=135?'E':'W');
+      return `<tr class="${drop?'dropped':(f.slope&&f.elev&&f.north?'keep':'')}">
+        <td class="k">${c.id}</td><td class="n">${fmt(c.area_km2,2)}</td>
+        <td class="n">${Math.round(c.elev_m).toLocaleString()} m</td>
+        <td class="n">${fmt(c.slope_deg,0)}°</td>
+        <td class="n">${Math.round(c.aspect_deg)}° ${face}</td>
+        <td>${c.reading}</td></tr>`;
+    }).join('');
+    $('#s4left').textContent=kept.length;
+    if(kept.length){
+      const offs=kept.map(c=>{const o=Math.min(Math.abs(c.aspect_deg),Math.abs(c.aspect_deg-360));
+        return c.aspect_deg>180? -o : o;});
+      $('#s4asp').textContent=`${Math.round(Math.min(...offs))}° to ${Math.round(Math.max(...offs))}°`;
+      const allN=kept.every(c=>Math.min(Math.abs(c.aspect_deg),Math.abs(c.aspect_deg-360))<=60);
+      $('#s4dir').textContent = allN? 'NORTH' : 'mixed';
+    }
+    if(f.slope&&f.elev&&f.north){
+      $('#s4probe').style.display='block';
+      const offs=kept.map(c=>Math.min(Math.abs(c.aspect_deg),Math.abs(c.aspect_deg-360)));
+      $('#s4itext').innerHTML =
+        `Terrain does what the snow index could not. <b>${kept.length} candidates</b> survive — steep, high, `+
+        `and not sun-facing. Nothing in this data picks between them, and we will not pretend otherwise.<br><br>`+
+        `But every one of them lies within <b>${Math.round(Math.max(...offs))}° of north</b>. `+
+        `The original analysis assumed a <b>west-facing</b> slope. That assumption fails whichever candidate `+
+        `is the real scar — which is the part of this that does not depend on picking one.`;
+      $('#s4insight').style.display='block';
+      T.res.candidates=kept.length; save();
+    }
+  }
+  $$('.s4f').forEach(c=>c.onchange=render);
+  $('#s4probebtn').onclick=()=>{
+    const p=D.probe, lg=$('#s4probelog'); lg.style.display='block';
+    lg.innerHTML =
+      `<span class="dim">probing</span> 28.28771 N, 85.52809 E — the coordinate from the reports\n\n`+
+      `usable pixels     <span class="hl">${p.n_usable}</span>   <span class="dim">(so it was observed, not hidden by cloud)</span>\n`+
+      `snow index change <span class="ok">${p.d_ndsi_median>0?'+':''}${fmt(p.d_ndsi_median,3)}</span>   <span class="dim">it got BRIGHTER</span>\n`+
+      `was snow or ice   <span class="hl">${fmt(p.was_snow_pct,1)}%</span>   <span class="dim">never glaciated</span>\n`+
+      `scar-like         <span class="ok">${fmt(p.scar_like_pct,1)}%</span>\n\n`+
+      `<span class="no">NOT A SCAR.</span> Fresh snow on bare ground is the opposite of a collapse\n`+
+      `in every respect that can be measured.`;
+    complete(4);
+  };
+  render();
+})();
+
+/* ============================ station 5 ================================= */
+(function(){
+  const cv=$('#s5canvas'), cx=cv.getContext('2d');
+  const pairs=D.offsets;
+  $('#s5pairs').innerHTML = pairs.map((p,i)=>
+    `<button class="btn ghost" data-i="${i}" style="font-family:'JetBrains Mono',monospace;font-size:11.5px;padding:7px 11px">
+      ${p.ref.slice(4,6)}/${p.ref.slice(6)}→${p.sec.slice(4,6)}/${p.sec.slice(6)}</button>`).join('');
+  let cur=null;
+  function run(i){
+    const p=pairs[i]; cur=p;
+    const v=p.sample_mm.map(Number);
+    const med=median(v), sig=robustSigma(v), floor=detectionFloor(v,p.span_days);
+    const W=cv.width,H=cv.height, css=getComputedStyle(document.documentElement);
+    const edge=css.getPropertyValue('--edge'), dim=css.getPropertyValue('--dim');
+    const live=css.getPropertyValue('--live'), alarm=css.getPropertyValue('--alarm');
+    const lim=Math.max(sig*4,50), mid=H/2, sc=(H/2-40)/lim;
+    cx.clearRect(0,0,W,H);
+    cx.strokeStyle=edge; cx.beginPath(); cx.moveTo(70,mid); cx.lineTo(W-30,mid); cx.stroke();
+    let n=0; const step=Math.max(1,Math.floor(v.length/900));
+
+    // The numbers land first; the scatter is decoration. Gating the result on
+    // requestAnimationFrame means a throttled or hidden tab never shows an
+    // answer at all - which is what happened the first time this was tested,
+    // in a pane where rAF does not fire.
+    report();
+
+    (function anim(){
+      for(let k=0;k<40 && n<v.length;k++,n+=step){
+        const x=70+(n/v.length)*(W-100), y=mid-(v[n]-med)*sc;
+        cx.fillStyle=live; cx.globalAlpha=.30;
+        cx.beginPath(); cx.arc(x,Math.max(6,Math.min(H-6,y)),3,0,7); cx.fill();
+      }
+      cx.globalAlpha=1;
+      if(n<v.length){ requestAnimationFrame(anim); return; }
+      [[sig,'1σ'],[3*sig,'3σ — the floor']].forEach(([s,lab],idx)=>{
+        cx.strokeStyle= idx? alarm : dim; cx.lineWidth=2;
+        cx.setLineDash(idx?[10,7]:[4,5]);
+        [-1,1].forEach(k=>{ const y=mid-k*s*sc;
+          cx.beginPath(); cx.moveTo(70,y); cx.lineTo(W-30,y); cx.stroke(); });
+        cx.setLineDash([]);
+        cx.fillStyle= idx? alarm : dim; cx.font='700 20px "JetBrains Mono",monospace';
+        cx.fillText(lab, W-260, mid-s*sc-10);
+      });
+      cx.fillStyle=dim; cx.font='19px "JetBrains Mono",monospace';
+      cx.fillText('offset, mm', 12, 26);
+    })();
+
+    function report(){
+      $('#s5n').textContent=v.length.toLocaleString();
+      $('#s5med').textContent=fmt(med,1)+' mm';
+      $('#s5sig').textContent=fmt(sig,1)+' mm';
+      $('#s5floor').textContent=fmt(floor,1);
+      const ref=D.reference.floors[p.pair];
+      const okS=Math.abs(sig-ref.sigma_mm)<0.05, okF=Math.abs(floor-ref.floor_mm_day)<0.05;
+      $('#s5check').className='selfcheck'+((okS&&okF)?'':' bad');
+      $('#s5check').innerHTML = (okS&&okF)
+        ? `<b>✓ verified</b> — your browser's σ and floor match the Python reference to 0.05 mm`
+        : `<b>✗ mismatch</b> — browser ${fmt(sig,3)} / ${fmt(floor,3)} vs reference ${ref.sigma_mm} / ${ref.floor_mm_day}`;
+      $('#s5log').innerHTML =
+        `<span class="dim">pair</span>        ${p.ref} → ${p.sec}   ${p.span_days} days apart\n`+
+        `<span class="dim">pixels</span>      ${v.length.toLocaleString()} sampled from ${p.n_total.toLocaleString()} valid\n`+
+        `median      ${fmt(med,2)} mm  <span class="dim">(the bulk shift, removed)</span>\n`+
+        `MAD × 1.4826 = σ = <span class="hl">${fmt(sig,2)} mm</span>\n`+
+        `3σ / ${p.span_days} days = <span class="no">${fmt(floor,2)} mm/day</span>  ← the floor`;
+      T.res.floor=floor; T.res.floorPair=p.pair; save();
+      // Only the intervals that COVER the seven weeks before the collapse.
+      // Winter pairs describe winter; including them flatters or spoils the
+      // bound depending on which way they happen to fall.
+      const cover=pairs.filter(q=>q.pre_event && q.span_days>0 && q.ref>='20260629')
+        .map(q=>({pair:q.pair, f:detectionFloor(q.sample_mm.map(Number),q.span_days)}));
+      const worstAoi=Math.max(...cover.map(c=>c.f));
+      const sf=D.scar_floor||{};
+      const worstPoint=sf.worst_point||worstAoi;
+      $('#s5itext').innerHTML =
+        `You measured <b>${fmt(floor,1)} mm/day</b> for this pair. Across the three intervals that actually `+
+        `cover the seven weeks before the collapse, the floor runs `+
+        `<b>${fmt(Math.min(...cover.map(c=>c.f)),1)}</b> to <b>${fmt(worstAoi,1)} mm/day</b>. A bound that must `+
+        `hold across a window is set by its <em>weakest</em> interval — not its best, which is how a bound `+
+        `gets flattered.<br><br>`+
+        `<b>But that is an average over 82 km².</b> The mountain did not fail over 82 km²; it failed on one `+
+        `hillside. Measured in a 1 km window on a candidate scar, those same three intervals read `+
+        (sf.covering? sf.covering.map(c=>`<b>${fmt(c.point,1)}</b>`).join(', ') : '—')+
+        ` mm/day. The worst becomes <b>${fmt(worstPoint,1)} mm/day</b> — about 1.7× worse than the area figure, `+
+        `because a statistic averaged over ground that did not fail describes ground that did not fail.`+
+        `<br><br><span class="badge pre">PRE-COMPUTED</span> the windowed figures need the full rasters, `+
+        `so they are carried in rather than recomputed here.`;
+      $('#s5insight').style.display='block';
+      T.res.worstAoi=worstAoi; T.res.worstFloor=worstPoint; save();
+      complete(5);
+    }
+  }
+  $$('#s5pairs button').forEach(b=>b.onclick=()=>{
+    $$('#s5pairs button').forEach(x=>x.style.opacity=.55);
+    b.style.opacity=1; run(+b.dataset.i); });
+})();
+
+/* ============================ station 6 ================================= */
+(function(){
+  const cv=$('#s6canvas'), cx=cv.getContext('2d');
+  const SLOPE=39;
+  function compass(a){const n=['north','north-east','east','south-east','south',
+    'south-west','west','north-west'];return n[Math.round(a/45)%8];}
+  function draw(asp){
+    const W=cv.width,H=cv.height, css=getComputedStyle(document.documentElement);
+    const edge=css.getPropertyValue('--edge'),dim=css.getPropertyValue('--dim'),
+          snow=css.getPropertyValue('--snow'),live=css.getPropertyValue('--live'),
+          alarm=css.getPropertyValue('--alarm'),go=css.getPropertyValue('--go');
+    cx.clearRect(0,0,W,H);
+    const cxx=300, cyy=H/2, R=170;
+    cx.strokeStyle=edge; cx.lineWidth=2;
+    cx.beginPath(); cx.arc(cxx,cyy,R,0,7); cx.stroke();
+    cx.fillStyle=dim; cx.font='20px "JetBrains Mono",monospace';
+    [['N',0],['E',90],['S',180],['W',270]].forEach(([l,a])=>{
+      const t=rad(a-90); cx.fillText(l,cxx+Math.cos(t)*(R+26)-7,cyy+Math.sin(t)*(R+26)+7);
+    });
+    // downslope arrow: aspect is the azimuth of steepest descent
+    const t=rad(asp-90);
+    cx.strokeStyle=live; cx.lineWidth=7; cx.lineCap='round';
+    cx.beginPath(); cx.moveTo(cxx,cyy); cx.lineTo(cxx+Math.cos(t)*R*0.86,cyy+Math.sin(t)*R*0.86); cx.stroke();
+    cx.fillStyle=live; cx.font='700 22px "JetBrains Mono",monospace';
+    cx.fillText('downslope', cxx-52, cyy+R+58);
+    cx.fillStyle=snow; cx.font='700 30px "JetBrains Mono",monospace';
+    cx.fillText(Math.round(asp)+'°', cxx-24, cyy-R-26);
+
+    // per-track bars
+    const x0=640, bw=760;
+    let okCount=0, n98=0, n48=0;
+    D.tracks.forEach((tr,i)=>{
+      const s=sensitivity(tr,SLOPE,asp), a=Math.abs(s), ok=a>=0.3;
+      if(ok) okCount++;
+      if(tr.name.indexOf('NISAR ASC')===0) n98=s;
+      if(tr.name.indexOf('NISAR DESC')===0) n48=s;
+      const y=70+i*106;
+      cx.fillStyle=dim; cx.font='19px "JetBrains Mono",monospace';
+      cx.fillText(tr.name, x0, y-12);
+      cx.fillStyle=edge; cx.fillRect(x0,y,bw,26);
+      cx.fillStyle= ok? go : alarm;
+      cx.fillRect(x0,y,bw*Math.min(1,a),26);
+      cx.strokeStyle=dim; cx.setLineDash([5,5]); cx.lineWidth=2;
+      cx.beginPath(); cx.moveTo(x0+bw*0.3,y-6); cx.lineTo(x0+bw*0.3,y+32); cx.stroke();
+      cx.setLineDash([]);
+      cx.fillStyle= ok? go : alarm; cx.font='700 21px "JetBrains Mono",monospace';
+      cx.fillText((s>=0?'+':'')+fmt(s,3)+(ok?'':'   BLIND'), x0+bw+16, y+20);
+    });
+    cx.fillStyle=dim; cx.font='17px "JetBrains Mono",monospace';
+    cx.fillText('0.3 = the level below which motion is lost in noise', x0+bw*0.3-260, 44);
+
+    $('#s6v').textContent=Math.round(asp)+'° ('+compass(asp)+')';
+    $('#s6n98').textContent=fmt(n98,3);
+    $('#s6n48').textContent=fmt(n48,3);
+    $('#s6ok').textContent=okCount+' of 5';
+    const fl=T.res.worstFloor||32.0;
+    const bound=fl/Math.abs(n98);
+    $('#s6bound').textContent=fmt(bound,0)+' mm/d';
+    T.res.aspect=asp; T.res.sens=n98; T.res.bound=bound; save();
+    // self-check against the Python for the three reference aspects
+    const key=String(Math.round(asp));
+    if(D.reference.sensitivity[key]){
+      const exp=D.reference.sensitivity[key];
+      const bad=D.tracks.filter(tr=>Math.abs(sensitivity(tr,SLOPE,asp)-exp[tr.name])>0.002);
+      $('#s6check').className='selfcheck'+(bad.length?' bad':'');
+      $('#s6check').innerHTML = bad.length
+        ? `<b>✗ mismatch</b> on ${bad.length} track(s) against the Python reference`
+        : `<b>✓ verified</b> — all five tracks match geometry_merge.sensitivities at ${key}°`;
+    } else { $('#s6check').innerHTML=''; }
+  }
+  $('#s6slider').oninput=e=>draw(+e.target.value);
+  $$('[data-asp]').forEach(b=>b.onclick=()=>{
+    const a=+b.dataset.asp; $('#s6slider').value=a; draw(a);
+    if(a===0||a===342){
+      const fl=T.res.worstFloor||32.0;
+      const s273=Math.abs(sensitivity(D.tracks[0],SLOPE,273));
+      const sNow=Math.abs(sensitivity(D.tracks[0],SLOPE,a));
+      $('#s6itext').innerHTML =
+        `At <b>273°</b> — the value the original analysis took from an elevation model at a coordinate `+
+        `read off a news report — NISAR's ascending track has a sensitivity of <b>${fmt(s273,3)}</b>, and the `+
+        `floor you measured becomes a bound of <b>${fmt(fl/s273,0)} mm/day</b>.<br><br>`+
+        `At <b>${a}°</b>, which is where the candidates you found in station 4 actually face, it is `+
+        `<b>${fmt(sNow,3)}</b> — and the same floor becomes <b>${fmt(fl/sNow,0)} mm/day</b>. `+
+        (a===0? `Both NISAR tracks drop below 0.3: the mission has <b>no usable viewing direction</b> at that scar, and only Sentinel-1 does.`
+              : `Nothing about the radar changed. Only which way we believed the hill was facing.`);
+      $('#s6insight').style.display='block';
+      complete(6);
+    }
+  });
+  draw(273);
+})();
+
+/* ============================ station 7 ================================= */
+(function(){
+  const cv=$('#s7canvas'), cx=cv.getContext('2d');
+  const EV=new Date('2026-08-26');
+  const key=d=>d.toISOString().slice(0,10).replace(/-/g,'');
+  function velocities(rows,floors){
+    const out=[];
+    for(let i=0;i<rows.length-1;i++){
+      const a=new Date(rows[i].epoch), b=new Date(rows[i+1].epoch);
+      const dt=Math.round((b-a)/864e5); if(dt<=0) continue;
+      out.push({t0:a,t1:b,days:dt,
+        v:(rows[i+1].cum_mm-rows[i].cum_mm)/dt,
+        floor:floors[key(a)+'_'+key(b)] ?? null});
+    }
+    return out;
+  }
+  function fitInv(win){
+    // 1/|v| against time; the intercept is the predicted failure date
+    const t=win.map(w=>(w.mid-win[0].mid)/864e5);
+    const y=win.map(w=>1/Math.abs(w.v));
+    const n=t.length, mt=t.reduce((a,b)=>a+b)/n, my=y.reduce((a,b)=>a+b)/n;
+    let sxy=0,sxx=0; for(let i=0;i<n;i++){sxy+=(t[i]-mt)*(y[i]-my);sxx+=(t[i]-mt)**2;}
+    const a=sxy/sxx, b=my-a*mt;
+    let ssr=0,sst=0; for(let i=0;i<n;i++){ssr+=(y[i]-(a*t[i]+b))**2;sst+=(y[i]-my)**2;}
+    return {a,b,r2:sst>0?1-ssr/sst:0,tf:-b/a};
+  }
+  $('#s7run').onclick=()=>{
+    const cut=$('#s7cut').checked;
+    const blocks=Object.entries(D.series.blocks);
+    let nv=0,np=0,alarms=[],lines=[];
+    const drawSets=[];
+    blocks.forEach(([name,rows])=>{
+      let vs=velocities(rows,D.series.floors);
+      const dropped=vs.filter(w=>w.t1>=EV);
+      if(cut) vs=vs.filter(w=>w.t1<EV);
+      vs.forEach(w=>w.mid=new Date(+w.t0+(w.t1-w.t0)/2));
+      nv+=vs.length;
+      const pass=vs.filter(w=>w.floor!=null && Math.abs(w.v)>w.floor);
+      np+=pass.length;
+      drawSets.push({name,vs,pass});
+      lines.push(`<span class="hl">${name.split('|')[0]} block ${name.split('|')[1]}</span>`);
+      if(!cut && dropped.length) dropped.forEach(w=>
+        lines.push(`  <span class="no">ADMITTED</span> ${key(w.t0)}→${key(w.t1)}  ${fmt(w.v,2)} mm/day  <span class="no">spans the collapse</span>`));
+      vs.forEach(w=>{
+        const ok=w.floor!=null && Math.abs(w.v)>w.floor;
+        lines.push(`  ${key(w.t0)}→${key(w.t1)}  ${(w.v>=0?'+':'')}${fmt(w.v,2)} mm/day  vs floor ${w.floor==null?'—':fmt(w.floor,1)}  ${ok?'<span class="no">ABOVE</span>':'<span class="ok">below</span>'}`);
+      });
+      if(pass.length>=3){
+        const f=fitInv(pass.slice(-3));
+        if(f.a<0 && f.r2>=0.7){
+          const d=new Date(+pass.slice(-3)[0].mid+f.tf*864e5);
+          const lead=Math.round((d-pass[pass.length-1].t1)/864e5);
+          if(lead>0&&lead<=60){ alarms.push({name,d,lead,r2:f.r2});
+            lines.push(`  <span class="no">*** ALARM *** predicted ${d.toISOString().slice(0,10)}, lead ${lead} days, R² ${fmt(f.r2,2)}</span>`); }
+        }
+      } else {
+        lines.push(`  <span class="ok">no alarm</span> — ${pass.length} of ${vs.length} velocities cleared their floor, the fit needs 3`);
+      }
+    });
+    // plot
+    const W=cv.width,H=cv.height,css=getComputedStyle(document.documentElement);
+    const edge=css.getPropertyValue('--edge'),dim=css.getPropertyValue('--dim'),
+          live=css.getPropertyValue('--live'),alarm=css.getPropertyValue('--alarm'),
+          go=css.getPropertyValue('--go');
+    cx.clearRect(0,0,W,H);
+    const t0=+new Date('2025-11-01'), t1=+new Date('2026-09-10');
+    const all=drawSets.flatMap(s=>s.vs.map(w=>Math.abs(w.v)));
+    const vmax=Math.max(40,...all,...drawSets.flatMap(s=>s.vs.map(w=>w.floor||0)));
+    const X=t=>80+ (t-t0)/(t1-t0)*(W-130), Y=v=>H-70-(v/vmax)*(H-130);
+    cx.strokeStyle=edge; cx.lineWidth=2;
+    cx.beginPath(); cx.moveTo(80,H-70); cx.lineTo(W-50,H-70); cx.stroke();
+    const ex=X(+EV);
+    cx.strokeStyle=alarm; cx.setLineDash([9,7]);
+    cx.beginPath(); cx.moveTo(ex,30); cx.lineTo(ex,H-70); cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle=alarm; cx.font='700 20px "JetBrains Mono",monospace';
+    cx.fillText('the collapse', ex+10, 48);
+    drawSets.forEach(s=>s.vs.forEach(w=>{
+      const x=X(+w.mid), y=Y(Math.abs(w.v));
+      if(w.floor!=null){
+        cx.strokeStyle=dim; cx.lineWidth=3; cx.globalAlpha=.55;
+        cx.beginPath(); cx.moveTo(x-13,Y(w.floor)); cx.lineTo(x+13,Y(w.floor)); cx.stroke();
+        cx.globalAlpha=1;
+      }
+      const above=w.floor!=null&&Math.abs(w.v)>w.floor;
+      cx.fillStyle=above?alarm:live;
+      cx.beginPath(); cx.arc(x,y,7,0,7); cx.fill();
+    }));
+    cx.fillStyle=dim; cx.font='18px "JetBrains Mono",monospace';
+    cx.fillText('speed, mm/day  (dashes = that pair\'s own floor)', 84, 26);
+    $('#s7blk').textContent=blocks.length;
+    $('#s7vel').textContent=nv;
+    $('#s7pass').textContent=np;
+    $('#s7alarm').textContent=alarms.length;
+    $('#s7alarmro').className='ro '+(alarms.length?'bad':'good');
+    $('#s7log').innerHTML=lines.join('\n');
+    T.res.alarms=alarms.length; save();
+    if(cut){
+      $('#s7ititle').textContent='No alarm — and the floor says exactly why';
+      $('#s7itext').innerHTML =
+        `<b>${np} of ${nv}</b> measured velocities cleared their own pair's floor. The fit needs three in a row. `+
+        `Nothing on this slope moved fast enough to be distinguished from noise.<br><br>`+
+        `Now untick the box above and run it again. It lets in the one image pair that <em>spans</em> the collapse.`;
+    } else {
+      $('#s7ititle').textContent = alarms.length? 'That alarm is made of hindsight' : 'The cutoff is off';
+      $('#s7itext').innerHTML = alarms.length
+        ? `The detector just announced a failure date with <b>${alarms[0].lead} days of lead time</b>. It is worthless. `+
+          `The interval it leaned on <em>contains the collapse</em> — metres of apparent movement, recorded after the mountain had already gone. `+
+          `A forecast may only use data that existed before the thing it forecasts.<br><br>`+
+          `This is not hypothetical: this project published exactly that error once, and the fix is the tickbox you just used.`
+        : `Letting post-event data in did not manufacture an alarm here, because both event-spanning intervals happen to sit below their floors too. `+
+          `On data where they do not, this is how a detector announces a lead time built entirely on hindsight — and this project made that mistake once.`;
+    }
+    $('#s7insight').style.display='block';
+    complete(7);
+  };
+})();
+
+/* ============================ station 8 ================================= */
+(function(){
+  const cv=$('#s8canvas'), cx=cv.getContext('2d');
+  function paint(){
+    const fl=T.res.worstFloor, sens=Math.abs(T.res.sens||0.472), bound=fl?fl/sens:null;
+    $('#s8floor').textContent = fl? fmt(fl,1)+' mm/d' : '– run station 5';
+    $('#s8sens').textContent = T.res.sens!=null? fmt(T.res.sens,3) : '– run station 6';
+    $('#s8bound').textContent = bound? fmt(bound,0)+' mm/d' : '–';
+    $('#s8alarm').textContent = T.res.alarms!=null? T.res.alarms : '– run station 7';
+    if(!bound){ $('#s8verdict').textContent='Work through the stations and your own numbers appear here.'; return; }
+    const P=0.33, DAYS=222;
+    const W=cv.width,H=cv.height,css=getComputedStyle(document.documentElement);
+    const edge=css.getPropertyValue('--edge'),dim=css.getPropertyValue('--dim'),
+          live=css.getPropertyValue('--live'),alarm=css.getPropertyValue('--alarm');
+    cx.clearRect(0,0,W,H);
+    const x0=60,bw=W-420;
+    const real=P*DAYS, need=bound*DAYS;
+    [['what the slope actually did', real, live, (real/10).toFixed(1)+' cm'],
+     ['what NISAR needed to notice', need, alarm, (need/1000).toFixed(1)+' m']]
+    .forEach(([lab,val,col,txt],i)=>{
+      const y=70+i*140;
+      cx.fillStyle=dim; cx.font='21px "JetBrains Mono",monospace'; cx.fillText(lab,x0,y-14);
+      cx.fillStyle=edge; cx.fillRect(x0,y,bw,44);
+      cx.fillStyle=col; cx.fillRect(x0,y,Math.max(4,bw*val/need),44);
+      cx.fillStyle=col; cx.font='700 30px "JetBrains Mono",monospace';
+      cx.fillText(txt,x0+bw+22,y+34);
+    });
+    const k=Math.round(bound/P);
+    $('#s8verdict').innerHTML =
+      `Over 222 days it moved <b>${(real/10).toFixed(1)} cm</b>.<br>You needed <span>${(need/1000).toFixed(1)} metres</span> to see it.`;
+    T.res.ratio=k; save();
+  }
+  window.__paintS8=paint;
+  const io=new IntersectionObserver(es=>es.forEach(e=>{ if(e.isIntersecting){paint();}}),{threshold:.2});
+  io.observe($('#st8'));
+  paint();
+})();
+
+/* ============================ boot ====================================== */
+buildRail();
+[...T.done].forEach(n=>{ unlock(n); unlock(n+1);
+  const nx=$('#st'+n+' .next'); if(nx) nx.style.display='flex'; });
+unlock(1); paintRail();
+new IntersectionObserver(es=>es.forEach(e=>{
+  if(e.isIntersecting){ const n=+e.target.id.slice(2); if(n){T.at=n;paintRail();} }
+}),{threshold:.3}).observe($('#st1'));
+$$('.station').forEach(s=>new IntersectionObserver(es=>es.forEach(e=>{
+  if(e.isIntersecting && !e.target.classList.contains('locked')){
+    T.at=+e.target.id.slice(2); paintRail(); }
+}),{threshold:.25}).observe(s));
+</script>
