@@ -1,177 +1,283 @@
 <meta charset="utf-8">
-<title>Run The Analysis Yourself</title>
+<title>SARGuardian — Could NISAR have warned?</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Could NASA's NISAR satellite have warned before the 2026 Langtang Lirung collapse? Run the measurement yourself, in the browser, on the real data.">
+<meta name="theme-color" content="#05090d">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
 <style>
 :root{
-  --night:#070c0f; --deep:#0c141a; --panel:#111d24; --panel2:#16242d; --edge:#1f313b;
-  --snow:#eef5f7; --mid:#9fb3bc; --dim:#6b8189;
-  --live:#5ad2e0; --pre:#ffab4d; --alarm:#ff6b5e; --go:#5fd39a;
+  --night:#05090d; --deep:#081017; --panel:#0e1920; --panel2:#132230; --edge:#1c2e3a;
+  --glass:rgba(14,25,32,.72); --line:rgba(120,190,210,.14);
+  --snow:#eef6f8; --mid:#a3b8c1; --dim:#6a818b;
+  --live:#5fd8e6; --pre:#ffb35c; --alarm:#ff6f61; --go:#62d9a0;
+  --ice:#bfe9f0; --glow:rgba(95,216,230,.16);
+  --serif:"Instrument Serif",Georgia,serif;
+  --sans:Archivo,"Helvetica Neue",Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --r:16px;
 }
 :root[data-theme="light"]{
-  --night:#eef2f4; --deep:#ffffff; --panel:#ffffff; --panel2:#f2f6f7; --edge:#d4dee3;
-  --snow:#0b1317; --mid:#42545c; --dim:#66787f;
+  --night:#eef3f5; --deep:#ffffff; --panel:#ffffff; --panel2:#f3f7f8; --edge:#d6e0e4;
+  --glass:rgba(255,255,255,.8); --line:rgba(11,111,125,.14);
+  --snow:#0b1317; --mid:#43555d; --dim:#687a82;
   --live:#0b6f7d; --pre:#a2620f; --alarm:#b5302a; --go:#2b7d51;
+  --ice:#0b6f7d; --glow:rgba(11,111,125,.10);
 }
 @media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
-  --night:#eef2f4; --deep:#ffffff; --panel:#ffffff; --panel2:#f2f6f7; --edge:#d4dee3;
-  --snow:#0b1317; --mid:#42545c; --dim:#66787f;
+  --night:#eef3f5; --deep:#ffffff; --panel:#ffffff; --panel2:#f3f7f8; --edge:#d6e0e4;
+  --glass:rgba(255,255,255,.8); --line:rgba(11,111,125,.14);
+  --snow:#0b1317; --mid:#43555d; --dim:#687a82;
   --live:#0b6f7d; --pre:#a2620f; --alarm:#b5302a; --go:#2b7d51;
+  --ice:#0b6f7d; --glow:rgba(11,111,125,.10);
 }}
 *{box-sizing:border-box}
-body{margin:0;background:var(--night);color:var(--snow);
-  font-family:Archivo,"Helvetica Neue",Arial,sans-serif;font-size:16px;line-height:1.6;
-  -webkit-font-smoothing:antialiased}
-.mono,code{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
-h1,h2,.disp{font-family:"Instrument Serif",Georgia,serif;font-weight:400;letter-spacing:-.01em}
-h1{font-size:clamp(38px,6.6vw,74px);line-height:.98;margin:0 0 20px;text-wrap:balance}
-h2{font-size:clamp(26px,3.7vw,42px);line-height:1.06;margin:0 0 12px;text-wrap:balance}
-h3{font-size:15px;font-weight:600;margin:0 0 6px}
+html{scroll-behavior:smooth}
+body{margin:0;color:var(--snow);font-family:var(--sans);font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;background:var(--night);
+  background-image:
+    radial-gradient(1100px 620px at 78% -8%,var(--glow),transparent 62%),
+    radial-gradient(900px 700px at -10% 38%,rgba(255,111,97,.05),transparent 60%);
+  background-attachment:fixed}
+::selection{background:var(--live);color:var(--night)}
+.mono,code{font-family:var(--mono);font-variant-numeric:tabular-nums}
+h1,h2,.disp{font-family:var(--serif);font-weight:400;letter-spacing:-.015em}
+h1{font-size:clamp(40px,6.2vw,80px);line-height:.96;margin:0 0 22px;text-wrap:balance}
+h1 em{font-style:italic;color:var(--ice)}
+h2{font-size:clamp(30px,4vw,48px);line-height:1.04;margin:0 0 14px;text-wrap:balance}
+h3{font-size:15px;font-weight:600;margin:0 0 6px;letter-spacing:.005em}
 p{margin:0 0 14px;color:var(--mid)}
 b,strong{color:var(--snow);font-weight:600}
 em{font-style:italic;color:var(--snow)}
-a{color:var(--live)}
+a{color:var(--live);text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--live);outline-offset:3px;border-radius:6px}
 
-.shell{display:grid;grid-template-columns:238px minmax(0,1fr);min-height:100vh}
-.rail{border-right:1px solid var(--edge);background:var(--deep);position:sticky;top:0;
-  height:100vh;overflow-y:auto;padding:22px 16px}
-.stage{padding:0 30px 90px;max-width:940px}
+/* ---- layout ---- */
+.shell{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}
+.rail{border-right:1px solid var(--edge);background:linear-gradient(180deg,var(--deep),var(--night));
+  position:sticky;top:0;height:100vh;overflow-y:auto;padding:26px 18px 22px;display:flex;flex-direction:column}
+.stage{padding:0 44px 100px;max-width:1010px;counter-reset:st}
 @media (max-width:900px){
-  .shell{grid-template-columns:1fr}
-  .rail{position:sticky;top:0;height:auto;border-right:0;border-bottom:1px solid var(--edge);
-    padding:10px 12px;z-index:40;display:flex;gap:7px;overflow-x:auto;align-items:center}
-  .rail .brand,.rail .railsub,.rail .speed,.rail .railnote{display:none}
+  /* minmax(0,...) and min-width:0, or the rail's single row of stations - a
+     thousand pixels of nowrap - sets the column width and the whole page
+     scrolls sideways on a phone. */
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .rail{min-width:0;position:sticky;top:0;height:auto;border-right:0;border-bottom:1px solid var(--edge);
+    padding:10px 12px;z-index:40;flex-direction:row;gap:7px;overflow-x:auto;align-items:center;
+    background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+  .rail .brand,.rail .railsub,.rail .speed,.rail .railnote,.rail .prog,.rail .steps-line{display:none}
+  .rail #steps{display:flex;gap:6px}
   .stage{padding:0 18px 70px}
 }
-.brand{font-family:"Instrument Serif",serif;font-size:20px;margin:0 0 4px}
-.railsub{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--dim);margin:0 0 18px}
-.step{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-radius:9px;
-  cursor:pointer;border:1px solid transparent;margin-bottom:3px;white-space:nowrap}
-.step:hover{background:var(--panel)}
-.step.on{background:var(--panel);border-color:var(--edge)}
-.step .num{font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:700;
-  width:20px;height:20px;flex:0 0 20px;border-radius:50%;border:1px solid var(--edge);
-  color:var(--dim);display:flex;align-items:center;justify-content:center;margin-top:1px}
-.step.on .num{border-color:var(--live);color:var(--live)}
-.step.done .num{background:var(--go);border-color:var(--go);color:var(--night)}
-.step .t{font-size:12.5px;line-height:1.3;color:var(--mid)}
-.step.on .t{color:var(--snow);font-weight:600}
-.speed{margin-top:16px;padding-top:14px;border-top:1px solid var(--edge)}
-.speed .lbl{font-family:"JetBrains Mono",monospace;font-size:9.5px;letter-spacing:.12em;
-  text-transform:uppercase;color:var(--dim);margin-bottom:7px}
-.railnote{margin-top:14px;padding-top:12px;border-top:1px solid var(--edge);
-  font-family:"JetBrains Mono",monospace;font-size:10px;color:var(--dim);line-height:1.7}
 
-.station{padding:52px 0;border-bottom:1px solid var(--edge);scroll-margin-top:20px}
+/* ---- the rail ---- */
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--serif);font-size:23px;margin:0 0 3px;color:var(--snow)}
+.brand svg{flex:0 0 30px}
+.railsub{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);margin:0 0 20px 40px}
+.prog{margin:0 0 18px;padding:12px 12px 13px;border:1px solid var(--edge);border-radius:12px;background:var(--panel)}
+.prog .pl{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
+.prog .pl b{color:var(--live);font-weight:700}
+.prog .bar{height:5px;border-radius:5px;background:var(--edge);overflow:hidden}
+.prog .bar i{display:block;height:100%;width:0;border-radius:5px;
+  background:linear-gradient(90deg,var(--live),var(--go));transition:width .5s ease}
+#steps{position:relative}
+.step{position:relative;display:flex;gap:12px;align-items:center;padding:8px 10px;border-radius:10px;
+  cursor:pointer;border:1px solid transparent;margin-bottom:2px;white-space:nowrap;transition:background .15s}
+.step:hover{background:var(--panel)}
+.step.on{background:var(--panel);border-color:var(--edge);box-shadow:inset 3px 0 0 var(--live)}
+.step .num{font-family:var(--mono);font-size:10.5px;font-weight:700;width:24px;height:24px;flex:0 0 24px;
+  border-radius:50%;border:1px solid var(--edge);color:var(--dim);background:var(--night);
+  display:flex;align-items:center;justify-content:center;transition:all .2s}
+.step.on .num{border-color:var(--live);color:var(--live);box-shadow:0 0 0 4px var(--glow)}
+.step.done .num{background:var(--go);border-color:var(--go);color:var(--night)}
+.step .t{font-size:13px;line-height:1.3;color:var(--mid)}
+.step.on .t{color:var(--snow);font-weight:600}
+.speed{margin-top:18px;padding-top:16px;border-top:1px solid var(--edge)}
+.speed .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);margin-bottom:8px}
+.railnote{margin-top:auto;padding-top:16px;border-top:1px solid var(--edge);
+  font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.75}
+.railnote a{color:var(--mid)}
+
+/* ---- stations ---- */
+.station{position:relative;padding:76px 0 64px;border-bottom:1px solid var(--line);scroll-margin-top:10px;
+  counter-increment:st}
 .station:last-of-type{border-bottom:0}
+.station:not(#st1)::before{content:counter(st,decimal-leading-zero);position:absolute;right:0;top:34px;
+  font-family:var(--serif);font-size:150px;line-height:1;color:var(--snow);opacity:.045;
+  pointer-events:none;letter-spacing:-.04em}
 /* Stations are never disabled. Dimming says "not visited yet"; it must never
    stop anyone poking at something out of order, which is how the aspect dial
    ended up unusable for every first-time visitor. */
-.station.pending{opacity:.62}
+.station.pending{opacity:.8}
 .station.pending:hover,.station.pending:focus-within{opacity:1}
-.eyebrow{display:flex;align-items:center;gap:10px;margin:0 0 14px;flex-wrap:wrap}
-.eyebrow .n{font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:700;
-  letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}
-.badge{font-family:"JetBrains Mono",monospace;font-size:9.5px;font-weight:700;letter-spacing:.13em;
-  padding:3px 8px;border-radius:20px;border:1px solid}
-.badge.live{color:var(--live);border-color:var(--live)}
-.badge.pre{color:var(--pre);border-color:var(--pre)}
-.lead{font-size:17.5px;line-height:1.5;color:var(--snow);max-width:665px}
-.body{max-width:665px}
+.eyebrow{display:flex;align-items:center;gap:10px;margin:0 0 16px;flex-wrap:wrap}
+.eyebrow .n{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--live)}
+.badge{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.13em;
+  padding:3px 9px;border-radius:20px;border:1px solid;white-space:nowrap}
+.badge.live{color:var(--live);border-color:color-mix(in srgb,var(--live) 55%,transparent);
+  background:color-mix(in srgb,var(--live) 9%,transparent)}
+.badge.pre{color:var(--pre);border-color:color-mix(in srgb,var(--pre) 55%,transparent);
+  background:color-mix(in srgb,var(--pre) 9%,transparent)}
+.lead{font-size:18.5px;line-height:1.55;color:var(--snow);max-width:680px}
+.body{max-width:680px}
 
-.panel{background:var(--panel);border:1px solid var(--edge);border-radius:13px;padding:20px;margin:22px 0 0}
+.panel{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--edge);
+  border-radius:var(--r);padding:22px;margin:26px 0 0;
+  box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 24px 60px -30px rgba(0,0,0,.7)}
 .panel.pad0{padding:0;overflow:hidden}
-.ctl{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:0 0 16px}
-.btn{font-family:Archivo,sans-serif;font-size:14px;font-weight:600;padding:10px 20px;border-radius:9px;
-  border:1px solid var(--live);background:var(--live);color:var(--night);cursor:pointer}
-.btn:hover{filter:brightness(1.12)}
-.btn:disabled{opacity:.45;cursor:progress}
-.btn.ghost{background:transparent;color:var(--live)}
-.btn.warn{border-color:var(--alarm);background:var(--alarm);color:#fff}
-.btn.warn.ghost{background:transparent;color:var(--alarm)}
-.btn.sm{font-size:12px;padding:7px 12px;font-family:"JetBrains Mono",monospace}
-label.fld{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--dim);
-  display:flex;flex-direction:column;gap:5px}
-label.fld .val{color:var(--snow);font-size:14px;font-weight:700}
-input[type=range]{accent-color:var(--live);width:200px}
-input[type=text]{font-family:"JetBrains Mono",monospace;font-size:12.5px;padding:8px 10px;
-  background:var(--night);border:1px solid var(--edge);color:var(--snow);border-radius:7px;width:190px}
-.seg{display:inline-flex;border:1px solid var(--edge);border-radius:8px;overflow:hidden}
-.seg button{font-family:"JetBrains Mono",monospace;font-size:11.5px;padding:7px 13px;
+.ctl{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:0 0 16px}
+.btn{font-family:var(--sans);font-size:14px;font-weight:600;padding:11px 22px;border-radius:11px;
+  border:1px solid var(--live);background:linear-gradient(180deg,color-mix(in srgb,var(--live) 100%,#fff 12%),var(--live));
+  color:var(--night);cursor:pointer;transition:transform .12s,box-shadow .2s,filter .2s;
+  box-shadow:0 8px 24px -10px color-mix(in srgb,var(--live) 70%,transparent)}
+.btn:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn:disabled{opacity:.45;cursor:progress;transform:none}
+.btn.ghost{background:transparent;color:var(--live);box-shadow:none}
+.btn.ghost:hover{background:color-mix(in srgb,var(--live) 10%,transparent)}
+.btn.warn{border-color:var(--alarm);background:var(--alarm);color:#fff;
+  box-shadow:0 8px 24px -10px color-mix(in srgb,var(--alarm) 70%,transparent)}
+.btn.warn.ghost{background:transparent;color:var(--alarm);box-shadow:none}
+.btn.sm{font-size:12px;padding:7px 13px;font-family:var(--mono);border-radius:9px}
+label.fld{font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--dim);
+  display:flex;flex-direction:column;gap:6px}
+label.fld .val{color:var(--snow);font-size:15px;font-weight:700;letter-spacing:0}
+input[type=range]{accent-color:var(--live);width:210px}
+input[type=text]{font-family:var(--mono);font-size:12.5px;padding:9px 11px;
+  background:var(--night);border:1px solid var(--edge);color:var(--snow);border-radius:9px;width:190px}
+input[type=text]:focus{border-color:var(--live);outline:none;box-shadow:0 0 0 3px var(--glow)}
+.seg{display:inline-flex;border:1px solid var(--edge);border-radius:10px;overflow:hidden;background:var(--night)}
+.seg button{font-family:var(--mono);font-size:11.5px;padding:8px 13px;
   background:transparent;color:var(--mid);border:0;cursor:pointer}
 .seg button.on{background:var(--live);color:var(--night);font-weight:700}
-.seg.sm button{font-size:10.5px;padding:5px 9px}
-.chk{display:flex;align-items:center;gap:8px;font-family:"JetBrains Mono",monospace;
+.seg.sm button{font-size:10.5px;padding:6px 10px}
+.chk{display:flex;align-items:center;gap:8px;font-family:var(--mono);
   font-size:11.5px;color:var(--mid);cursor:pointer}
 .chk input{accent-color:var(--live);width:15px;height:15px}
 
-canvas{display:block;max-width:100%;border-radius:8px;background:var(--night)}
+canvas{display:block;max-width:100%;border-radius:10px;background:var(--night)}
 #s3canvas{cursor:crosshair}
-.cvwrap{overflow-x:auto}
+.cvwrap{overflow-x:auto;margin-top:14px}
 
 /* ---- the process console: this is where the work is shown ---- */
-.proc{font-family:"JetBrains Mono",monospace;font-size:12px;line-height:1.72;
-  background:#05090b;border:1px solid var(--edge);border-radius:10px;padding:14px 16px;
-  margin:16px 0 0;min-height:120px;max-height:340px;overflow-y:auto;white-space:pre-wrap}
-:root[data-theme="light"] .proc{background:#0a1114}
-@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .proc{background:#0a1114}}
+.proc{font-family:var(--mono);font-size:12px;line-height:1.75;
+  background:#04080b;border:1px solid var(--edge);border-radius:12px;padding:38px 16px 14px;
+  margin:16px 0 0;min-height:120px;max-height:340px;overflow-y:auto;white-space:pre-wrap;position:relative;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.035),transparent 26px)}
+.proc::before{content:"";position:absolute;left:14px;top:13px;width:9px;height:9px;border-radius:50%;
+  background:#ff6f61;box-shadow:15px 0 0 #ffb35c,30px 0 0 #62d9a0;opacity:.75}
+:root[data-theme="light"] .proc{background-color:#0a1114}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .proc{background-color:#0a1114}}
 .proc{color:#9fb3bc}
-.proc .cmd{color:#eef5f7;font-weight:700}
-.proc .cmd::before{content:"$ ";color:#5ad2e0}
-.proc .ok{color:#5fd39a} .proc .no{color:#ff6b5e} .proc .hl{color:#5ad2e0}
-.proc .warn{color:#ffab4d} .proc .dim{color:#4d5f66}
-.proc .q{color:#ffab4d;font-weight:700}
-.proc.running::after{content:"▋";color:#5ad2e0;animation:blink 1s steps(2) infinite}
+.proc .cmd,.proc b{color:#eef5f7;font-weight:700}
+.proc .cmd::before{content:"$ ";color:#5fd8e6}
+.proc .ok{color:#62d9a0} .proc .no{color:#ff6f61} .proc .hl{color:#5fd8e6}
+.proc .warn{color:#ffb35c} .proc .dim{color:#4d5f66}
+.proc .q{color:#ffb35c;font-weight:700}
+.proc.running::after{content:"▋";color:#5fd8e6;animation:blink 1s steps(2) infinite}
 @keyframes blink{50%{opacity:0}}
 
-.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(134px,1fr));gap:10px;margin:16px 0 0}
-.ro{background:var(--panel2);border:1px solid var(--edge);border-radius:9px;padding:12px 13px}
-.ro .k{font-family:"JetBrains Mono",monospace;font-size:9.5px;letter-spacing:.11em;
-  text-transform:uppercase;color:var(--dim);margin-bottom:6px}
-.ro .v{font-family:"JetBrains Mono",monospace;font-size:20px;font-weight:700;color:var(--snow);line-height:1.1}
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:16px 0 0}
+.ro{background:var(--night);border:1px solid var(--edge);border-radius:12px;padding:13px 15px;position:relative;overflow:hidden}
+.ro::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--edge)}
+.ro .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+.ro .v{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--snow);line-height:1.1}
 .ro.good .v{color:var(--go)} .ro.bad .v{color:var(--alarm)} .ro.hi .v{color:var(--live)}
+.ro.good::after{background:var(--go)} .ro.bad::after{background:var(--alarm)} .ro.hi::after{background:var(--live)}
 
-.insight{border-left:3px solid var(--live);background:var(--panel2);border-radius:0 10px 10px 0;
-  padding:15px 18px;margin:20px 0 0;max-width:690px}
-.insight.warn{border-left-color:var(--alarm)}
+.insight{position:relative;border:1px solid color-mix(in srgb,var(--live) 30%,var(--edge));
+  background:linear-gradient(135deg,color-mix(in srgb,var(--live) 8%,var(--panel)),var(--panel));
+  border-radius:var(--r);padding:18px 20px 18px 22px;margin:22px 0 0;max-width:720px}
+.insight::before{content:"";position:absolute;left:0;top:16px;bottom:16px;width:3px;border-radius:3px;background:var(--live)}
+.insight.warn{border-color:color-mix(in srgb,var(--alarm) 30%,var(--edge));
+  background:linear-gradient(135deg,color-mix(in srgb,var(--alarm) 8%,var(--panel)),var(--panel))}
+.insight.warn::before{background:var(--alarm)}
 .insight h3{color:var(--live)} .insight.warn h3{color:var(--alarm)}
 .insight p{margin:0;font-size:14.5px} .insight p+p{margin-top:9px}
 
-.next{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:24px 0 0;padding:15px 18px;
-  background:var(--panel2);border:1px solid var(--edge);border-radius:11px;max-width:690px}
-.next .lbl{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.13em;
-  text-transform:uppercase;color:var(--dim)}
+.next{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:28px 0 0;padding:16px 18px 16px 20px;
+  background:var(--panel);border:1px dashed var(--edge);border-radius:var(--r);max-width:720px}
+.next .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--live)}
 .next .txt{flex:1;min-width:210px;font-size:14.5px;color:var(--mid)}
 .next .txt b{color:var(--snow)}
 
 table{width:100%;border-collapse:collapse;font-size:13.5px}
-th{font-family:"JetBrains Mono",monospace;font-size:10px;font-weight:700;letter-spacing:.11em;
-  text-transform:uppercase;color:var(--dim);text-align:left;padding:10px 13px;border-bottom:1px solid var(--edge)}
-td{padding:9px 13px;border-bottom:1px solid var(--edge);color:var(--mid)}
+th{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim);text-align:left;padding:11px 14px;border-bottom:1px solid var(--edge);
+  background:var(--panel2)}
+td{padding:10px 14px;border-bottom:1px solid var(--edge);color:var(--mid)}
 tr:last-child td{border-bottom:0}
 tr.pick{cursor:pointer} tr.pick:hover td{background:var(--panel2)}
-td.k{color:var(--snow);font-family:"JetBrains Mono",monospace;font-size:12.5px;white-space:nowrap}
-td.n{font-family:"JetBrains Mono",monospace;text-align:right;white-space:nowrap}
+td.k{color:var(--snow);font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+td.n{font-family:var(--mono);text-align:right;white-space:nowrap}
 tr.dropped td{opacity:.3;text-decoration:line-through}
 tr.keep td.k{color:var(--go)}
 
-.verdict{font-family:"Instrument Serif",serif;font-size:clamp(24px,3.4vw,38px);line-height:1.15;
+.verdict{font-family:var(--serif);font-size:clamp(26px,3.6vw,42px);line-height:1.15;
   color:var(--snow);margin:26px 0 0;padding-top:22px;border-top:1px solid var(--edge)}
 .verdict span{color:var(--alarm)}
-.hero{padding:72px 0 20px}
-.toll{display:flex;flex-wrap:wrap;gap:30px;margin:28px 0 0;padding-top:22px;border-top:1px solid var(--edge)}
-.toll .n{font-family:"JetBrains Mono",monospace;font-size:27px;font-weight:700;line-height:1}
-.toll .l{font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.11em;
-  text-transform:uppercase;color:var(--dim);margin-top:7px}
-footer{padding:34px 0 0;border-top:1px solid var(--edge);margin-top:40px;
-  font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--dim);line-height:1.8}
-@media (prefers-reduced-motion:reduce){.proc.running::after{animation:none}}
+
+/* ---- the opening ---- */
+.hero{padding:30px 0 10px}
+.hero-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 42px;flex-wrap:wrap}
+.hero-top .loc{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.hero-top .loc b{color:var(--live);font-weight:700}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:44px;align-items:center}
+@media (max-width:1100px){.hero-grid{grid-template-columns:1fr;gap:30px}}
+.hero .lead{font-size:19px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;margin:26px 0 0}
+.cta .btn{padding:13px 24px;font-size:15px}
+.map-card{position:relative;border:1px solid var(--edge);border-radius:20px;overflow:hidden;background:#04080b;
+  box-shadow:0 40px 90px -40px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.02) inset}
+.map-card canvas{width:100%;height:auto;border-radius:0;background:#04080b}
+.map-card .tag{position:absolute;left:14px;top:14px;display:flex;gap:6px;flex-wrap:wrap}
+.map-card .tag span{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  padding:4px 8px;border-radius:20px;background:rgba(4,8,11,.72);border:1px solid rgba(255,255,255,.08);color:#cfe3e8;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.map-card .cap{position:absolute;left:0;right:0;bottom:0;padding:34px 16px 13px;
+  background:linear-gradient(0deg,rgba(4,8,11,.94),transparent);font-family:var(--mono);font-size:10.5px;color:#9fb3bc;line-height:1.6}
+.map-card .cap i{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 5px -1px 0}
+.answer{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:18px;align-items:center;margin:40px 0 0;
+  padding:22px 24px;border:1px solid var(--edge);border-radius:20px;
+  background:linear-gradient(120deg,var(--panel2),var(--panel))}
+@media (max-width:700px){.answer{grid-template-columns:1fr 1fr}}
+.answer .q{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);grid-column:1/-1;margin-bottom:-4px}
+.answer .big{font-family:var(--serif);font-size:clamp(34px,4.6vw,56px);line-height:1}
+.answer .big small{font-family:var(--mono);font-size:12px;color:var(--dim);margin-left:6px}
+.answer .lab{font-size:13px;color:var(--mid);line-height:1.4}
+.answer .c1{color:var(--go)} .answer .c2{color:var(--alarm)}
+.toll{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin:28px 0 0;border:1px solid var(--edge);
+  border-radius:var(--r);overflow:hidden;background:var(--panel)}
+@media (max-width:700px){.toll{grid-template-columns:repeat(2,1fr)}}
+.toll>div{padding:16px 18px;border-right:1px solid var(--edge)}
+.toll>div:last-child{border-right:0}
+.toll .n{font-family:var(--mono);font-size:25px;font-weight:700;line-height:1;color:var(--snow)}
+.toll .l{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-top:8px}
+.scrollcue{display:flex;align-items:center;gap:10px;margin:34px 0 0;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.scrollcue::before{content:"";width:1px;height:34px;background:linear-gradient(var(--live),transparent)}
+
+/* ---- footer ---- */
+footer{margin-top:52px;padding:30px 0 0;border-top:1px solid var(--edge)}
+.foot{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:28px}
+@media (max-width:760px){.foot{grid-template-columns:1fr}}
+.foot h4{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin:0 0 10px;font-weight:700}
+.foot p,.foot li{font-size:13px;color:var(--mid);line-height:1.7}
+.foot ul{list-style:none;padding:0;margin:0}
+.foot a{color:var(--mid)} .foot a:hover{color:var(--live)}
+.fine{margin-top:26px;font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.8}
+@media (prefers-reduced-motion:reduce){.proc.running::after{animation:none}
+  html{scroll-behavior:auto} .btn,.prog .bar i{transition:none}}
 </style>
 
 <div class="shell">
-  <nav class="rail">
-    <div class="brand">SARGuardian</div>
+  <nav class="rail" aria-label="Stations">
+    <div class="brand"><svg width="30" height="30" viewBox="0 0 30 30" fill="none" aria-hidden="true"><circle cx="15" cy="15" r="14" stroke="var(--edge)"/><path d="M5 22 L12 12 L15 16 L18.5 10 L25 22 Z" fill="var(--live)" opacity=".92"/><path d="M4.5 11.5 A12 12 0 0 1 23 6.2" stroke="var(--pre)" stroke-width="1.4" stroke-linecap="round"/><circle cx="23.3" cy="6.3" r="2.1" fill="var(--pre)"/></svg>SARGuardian</div>
     <div class="railsub">Run it yourself</div>
+    <div class="prog"><div class="pl"><span>Your progress</span><b id="progtxt">0 / 8</b></div><div class="bar"><i id="progbar"></i></div></div>
     <div id="steps"></div>
     <div class="speed">
       <div class="lbl">Machine speed</div>
@@ -179,19 +285,40 @@ footer{padding:34px 0 0;border-top:1px solid var(--edge);margin-top:40px;
         <button data-s="2">Slow</button><button class="on" data-s="1">Normal</button><button data-s="0">Instant</button>
       </div>
     </div>
-    <div class="railnote">Every station is open from the start.<br>Poke at them in any order.</div>
+    <div class="railnote">Every station is open from the start.<br>Poke at them in any order.<br><br><a href="https://github.com/moshiour0/SARGuardian">Source on GitHub &rarr;</a></div>
   </nav>
 
   <main class="stage">
 
   <section class="station" id="st1">
     <div class="hero">
-      <div class="eyebrow"><span class="n">Station 1 of 8</span></div>
-      <h1>You have sixteen<br>radar images of<br>a mountain that<br>killed a thousand<br>people.</h1>
-      <p class="lead">On 26 August 2026 a rock and ice face broke off Langtang Lirung at about 5,000 m, fell more than a kilometre, dammed a river and burst it. The wave travelled 22 km in seven minutes.</p>
-      <p class="lead" style="margin-top:14px">NISAR was watching that slope for nine months. <b>Could it have seen this coming?</b></p>
+      <div class="hero-top">
+        <span class="loc"><b>&#9679; Live lab</b> &nbsp;&middot;&nbsp; Langtang Lirung, Nepal &nbsp;&middot;&nbsp; 28.28&deg;N 85.52&deg;E</span>
+        <span class="badge live">NASA NISAR &middot; COPERNICUS SENTINEL-2</span>
+      </div>
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow"><span class="n">Station 1 of 8</span></div>
+          <h1>Sixteen radar images watched a mountain that <em>killed more than 1,300 people.</em></h1>
+          <p class="lead">On 26 August 2026 a rock and ice face broke off the north side of Langtang Lirung at about 5,300 m, fell more than a kilometre, dammed a river and burst it.</p>
+          <p class="lead" style="margin-top:12px">NISAR was watching that slope for nine months. <b>Could it have seen this coming?</b></p>
+          <div class="cta"><button class="btn" data-go="2">Start the lab &rarr;</button><a class="btn ghost" href="#st8">Skip to the answer</a></div>
+        </div>
+        <figure class="map-card" style="margin:0">
+          <canvas id="heroMap" width="914" height="1204" role="img" aria-label="Sentinel-2 map of snow lost across the source zone, with the four candidate scars circled"></canvas>
+          <div class="tag"><span>Sentinel-2 &middot; snow lost</span><span>12 Aug &rarr; 8 Sep 2026</span></div>
+          <figcaption class="cap"><i style="background:#ff6f61"></i>ice lost &nbsp; <i style="background:#8cc8e6"></i>fresh snow &nbsp; <i style="border:2px solid #ffd166"></i>candidate scars &nbsp; <i style="border:2px dashed #5fd8e6"></i>point the reports gave</figcaption>
+        </figure>
+      </div>
+      <div class="answer" id="heroAnswer">
+        <div class="q">The answer, line of sight against line of sight</div>
+        <div class="big c1" id="haP">0.33<small>mm/day</small></div>
+        <div class="lab">the creep Sentinel-1 measured on this slope, Jan&ndash;Aug 2026</div>
+        <div class="big c2" id="haF">9&ndash;32<small>mm/day</small></div>
+        <div class="lab">the smallest motion NISAR offsets could resolve there &mdash; <b id="haX">28&times; to 96&times;</b> too coarse</div>
+      </div>
       <div class="toll">
-        <div><div class="n">1,000+</div><div class="l">killed</div></div>
+        <div><div class="n">1,300+</div><div class="l">killed</div></div>
         <div><div class="n">1,200 m</div><div class="l">of fall</div></div>
         <div><div class="n">22 km</div><div class="l">in 7 minutes</div></div>
         <div><div class="n">16</div><div class="l">radar images</div></div>
@@ -202,6 +329,7 @@ footer{padding:34px 0 0;border-top:1px solid var(--edge);margin-top:40px;
         <p>Skip around, change the inputs, break things. Steps needing the 51 GB archive are marked <span class="badge pre">PRE-COMPUTED</span>; everything else is <span class="badge live">LIVE</span>. If the pacing annoys you, set the machine to <b>Instant</b> in the sidebar.</p>
       </div>
       <div class="next"><span class="lbl">Suggested</span><span class="txt"><b>Find the imagery.</b> The obvious way to pick satellite images is a trap, and we fell into it.</span><button class="btn" data-go="2">Begin →</button></div>
+      <div class="scrollcue">Eight stations below</div>
     </div>
   </section>
 
@@ -321,7 +449,7 @@ footer{padding:34px 0 0;border-top:1px solid var(--edge);margin-top:40px;
         <label class="fld">SLOPE FACES <span class="val" id="s6v">273° (west)</span>
           <input type="range" id="s6slider" min="0" max="359" value="273"></label>
         <button class="btn ghost sm" data-asp="273">what we assumed</button>
-        <button class="btn ghost sm" data-asp="342">what we measured</button>
+        <button class="btn ghost sm" data-asp="351">candidate 4</button>
         <button class="btn ghost sm" data-asp="0">due north</button>
       </div>
       <div class="cvwrap"><canvas id="s6canvas" width="1700" height="620" style="width:850px"></canvas></div>
@@ -384,9 +512,12 @@ footer{padding:34px 0 0;border-top:1px solid var(--edge);margin-top:40px;
       <p><b>"Frequent passes cause false alarms."</b> An error in our own threshold. Corrected, the false-alarm rate is zero at every revisit tested.</p>
       <p><b>"180 to 360 times too insensitive."</b> That divided a downslope bound by a line-of-sight rate, used one pixel against a slope average, and took its upper end from a candidate with no valid offsets at all.</p></div>
     <footer>
-      SARGuardian · Langtang Lirung · 26 August 2026 · NASA Space Apps 2026<br>
-      Built on NASA NISAR L2 and Copernicus Sentinel-2. The precursor figure is someone else's measurement, cited.<br>
-      Half the mountain is never cloud-free after the collapse, so there may be candidates nobody can see. No ground survey exists to check any of this against.
+      <div class="foot">
+        <div><h4>SARGuardian</h4><p>An open, measured answer to one question: could NASA's NISAR satellite have warned before the 26 August 2026 Langtang Lirung collapse? Independent open-source work, MIT licensed. Not a NASA product.</p></div>
+        <div><h4>Data</h4><ul><li>NASA/JPL NISAR L2 GUNW &amp; GOFF, via ASF DAAC</li><li>Copernicus Sentinel-2 L2A, via Element84</li><li>SRTM elevation, via OpenTopoData</li><li>Precursor: Shirzaei (Virginia Tech), Sentinel-1, as reported</li></ul></div>
+        <div><h4>Read more</h4><ul><li><a href="https://github.com/moshiour0/SARGuardian">Source code</a></li><li><a href="https://github.com/moshiour0/SARGuardian/blob/main/docs/TECHNICAL_NOTES.md">Technical notes</a></li><li><a href="https://github.com/moshiour0/SARGuardian/blob/main/REPRODUCE_RESULTS.md">Reproduce every number</a></li></ul></div>
+      </div>
+      <div class="fine">Half the mountain is never cloud-free after the collapse, so there may be candidates nobody can see. No ground survey exists to check any of this against. Winter NISAR products are pre-calibration BETA, summer ones PROVISIONAL.</div>
     </footer>
   </section>
 
@@ -479,7 +610,9 @@ try{const s=JSON.parse(localStorage.getItem('sg_lab2')||'{}');
 const save=()=>{try{localStorage.setItem('sg_lab2',JSON.stringify({done:[...T.done],res:T.res}));}catch(e){}
   if(window.__paintS8&&!saving){saving=true;try{window.__paintS8();}finally{saving=false;}}};
 function paintRail(){$$('.step').forEach(el=>{const n=+el.dataset.n;
-  el.classList.toggle('on',n===T.at); el.classList.toggle('done',T.done.has(n));});}
+  el.classList.toggle('on',n===T.at); el.classList.toggle('done',T.done.has(n));});
+  const k=T.done.size,pb=$('#progbar'),pt=$('#progtxt');
+  if(pb)pb.style.width=(100*k/STEPS.length)+'%'; if(pt)pt.textContent=k+' / '+STEPS.length;}
 function complete(n){T.done.add(n);save();
   const s=$('#st'+n); if(s)s.classList.remove('pending'); paintRail();}
 function go(n){T.at=n; const el=$('#st'+n);
@@ -1128,6 +1261,51 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
   window.__paintS8=paint;
   new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)paint();}),{threshold:.2}).observe($('#st8'));
   paint();
+})();
+
+/* ================= the opening map ================= */
+// Drawn from the same change grid station 3 reads, with the candidates and
+// the reported point placed by the same linear AOI mapping station 4 uses.
+// Decoration only: it computes nothing the stations do not.
+(function(){
+  try{
+    const b=(D.bound&&D.bound.candidates)||[], P=(D.bound&&D.bound.precursor_mm_day)||0.3333;
+    const pick=b.find(r=>r.matches_published_elevation==='True');
+    if(pick){
+      const lo=+pick.los_floor_block_mm_day, hi=+pick.los_floor_pixel_mm_day;
+      $('#haP').innerHTML=fmt(P,2)+'<small>mm/day</small>';
+      $('#haF').innerHTML=fmt(lo,0)+'&ndash;'+fmt(hi,0)+'<small>mm/day</small>';
+      $('#haX').innerHTML=fmt(lo/P,0)+'&times; to '+fmt(hi/P,0)+'&times;';
+    }
+    const cv=$('#heroMap'),cx=cv.getContext('2d'),g=D.meta.grid,W=g.w,H=g.h,a=g.aoi;
+    const img=new Image();
+    img.onload=()=>{
+      const off=document.createElement('canvas');off.width=W;off.height=H;
+      const oc=off.getContext('2d');oc.drawImage(img,0,0);
+      const px=oc.getImageData(0,0,W,H).data,im=oc.createImageData(W,H),o=im.data;
+      for(let i=0,j=0;i<W*H;i++,j+=4){
+        if(px[j+2]<128){const pr=px[j+1]/127.5-1,v=pr>0.4?34:12;
+          o[j]=v;o[j+1]=v+6;o[j+2]=v+12;o[j+3]=255;continue;}
+        const t=Math.max(-1,Math.min(1,px[j]/127.5-1));
+        if(t<0){const k=Math.min(1,-t*1.6);o[j]=40+215*k;o[j+1]=60+50*k;o[j+2]=70+27*k;}
+        else{const k=Math.min(1,t*1.4);o[j]=40+100*k;o[j+1]=60+140*k;o[j+2]=75+155*k;}
+        o[j+3]=255;
+      }
+      oc.putImageData(im,0,0);
+      cx.imageSmoothingEnabled=true;cx.drawImage(off,0,0,cv.width,cv.height);
+      const s=cv.width/W,toXY=(lat,lon)=>[(lon-a[0])/(a[2]-a[0])*W*s,(a[3]-lat)/(a[3]-a[1])*H*s];
+      (D.clusters||[]).filter(c=>c.reading==='DETACHMENT-like').forEach(c=>{
+        const [x,y]=toXY(c.lat,c.lon),top=c.elev_m>=5200&&c.elev_m<=5400;
+        cx.lineWidth=top?5:3;cx.strokeStyle='#ffd166';cx.beginPath();cx.arc(x,y,top?46:34,0,7);cx.stroke();
+        cx.fillStyle='#ffd166';cx.font='700 26px "JetBrains Mono",monospace';
+        cx.fillText(String(c.id),x+(top?54:42),y+9);
+      });
+      const ap=D.meta.assumed_point,[x,y]=toXY(ap.lat,ap.lon);
+      cx.setLineDash([10,8]);cx.lineWidth=3;cx.strokeStyle='#5fd8e6';
+      cx.beginPath();cx.arc(x,y,30,0,7);cx.stroke();cx.setLineDash([]);
+    };
+    img.src='data:image/png;base64,'+D.change_png;
+  }catch(e){console.warn('opening map skipped',e);}
 })();
 
 /* ---- boot ---- */

@@ -293,7 +293,7 @@ def reference_block(offsets: list[dict], series: dict) -> dict:
         }
 
     geom = {}
-    for asp in (273.0, 342.0, 0.0):
+    for asp in (273.0, 351.0, 0.0):
         geom[f"{asp:.0f}"] = {
             t["track"]: round(t["sensitivity"], 4)
             for t in sensitivities(28.27802, 85.52963, 39.0, asp, 0.3)}
