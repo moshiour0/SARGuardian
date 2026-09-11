@@ -66,7 +66,7 @@ from gunw_reader import build_aoi_mask, walk, read_pair_dates, set_aoi  # noqa: 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("goff")
 
-from gunw_reader import track_of  # noqa: E402
+from gunw_reader import crid_of, product_maturity, track_of  # noqa: E402
 from paths import NISAR, resolve  # noqa: E402
 
 DEFAULT_CORRELATION = 0.3
@@ -414,6 +414,8 @@ def report(res: dict, span_days: float | None = None) -> list[dict]:
                "frame_pct": round(100 * n / total, 4),
                "range_median_mm": round(float(np.median(r)), 2),
                "track": track_of(res.get("file", "")),
+               "maturity": product_maturity(res.get("file", "")),
+               "crid": crid_of(res.get("file", "")),
                "processing": "UR" if "_UR_" in str(res.get("file", "")) else "PR",
                "range_mad_sigma_mm": round(sig_r, 2),
                "range_p5_mm": round(float(np.percentile(r, 5)), 2),

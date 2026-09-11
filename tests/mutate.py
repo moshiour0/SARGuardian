@@ -382,6 +382,42 @@ MUTATIONS = [
      "    worst = max(float(r[\"local_floor_mm_day\"]) for r in summer) if summer else float(\"nan\")",
      "    worst = min(float(r[\"local_floor_mm_day\"]) for r in summer) if summer else float(\"nan\")",
      "test_the_bound_is_the_weakest_pre_event_interval"),
+    # ---- 11 Sep 2026 review: like-for-like headline --------------------
+    ("headline divides the downslope bound by a line-of-sight precursor",
+     "bound.py",
+     '        "ratio_los_pixel": round(px / PRECURSOR_MM_DAY, 1) if g else float("nan"),',
+     '        "ratio_los_pixel": round(px / abs(sens) / PRECURSOR_MM_DAY, 1) if g else float("nan"),',
+     "test_the_ratio_is_line_of_sight_against_line_of_sight"),
+
+    ("bound's pre-event window judged on the reference date",
+     "bound.py",
+     "    return sec < EVENT and (EVENT - ref).days <= COVER_DAYS",
+     "    return ref < EVENT and (EVENT - ref).days <= COVER_DAYS",
+     "test_the_pre_event_window_closes_at_the_collapse"),
+
+    ("an unobserved candidate is given a bound anyway",
+     "bound.py",
+     '        "downslope_bound_mm_day": round(px / abs(sens), 1) if g else float("nan"),',
+     '        "downslope_bound_mm_day": round(32.0 / abs(sens), 1),',
+     "test_an_unobserved_candidate_gets_no_bound"),
+
+    ("window-median floor built from pixels, not from block medians",
+     "local_floor.py",
+     "                meds.append(float(np.median(v)))",
+     "                meds.extend(v.tolist())",
+     "test_block_floor_is_below_the_pixel_floor_for_independent_noise"),
+
+    ("common datum allowed onto the target",
+     "common_ref.py",
+     "        out |= (yy - r) ** 2 + (xx - c) ** 2 <= radius_px ** 2",
+     "        pass",
+     "test_the_datum_is_never_set_on_the_target"),
+
+    ("a pair straddling the release gap is called BETA",
+     "gunw_reader.py",
+     "    if lo <= ref <= hi and lo <= sec <= hi:",
+     "    if lo <= ref <= hi:",
+     "test_a_pair_straddling_the_release_gap_is_not_rounded_to_either"),
 ]
 
 
@@ -428,6 +464,14 @@ def main() -> int:
         # sabotages the next invocation of itself is worse than no harness.
         with open(path, encoding="utf-8", newline="") as fh:
             original = fh.read()
+        # Match the file's own line endings. With git core.autocrlf=true a
+        # Windows checkout is CRLF, so every multi-line target written with
+        # "\n" silently failed to match and was reported as an escape - three
+        # of them, on this machine only, while a Linux clone caught all.
+        if find not in original and "\n" in find:
+            crlf = find.replace("\n", "\r\n")
+            if crlf in original:
+                find, repl = crlf, repl.replace("\n", "\r\n")
         try:
             if find not in original:
                 print(f"  {label:<46}{'-':<12}TARGET GONE - update mutate.py")

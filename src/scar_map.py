@@ -17,9 +17,9 @@ while every published account puts the scar on the NORTH face of Langtang
 Lirung. Both cannot be true, and the difference is a factor of three in the
 bound:
 
-    assumed surface        NISAR ASC 098      downslope bound
-    west-facing 273 deg    -0.892 usable       45 mm/day
-    due north     0 deg    -0.283 BLIND       143 mm/day
+    assumed surface        NISAR ASC 098
+    west-facing 273 deg    -0.892 usable
+    due north     0 deg    -0.283 BLIND
 
 So it had to be measured. This does that from optical imagery, which sees the
 scar directly rather than inferring it.
@@ -72,9 +72,10 @@ and nothing in this data picks between them:
 An earlier version of this module reported #4 alone as "the mapped scar", with
 an area and a centroid to five decimal places. That was an artefact of method:
 it region-grew from a seed placed near #4, and a seeded grow finds whatever it
-is pointed at. #1 is more than twice the size and equally consistent with the
-published description. Use --seed-report to reproduce the old behaviour and see
-it happen.
+is pointed at. #1 is more than twice the size, and on the optical evidence
+alone nothing separates them. Use --seed-report to reproduce the old behaviour
+and see it happen. What does separate them is external - the published
+detachment elevation - and that is applied openly in bound.py, not by a seed.
 
 The SAR does not break the tie either. Of these four, none loses coherence in
 the GOFF pair spanning 26 August; the only cluster that does is #6, at 4,000 m
@@ -88,14 +89,16 @@ pixel at the reported failure point reads 273 degrees - west-facing - at every
 stencil from 60 m to 300 m. So that assumption is wrong regardless of which
 cluster is the scar, and the bound has to move:
 
-    surface                     NISAR ASC 098      downslope bound
-    west-facing 273 deg (assumed)   -0.892           36 mm/day
-    the four candidates         -0.27 to -0.53    60 to 119 mm/day
+    surface                     NISAR ASC 098
+    west-facing 273 deg (assumed)   -0.892
+    the four candidates         -0.27 to -0.53
 
-The conclusion is untouched by the ambiguity. The precursor Sentinel-1 recorded
-was about 0.33 mm/day, which is 180x to 360x below every one of those bounds.
-Where the slope failed is still open; whether NISAR L2 could have seen it is
-not.
+The published detachment elevation, about 5,200-5,400 m, favours candidate 4;
+the others sit at 6,000-6,255 m. The floor is measured at EVERY candidate by
+local_floor.py --targets, and bound.py compares it with the precursor line of
+sight against line of sight: 28x to 96x at candidate 4. Candidate 9 has no
+valid offsets at all, so it carries no bound. Write the table with
+--candidates-csv.
 
 The reported failure point is separately excluded
 =================================================
@@ -400,6 +403,23 @@ def probe(lat, lon, d, both, pre, tf, radius=5) -> dict:
             "scar_like_pct": float(100 * np.mean(dv < -0.35))}
 
 
+CANDIDATE_FIELDS = ["id", "n_px", "area_km2", "lat", "lon", "elev_m",
+                    "slope_deg", "aspect_deg", "reading", "d_ndsi_median"]
+
+
+def write_candidates(rows: list[dict], path: Path) -> None:
+    """Every classified cluster, one row each, in the order classify() ranked them."""
+    import csv as _csv
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as fh:
+        w = _csv.DictWriter(fh, fieldnames=CANDIDATE_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: (round(float(r[k]), 5) if isinstance(r[k], float) else r[k])
+                        for k in CANDIDATE_FIELDS})
+    logger.info("Wrote %s (%d clusters)", path, len(rows))
+
+
 # ---------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(description="Map the detachment scar from Sentinel-2")
@@ -441,6 +461,10 @@ def main() -> int:
                          "local_floor.py - not the 40.4 measured at the "
                          "abandoned failure point 1.09 km away")
     ap.add_argument("--csv", metavar="OUT.csv")
+    ap.add_argument("--candidates-csv", metavar="OUT.csv",
+                    help="write every classified cluster from --map, so the "
+                         "floor can be measured at each candidate rather than "
+                         "at one (local_floor.py --targets)")
     args = ap.parse_args()
 
     os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
@@ -515,6 +539,8 @@ def main() -> int:
           f"{args.min_px * 400 / 1e4:.1f} ha")
     rank = classify(clusters, d, pre, tf, limit=args.top)
     det = [r for r in rank if r["reading"] == "DETACHMENT-like"]
+    if args.candidates_csv:
+        write_candidates(rank, Path(resolve(args.candidates_csv)))
 
     print(f"\n{'#':>3}{'km2':>7}{'lat':>10}{'lon':>10}{'dNDSI':>8}"
           f"{'elev':>7}{'slope':>7}{'aspect':>8}  reading")

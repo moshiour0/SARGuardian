@@ -39,11 +39,10 @@ But do not quote 33.4 as the bound. It is the median across all eight
 ascending pairs, five of them winter pairs from November to January, outside
 the seven-week window being bounded. Over that window the three covering
 intervals read 40.4, 19.2 and 34.3 at the point, and a bound that holds across
-a window is set by its weakest interval, so **40.4 mm/day** is the figure - and
-`40.4 [21-55]` once the bootstrap interval is attached, because it rests on 49
-valid pixels. Expressed as downslope motion rather than line of sight it
-weakens further, to as much as 143 mm/day, because the aspect at this point is
-unconfirmed; see the README.
+a window is set by its weakest interval. That point has since been shown not
+to be a scar; the same measurement at every candidate (--targets) is what
+bound.py quotes, and at the candidate at the published elevation the figure is
+32.0 mm/day per pixel and 9.2 for a 1 km window median.
 
 The AOI figure of 18.6 understates all of these.
 
@@ -72,6 +71,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import logging
 import re
@@ -144,8 +144,8 @@ def floor_ci(values_mm: np.ndarray, span_days: float, n_boot: int = 2000,
     correlation windows, so neighbouring offset estimates share input pixels
     and are not independent. The effective sample size is smaller than the
     pixel count, so this interval is a LOWER bound on the true uncertainty.
-    Reported as such rather than corrected, because the correlation length of
-    the offset field is not measured here.
+    The error neighbours share is measured separately, by
+    block_median_floor(), rather than folded in here.
     """
     v = values_mm[np.isfinite(values_mm)]
     n = v.size
@@ -163,12 +163,53 @@ def floor_ci(values_mm: np.ndarray, span_days: float, n_boot: int = 2000,
     return (float(np.percentile(good, 2.5)), float(np.percentile(good, 97.5)))
 
 
+def block_median_floor(field_mm: np.ndarray, size: int, span_days: float,
+                       min_valid: int = 30) -> tuple[float, int]:
+    """
+    The 3-sigma floor on a WINDOW MEDIAN, measured empirically. mm/day.
+
+    detection_floor() answers "what velocity would ONE PIXEL see at three
+    sigma". A precursor measured by another instrument is an average over a
+    slope, so the fair comparison is against the noise of an averaged
+    estimate - and that cannot be had by dividing the per-pixel sigma by
+    sqrt(n). GOFF offsets come from overlapping correlation windows, so
+    neighbours within a kilometre share most of their error; a scatter
+    computed inside one window cannot see the part the whole window shares.
+
+    So measure it directly: tile the field into non-overlapping blocks the
+    size of the window, take each block's median, and quote 3 MADs of those
+    medians over the span. That includes every error the window median
+    actually suffers, correlated or not, and any real motion elsewhere in the
+    AOI - so it is an upper bound on the estimator noise, not an idealisation.
+    It is AOI-wide by construction; the point-versus-area escalation this
+    module exists for applies to it too, and is why it is quoted beside the
+    per-pixel local floor rather than instead of it.
+
+    Returns (floor, number of blocks). NaN when fewer than 6 blocks qualify.
+    """
+    if field_mm.ndim != 2 or size < 1 or span_days <= 0:
+        return (float("nan"), 0)
+    meds = []
+    H, W = field_mm.shape
+    for i in range(0, H - size + 1, size):
+        for j in range(0, W - size + 1, size):
+            v = field_mm[i:i + size, j:j + size]
+            v = v[np.isfinite(v)]
+            if v.size >= min(min_valid, size * size):
+                meds.append(float(np.median(v)))
+    if len(meds) < MIN_PX:
+        return (float("nan"), len(meds))
+    return (3.0 * robust_sigma(np.array(meds)) / span_days, len(meds))
+
+
 def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
     """
     Both floors and the ratio between them, from one pair.
 
     Pure: takes arrays, returns numbers, no raster and no I/O, so the claim
-    this module makes can be tested without a product.
+    this module makes can be tested without a product. When the AOI field is
+    2-D, the floor on a window MEDIAN of the same size is measured as well;
+    see block_median_floor().
     """
     a = aoi_mm[np.isfinite(aoi_mm)]
     w = win_mm[np.isfinite(win_mm)]
@@ -179,14 +220,18 @@ def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
            "local_floor_mm_day": float("nan"),
            "local_floor_ci_lo": float("nan"),
            "local_floor_ci_hi": float("nan"),
+           "block_median_floor_mm_day": float("nan"), "n_blocks": 0,
            "ratio": float("nan"), "usable": False}
     if a.size < MIN_PX or w.size < MIN_PX:
         return out
     fa = detection_floor(a, span_days)
     fl = detection_floor(w, span_days)
     lo, hi = floor_ci(w, span_days)
+    size = max(win_mm.shape) if win_mm.ndim == 2 else 0
+    bm, nb = block_median_floor(aoi_mm, size, span_days)
     out.update(aoi_floor_mm_day=fa, local_floor_mm_day=fl,
                local_floor_ci_lo=lo, local_floor_ci_hi=hi,
+               block_median_floor_mm_day=bm, n_blocks=nb,
                ratio=(fl / fa) if fa > 0 else float("nan"), usable=True)
     return out
 
@@ -207,8 +252,16 @@ def main() -> int:
     ap.add_argument("--dir", required=True, help="directory of exported GeoTIFFs")
     ap.add_argument("--match", metavar="SUBSTR",
                     help="only files whose name contains this, e.g. layer2")
-    ap.add_argument("--lat", type=float, required=True)
-    ap.add_argument("--lon", type=float, required=True)
+    ap.add_argument("--lat", type=float)
+    ap.add_argument("--lon", type=float)
+    ap.add_argument("--targets", metavar="CANDIDATES.csv",
+                    help="measure at every row of a CSV with id, lat, lon "
+                         "columns (scar_map.py --candidates-csv writes one), "
+                         "instead of one --lat/--lon. A floor measured at one "
+                         "candidate is not the floor at the others")
+    ap.add_argument("--reading", default=None,
+                    help="with --targets, keep only rows whose 'reading' "
+                         "column equals this, e.g. DETACHMENT-like")
     ap.add_argument("--band", type=int, default=1)
     ap.add_argument("--radius", type=int, default=6,
                     help="window half-width in pixels; 6 is about 1 km at 80 m")
@@ -243,19 +296,70 @@ def main() -> int:
         logger.error("No matching .tif under %s", args.dir)
         return 1
 
+    if args.targets:
+        with open(resolve(args.targets), newline="") as fh:
+            targets = [(r["id"], float(r["lat"]), float(r["lon"]))
+                       for r in csv.DictReader(fh)
+                       if args.reading is None or r.get("reading") == args.reading]
+        if not targets:
+            logger.error("No targets in %s", args.targets)
+            return 1
+    elif args.lat is not None and args.lon is not None:
+        targets = [("", args.lat, args.lon)]
+    else:
+        ap.error("give --lat and --lon, or --targets")
+
     radii = args.sweep or [args.radius]
     rows = []
+    for tid, lat, lon in targets:
+        rows += measure_target(files, tid, lat, lon, radii, args.band)
+
+    if not rows:
+        print("  Nothing measured.")
+        return 1
+
+    r = np.array([x["ratio"] for x in rows])
+    if np.median(r) > 1.25:
+        print("  The floor at the point is materially WORSE than the floor over")
+        print("  the AOI. Any bound quoted at this location must use the local")
+        print("  figure; the AOI figure overstates what the product could see.")
+    elif np.median(r) < 0.8:
+        print("  The point is quieter than the AOI. The AOI floor is")
+        print("  conservative here, which is safe but not tight.")
+    else:
+        print("  The two agree. The AOI floor is representative at this point.")
+
+    if args.csv:
+        p = Path(resolve(args.csv))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=sorted(rows[0]))
+            w.writeheader()
+            for x in rows:
+                w.writerow(x)
+        logger.info("Wrote %s", p)
+    return 0
+
+
+def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
+    """Every file, every radius, at one target. Rows carry the target."""
+    import rasterio
+    from pyproj import Transformer
+    rows = []
     print(f"\n{'='*84}")
-    print(f"DETECTION FLOOR at {args.lat:.5f} N {args.lon:.5f} E, against the whole AOI")
+    print(f"DETECTION FLOOR at {lat:.5f} N {lon:.5f} E"
+          + (f"  (target {tid})" if tid else "") + ", against the whole AOI")
     print("=" * 84)
     print("A floor measured over terrain that did not fail describes terrain that")
-    print("did not fail. Same formula both sides: 3 * MAD-sigma / span.\n")
+    print("did not fail. Same formula both sides: 3 * MAD-sigma / span. The")
+    print("'block' column is the floor on a window MEDIAN, measured from the")
+    print("scatter of same-size block medians across the AOI.\n")
 
     for radius in radii:
         print(f"  --- window radius {radius} px "
               f"({2*radius+1}x{2*radius+1}) ---")
         print(f"  {'PAIR':<24}{'span':>5}{'AOI':>9}{'point':>9}"
-              f"{'95% CI':>12}{'ratio':>7}{'valid':>11}")
+              f"{'95% CI':>12}{'block':>8}{'ratio':>7}{'valid':>11}")
         print("  " + "-" * 78)
         block = []
         for f in files:
@@ -264,11 +368,11 @@ def main() -> int:
                 logger.warning("no date pair in %s, skipped", f.name)
                 continue
             with rasterio.open(f) as s:
-                arr = s.read(args.band).astype(float)
+                arr = s.read(band).astype(float)
                 if s.nodata is not None:
                     arr[arr == s.nodata] = np.nan
                 tf = Transformer.from_crs(4326, s.crs.to_epsg(), always_xy=True)
-                row, col = s.index(*tf.transform(args.lon, args.lat))
+                row, col = s.index(*tf.transform(lon, lat))
             # "too few valid pixels" and "the point is not in this raster" are
             # different failures and used to print the same line. A target
             # outside the footprint is a setup error the caller must fix; a
@@ -287,10 +391,12 @@ def main() -> int:
             ci = (f"[{c['local_floor_ci_lo']:.0f}-{c['local_floor_ci_hi']:.0f}]"
                   if np.isfinite(c["local_floor_ci_lo"]) else "-")
             print(f"  {name:<24}{span:>5.0f}{c['aoi_floor_mm_day']:>9.1f}"
-                  f"{c['local_floor_mm_day']:>9.1f}{ci:>12}{c['ratio']:>7.2f}"
-                  f"{c['window_px']:>7}/{c['window_total_px']}")
+                  f"{c['local_floor_mm_day']:>9.1f}{ci:>12}"
+                  f"{c['block_median_floor_mm_day']:>8.1f}"
+                  f"{c['ratio']:>7.2f}{c['window_px']:>7}/{c['window_total_px']}")
             block.append(c)
-            rows.append({"file": f.name, "radius_px": radius, **c})
+            rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
+                         "lat": lat, "lon": lon, **c})
 
         if not block:
             print("  nothing usable at this radius\n")
@@ -315,33 +421,7 @@ def main() -> int:
               f"   ratio {np.median(fl)/np.median(fa):.2f}x")
         print(f"  window valid fraction: median {100*np.median(frac):.0f}%, "
               f"worst {100*frac.min():.0f}%\n")
-
-    if not rows:
-        print("  Nothing measured.")
-        return 1
-
-    r = np.array([x["ratio"] for x in rows])
-    if np.median(r) > 1.25:
-        print("  The floor at the point is materially WORSE than the floor over")
-        print("  the AOI. Any bound quoted at this location must use the local")
-        print("  figure; the AOI figure overstates what the product could see.")
-    elif np.median(r) < 0.8:
-        print("  The point is quieter than the AOI. The AOI floor is")
-        print("  conservative here, which is safe but not tight.")
-    else:
-        print("  The two agree. The AOI floor is representative at this point.")
-
-    if args.csv:
-        import csv as _csv
-        p = Path(resolve(args.csv))
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", newline="") as fh:
-            w = _csv.DictWriter(fh, fieldnames=sorted(rows[0]))
-            w.writeheader()
-            for x in rows:
-                w.writerow(x)
-        logger.info("Wrote %s", p)
-    return 0
+    return rows
 
 
 if __name__ == "__main__":

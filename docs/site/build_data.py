@@ -234,11 +234,18 @@ def scar_floor_block() -> dict:
     is measured by local_floor.py and carried here, because the browser cannot
     open a GeoTIFF.
     """
-    p = ROOT / "outputs" / "local_floor_scar.csv"
-    if not p.exists():
-        logger.warning("no local_floor_scar.csv; station 5 will show AOI only")
+    # At the candidate the published elevation supports, from the per-candidate
+    # run - not a separate single-point file, which is how one candidate's
+    # floor came to be applied to all four.
+    p = ROOT / "outputs" / "local_floor_candidates.csv"
+    b = ROOT / "outputs" / "bound_source.csv"
+    if not p.exists() or not b.exists():
+        logger.warning("no per-candidate floors; station 5 will show AOI only")
         return {}
-    rows = [r for r in csv.DictReader(open(p)) if r["usable"] == "True"]
+    pick = next(r["id"] for r in csv.DictReader(open(b))
+                if r["matches_published_elevation"] == "True")
+    rows = [r for r in csv.DictReader(open(p))
+            if r["usable"] == "True" and r["target_id"] == pick]
     cov = []
     for r in rows:
         sec = datetime.strptime(r["file"][14:22], "%Y%m%d").date()
@@ -249,11 +256,21 @@ def scar_floor_block() -> dict:
                         "point": round(float(r["local_floor_mm_day"]), 2),
                         "ci_lo": round(float(r["local_floor_ci_lo"]), 2),
                         "ci_hi": round(float(r["local_floor_ci_hi"]), 2),
+                        "block": round(float(r["block_median_floor_mm_day"]), 2),
                         "px": f'{r["window_px"]}/{r["window_total_px"]}'})
     cov.sort(key=lambda x: x["pair"])
-    return {"covering": cov,
+    return {"candidate": pick, "covering": cov,
             "worst_point": max((c["point"] for c in cov), default=float("nan")),
+            "worst_block": max((c["block"] for c in cov), default=float("nan")),
             "worst_aoi": max((c["aoi"] for c in cov), default=float("nan"))}
+
+
+def bound_block() -> dict:
+    """The like-for-like headline, per candidate, exactly as bound.py wrote it."""
+    from bound import PRECURSOR_MM_DAY
+    p = ROOT / "outputs" / "bound_source.csv"
+    rows = list(csv.DictReader(open(p))) if p.exists() else []
+    return {"precursor_mm_day": round(PRECURSOR_MM_DAY, 4), "candidates": rows}
 
 
 def reference_block(offsets: list[dict], series: dict) -> dict:
@@ -346,6 +363,7 @@ def main() -> int:
         "probe": probe,
         "tracks": tracks,
         "scar_floor": scar_floor,
+        "bound": bound_block(),
         "reference": ref,
     }
     out = ROOT / args.out

@@ -85,6 +85,53 @@ def track_of(name: str) -> str:
     return ("ASC " if m.group(2) == "A" else "DESC ") + m.group(1)
 
 
+# Product maturity. NISAR products are not all the same quality, and nothing in
+# this repository used to say so. ASF releases them in stages, by ACQUISITION
+# date (nisar-docs.asf.alaska.edu/availability-overview):
+#
+#     BETA         released 27 Feb 2026, acquisitions 17 Oct 2025 - 20 Jan 2026,
+#                  "pre-calibration", with known issues
+#     PROVISIONAL  released 20 Jul 2026, acquisitions from 17 Jun 2026,
+#                  "fully calibrated", validated at a limited set of sites
+#
+# Every winter pair here is BETA and every summer pair PROVISIONAL, so any
+# winter-against-monsoon comparison is ALSO a BETA-against-PROVISIONAL
+# comparison. The two cannot be separated with this archive, and the gap
+# between the two windows (20 Jan - 17 Jun 2026) is a release gap, not a
+# physical one. Classified from the dates rather than from the CRID letter
+# because the CRID encoding is not documented where it can be cited; the CRID
+# is carried alongside so a reader can check.
+BETA_WINDOW = ("20251017", "20260120")
+PROVISIONAL_FROM = "20260617"
+CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}")
+STAMP_RE = re.compile(r"_(\d{8})T\d{6}")
+
+
+def crid_of(name: str) -> str:
+    """The composite release ID in a granule name, e.g. 'X05010'; '' if absent."""
+    m = CRID_RE.search(str(name))
+    return m.group(1) if m else ""
+
+
+def product_maturity(name: str) -> str:
+    """
+    'BETA', 'PROVISIONAL' or 'UNKNOWN' for a granule name, from its dates.
+
+    A pair is only as mature as its older acquisition, so both must fall in a
+    window; a pair straddling the release gap would be 'UNKNOWN', not rounded.
+    """
+    stamps = STAMP_RE.findall(str(name))
+    if len(stamps) < 4:
+        return "UNKNOWN"
+    ref, sec = stamps[0], stamps[2]
+    lo, hi = BETA_WINDOW
+    if lo <= ref <= hi and lo <= sec <= hi:
+        return "BETA"
+    if ref >= PROVISIONAL_FROM and sec >= PROVISIONAL_FROM:
+        return "PROVISIONAL"
+    return "UNKNOWN"
+
+
 DEFAULT_COHERENCE = 0.3
 
 # Areas of interest. Select at runtime with --aoi.
@@ -655,6 +702,10 @@ def report(result: dict) -> dict:
              # whose floors differ about fivefold - the exact trap the GOFF
              # season analysis documents and then avoids.
              "track": track_of(result.get("file", "")),
+             # BETA or PROVISIONAL: the season comparison is confounded with
+             # it, so every row says which it is. See product_maturity().
+             "maturity": product_maturity(result.get("file", "")),
+             "crid": crid_of(result.get("file", "")),
              "processing": "UR" if "_UR_" in str(result.get("file", "")) else "PR"}
 
     if n == 0:

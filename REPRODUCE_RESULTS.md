@@ -4,8 +4,9 @@ Every number in the README comes from one of the commands below. This page is
 the path from public data identifiers to those numbers, so a reader can check
 them without asking us anything.
 
-Two of the four results need **no data at all** - start there if you only have
-ten minutes.
+Results 1-3 and 6 need no NISAR data at all, and Result 7 - the headline -
+needs only the exported rasters. Without anything, `python src/bound.py`
+recomputes the headline table from the committed CSVs in a second.
 
 ---
 
@@ -128,8 +129,9 @@ python src/geometry_merge.py --sensitivity --lat 28.28771 --lon 85.52809 --aspec
 ```
 
 **Expect both NISAR tracks to go blind** at -0.283, leaving only Sentinel-1 at
--0.452. That is why the headline bound is quoted as 143 mm/day of downslope
-motion and not 45 - see [the finding](README.md#the-finding).
+-0.452. That test is why aspect had to be measured rather than assumed, and
+Result 6 does it: every candidate faces within 13 degrees of north. This
+point itself is superseded - Sentinel-2 shows it is not a scar.
 
 ---
 
@@ -289,8 +291,8 @@ dozen pixels is an estimate. The headline pair reads `40.4 [21-55]` on 49
 pixels. Quote the interval; the third significant figure is not there.
 
 **Neither 40.4 nor 33.4 is the bound to quote now.** Both were measured at a
-point 1.09 km from any candidate scar; Result 6 replaces them with 32.0 mm/day
-measured where the change actually is. Kept here because the reasoning still
+point 1.1 km from any candidate scar; Result 7 measures the floor at every
+candidate instead. Kept here because the reasoning still
 holds and only the location was wrong: 33.4 is the median across all
 eight ascending pairs, five of them winter pairs outside the window being
 bounded. Over the seven weeks before failure the three covering intervals give
@@ -382,14 +384,14 @@ Expect `18 0.12`.
 
 ---
 
-## Result 6 - the scar is 1.09 km from the assumed failure point
+## Result 6 - four scar candidates, and the reported point is not one
 
 **Needs: nothing but a network connection.** Free Sentinel-2 from the
 Element84 STAC and the public `sentinel-cogs` bucket, no credentials.
 
 ```bash
 python src/scar_map.py --survey
-python src/scar_map.py --map --csv outputs/scar_source.csv
+python src/scar_map.py --map --candidates-csv outputs/scar_candidates_source.csv
 python src/scar_map.py --probe 28.28771 85.52809
 ```
 
@@ -398,13 +400,13 @@ python src/scar_map.py --probe 28.28771 85.52809
 2026-09-08 is 62.7% and 74.2% the other way. If you rank on the scene column
 you throw away the best pre-event image in the archive.
 
-`--map` should report a feature of **0.68 km2** centred on **28.27802 N
-85.52963 E**, 1,390 m N-S by 1,218 m E-W, **99.8%** snow or ice beforehand,
-median NDSI change **-0.374**, at 5,203-5,730 m with a circular-mean aspect of
-**342 deg**. Comparable coverage is 50.3% of the AOI and the AOI-wide
-scar-like rate is 7.46%, against 90% inside the feature.
+`--map` should enumerate twelve change clusters and classify **four as
+detachment-like** - candidates 1, 4, 5 and 9, all facing within 13 degrees of
+north - and write them to `outputs/scar_candidates_source.csv`. Comparable
+coverage is 50.3% of the AOI and the AOI-wide scar-like rate is 7.46%. Only
+candidate 4 (5,370 m, 0.68 km2) is at the published 5,200-5,400 m.
 
-`--probe` on the assumed failure point must print **NOT A SCAR**:
+`--probe` on the reported point must print **NOT A SCAR**:
 
 ```
   usable pixels     121
@@ -416,21 +418,49 @@ scar-like rate is 7.46%, against 90% inside the feature.
 121 usable pixels is the part that matters - the point is observed, so this is
 absence of a scar and not absence of data.
 
-**Then re-measure the floor where the scar actually is**, because Result 4 was
-measured 1.09 km away:
+`--seed-report` reproduces the superseded single-scar result (candidate 4 alone,
+centroid 28.27802 N 85.52963 E), to show that a seeded region-grow finds
+whatever it is pointed at.
+
+---
+
+## Result 7 - the bound, like for like, at every candidate
+
+**Needs: the exported rasters from Results 4 and 5. Nothing else.**
 
 ```bash
-python src/local_floor.py --dir outputs/export_goff_src --match layer2     --lat 28.27802 --lon 85.52963 --sweep 6 --exclude 20260828 _UR_     --include 20251128 20251210 20251222 20260103               20260702 20260714 20260726 20260819
+A="20251128 20251210 20251222 20260103 20260702 20260714 20260726 20260819"
+python src/local_floor.py --dir outputs/export_goff_src --match layer2     --targets outputs/scar_candidates_source.csv --reading DETACHMENT-like     --radius 6 --exclude 20260828 _UR_ --include $A     --csv outputs/local_floor_candidates.csv
+python src/local_floor.py --dir outputs/export_src --band 1     --targets outputs/scar_candidates_source.csv --reading DETACHMENT-like     --radius 6 --exclude _UR_     --include 20251128 20251210 20251222 20260103 20260620 20260702 20260714 20260726     --csv outputs/local_floor_phase_candidates.csv
+python src/common_ref.py --dir outputs/export_goff_src --match layer2     --include 20260702 20260714 20260726 --exclude _UR_     --targets outputs/scar_candidates_source.csv --reading DETACHMENT-like     --csv outputs/common_ref_summer.csv
+python src/bound.py
 ```
 
-**Expect** the three intervals covering the seven weeks before failure to read
-**32.0, 26.0 and 7.8 mm/day** on 71, 60 and 60 valid pixels - against 40.4,
-19.2 and 34.3 on 49, 65 and 26 at the abandoned point. The worst is the bound,
-so **32.0 mm/day** in line of sight. Expressed as downslope motion that is
-**60 to 119 mm/day** across the four candidate scars, whose NISAR ascending
-sensitivities run -0.268 to -0.533 - a range, because which cluster is the scar
-is still open. Every one of them faces north, which is the part that does not
-depend on choosing.
+**Expect** from `bound.py`:
+
+| # | Elevation | Published? | LOS floor, one pixel | LOS floor, 1 km median | Gap | Downslope |
+|---|---|---|---|---|---|---|
+| 1 | 6,255 m | no | 31.2 | 9.2 | 28x - 94x | 64 |
+| **4** | 5,370 m | **yes** | **32.0** | **9.2** | **28x - 96x** | 67 |
+| 5 | 6,009 m | no | 29.8 | 9.2 | 28x - 89x | 56 |
+| 9 | 6,099 m | no | unobserved | - | - | - |
+
+- The one-pixel column at candidate 4 is the worst of **32.0, 26.0 and 7.8
+  mm/day** on 71, 60 and 60 valid pixels. Candidate 9 has 0-1 valid offset
+  pixels in every pair, so no floor exists there - which is why the old upper
+  end of 119 mm/day is withdrawn.
+- The 1 km median column is 3 MADs of the medians of every 13x13 block across
+  the AOI; the covering intervals read 9.2, 6.2 and 3.2 mm/day.
+- **Phase:** candidate 4 and candidate 9 have **no valid GUNW pixel in any
+  pair**. Candidates 1 and 5 have winter phase only, with per-pixel floors of
+  3.9-13.9 mm/day.
+- **Common datum:** `common_ref.py` reports per-pair datum errors of -3.86,
+  +1.77 and -0.51 mm/day on the summer block. On that datum the fastest
+  covering interval is 5.2 mm/day at candidate 4.
+
+The gap is the precursor (0.33 mm/day, taken as line of sight) against the
+line-of-sight floors. It used to be quoted as 180x-360x, which divided a
+downslope bound by a line-of-sight rate and took its upper end from candidate 9.
 
 ---
 
@@ -443,8 +473,12 @@ depend on choosing.
   can say, not what the ground did.
 - **A tighter bound than the floor.** Any precursor slower than the measured
   floor is invisible to this product. That is the point of quoting the floor.
-- **Anything from GUNW over the source zone in the monsoon.** Coverage is 0-1%.
-  The reader is not doing it wrong; there is no usable phase there.
+- **Anything from GUNW over the source zone in the monsoon.** Coverage is 1-3%
+  ascending. The reader is not doing it wrong; there is no usable phase there.
+  Note that every monsoon product is PROVISIONAL and every winter one BETA, so
+  this is not a clean seasonal comparison.
+- **January to mid-June 2026.** No NISAR product was released for acquisitions
+  in that window. It is a gap in the public archive, not in the method.
 
 ---
 

@@ -26,17 +26,17 @@ words - deliberately under the slot, because the numbers need a beat to land.
 | Time | On screen | Narration |
 |------|-----------|-----------|
 | **0:00-0:05** | Title block, then the event | "On the 26th of August, a mountainside in Nepal collapsed and killed more than a thousand people." |
-| **0:06-0:11** | Section 1, the mapped scar | "We found where it detached from satellite imagery - a kilometre from where the reports said." |
+| **0:06-0:11** | Section 1, the four candidates | "Satellite imagery shows four places it could have detached - and the one at the reported height is a kilometre from where the reports said." |
 | **0:12-0:18** | Section 2, the floors scrolling | "Then we measured what NISAR radar could actually see on that exact slope." |
 | **0:19-0:23** | Section 3, no alarm | "Our detector found nothing." |
-| **0:24-0:29** | Section 4, the three numbers | "Because the warning signal was there - and it was hundreds of times too small for this satellite to see. That gap is the answer." |
+| **0:24-0:29** | Section 4, the three numbers | "Because the warning signal was there - and it was thirty to a hundred times too small for this product to see. That gap is the answer." |
 
 ---
 
 ## If you only get one sentence
 
-> The precursor was 0.33 millimetres a day. Our floor was between 60 and 119.
-> NISAR could not have warned, and now we know exactly by how much.
+> The precursor was 0.33 millimetres a day. NISAR's offset floor there was 9 to
+> 32. It could not have warned, and now we know by how much.
 
 ---
 
@@ -48,8 +48,8 @@ In order, cut:
 2. Section 3, the detector run (saves 4 s) - the null is implied by section 4
 3. The scar area and extent lines in section 1 (saves 2 s)
 
-**Do not cut** the last two lines of section 4. The comparison between 0.33 and
-68 is the entire submission; everything before it is setup.
+**Do not cut** the last lines of section 4. The comparison between 0.33 and
+9.2-32.0 mm/day is the whole argument; everything before it is setup.
 
 ---
 
@@ -60,11 +60,15 @@ In order, cut:
 - **Do not claim a warning system.** This is an instrument-capability study with
   a measured bound. Claiming an operational early-warning system invites a
   judge to ask for the operational evidence, and there is none.
-- **Do not quote 45, 40.4, 33.4 or 68 mm/day.** All four are superseded. 45
-  assumed the wrong aspect; 40.4 and 33.4 were measured 1.09 km off any
-  candidate scar; 68 came from treating one of four candidates as the answer.
-  The live numbers are **32 mm/day** line-of-sight and **60-119 mm/day**
-  downslope - and say it as a range, because the range is the honest part.
+- **Do not quote 45, 40.4, 33.4, 68, 60-119 mm/day or "180-360x".** All are
+  superseded. 45 assumed the wrong aspect; 40.4 and 33.4 were measured off any
+  candidate; 68 treated one candidate as the answer; 60-119 and 180-360x
+  divided a downslope bound by a line-of-sight rate and took their upper end
+  from a candidate with no valid data. The live numbers are **9.2-32.0 mm/day
+  line of sight, 28x-96x the precursor** - from `python src/bound.py`, and
+  said as a range, because the range is the honest part.
+- **Do not say "phase would have caught it" about NISAR.** At the candidate at
+  the published elevation NISAR phase has no valid pixel in any pair.
 
 ---
 

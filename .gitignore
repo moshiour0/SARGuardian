@@ -49,6 +49,10 @@ outputs/*
 !outputs/troposphere_*.csv
 # And the point-versus-area floors: they are the evidence for the headline bound.
 !outputs/local_floor_*.csv
+# The candidate table, the common-datum run and the headline built from them.
+!outputs/scar_candidates_source.csv
+!outputs/common_ref_*.csv
+!outputs/bound_source.csv
 
 # Secrets
 .env

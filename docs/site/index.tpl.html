@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Run The Analysis Yourself</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
 <style>
@@ -375,11 +376,13 @@ footer{padding:34px 0 0;border-top:1px solid var(--edge);margin-top:40px;
     </div>
     <div class="insight"><h3>The precursor was real — and somebody else measured it</h3>
       <p>A separate study using Sentinel-1 found this slope creeping at about <b>0.33 mm a day</b> from January to August 2026, speeding up at the end. About the rate human hair grows.</p>
-      <p>So the conclusion is not "nothing happened". It is: <b>a signal existed and this instrument was two orders of magnitude from resolving it.</b> That is a specification, not a failure — and it names the fix. Both this collapse and Blatten in 2025 were caught by wave-pattern interferometry, never by the feature tracking whose floor you measured.</p></div>
-    <div class="insight warn"><h3>Three things we published and withdrew</h3>
+      <p>So the conclusion is not "nothing happened". It is: <b>a signal existed and NISAR's feature tracking was roughly 30 to 100 times too coarse to resolve it</b> — line of sight against line of sight, from a 1 km average to a single pixel. Both this collapse and Blatten in 2025 were caught by wave-pattern interferometry. But at the candidate that matches the published elevation, NISAR's own interferograms hold <b>no valid pixel in any pair</b>: the fix is phase that survives on a steep north face, not just "use phase".</p>
+      <p>The winter products are NISAR's pre-calibration BETA release and the summer ones calibrated PROVISIONAL, and nothing was released for 20 January – 17 June 2026 — the months the creep was building. Some of what this shows is the archive, not the physics.</p></div>
+    <div class="insight warn"><h3>Four things we published and withdrew</h3>
       <p><b>"Nothing was moving."</b> A floor describes your instrument, never the world.</p>
       <p><b>"The scar is at this coordinate."</b> You found four candidates. We had reported one, to five decimals, because we pointed the search at it.</p>
-      <p><b>"Frequent passes cause false alarms."</b> An error in our own threshold. Corrected, the false-alarm rate is zero at every revisit tested.</p></div>
+      <p><b>"Frequent passes cause false alarms."</b> An error in our own threshold. Corrected, the false-alarm rate is zero at every revisit tested.</p>
+      <p><b>"180 to 360 times too insensitive."</b> That divided a downslope bound by a line-of-sight rate, used one pixel against a slope average, and took its upper end from a candidate with no valid offsets at all.</p></div>
     <footer>
       SARGuardian · Langtang Lirung · 26 August 2026 · NASA Space Apps 2026<br>
       Built on NASA NISAR L2 and Copernicus Sentinel-2. The precursor figure is someone else's measurement, cited.<br>
@@ -825,9 +828,10 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
     $('#s5itext').innerHTML=`You measured <b>${fmt(floor,1)} mm/day</b> here. Across the three intervals covering `+
       `the seven weeks before the collapse the floor runs <b>${fmt(Math.min(...cover),1)}</b> to `+
       `<b>${fmt(worstAoi,1)} mm/day</b>. A bound holding across a window is set by its <em>weakest</em> interval.<br><br>`+
-      `<b>But that is an average over 82 km².</b> The mountain failed on one hillside. In a 1 km window on a `+
-      `candidate scar those same intervals read `+(sf.covering?sf.covering.map(c=>`<b>${fmt(c.point,1)}</b>`).join(', '):'—')+
-      ` mm/day — worst <b>${fmt(worstPoint,1)}</b>, about 1.7× the area figure. `+
+      `<b>But that is an average over 82 km².</b> The mountain failed on one hillside. In a 1 km window on `+
+      `candidate ${sf.candidate||'4'} — the one at the published elevation — one pixel reads `+(sf.covering?sf.covering.map(c=>`<b>${fmt(c.point,1)}</b>`).join(', '):'—')+
+      ` mm/day, worst <b>${fmt(worstPoint,1)}</b>. Averaged over the whole 1 km window instead of one pixel the worst is `+
+      `<b>${fmt(sf.worst_block||NaN,1)}</b>. Quote both: one pixel is the pessimistic end, the window median the optimistic one. `+
       `<span class="badge pre">PRE-COMPUTED</span> those need the full rasters.`;
     $('#s5insight').style.display='block';
     T.res.floor=floor;T.res.worstAoi=worstAoi;T.res.worstFloor=worstPoint;save();complete(5);
@@ -1100,12 +1104,15 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
     $('#s8bound').textContent=bound?fmt(bound,0)+' mm/d':'–';
     $('#s8alarm').textContent=T.res.alarms!=null?T.res.alarms:'– station 7';
     if(!bound){$('#s8verdict').textContent='Work through the stations and your own numbers appear here.';return;}
-    const P=0.33,DAYS=222,W=cv.width,H=cv.height;
+    // Line of sight against line of sight. The precursor is a Sentinel-1 rate
+    // the reports never call downslope, so it is compared with the LOS floor,
+    // not with the downslope bound - dividing by that doubled the gap once.
+    const P=(D.bound&&D.bound.precursor_mm_day)||0.3333,DAYS=222,W=cv.width,H=cv.height;
     const c=getComputedStyle(document.documentElement);
     const edge=c.getPropertyValue('--edge'),dim=c.getPropertyValue('--dim'),
           live=c.getPropertyValue('--live'),alarm=c.getPropertyValue('--alarm');
     cx.clearRect(0,0,W,H);
-    const x0=56,bw=W-410,real=P*DAYS,need=bound*DAYS;
+    const x0=56,bw=W-410,real=P*DAYS,need=fl*DAYS;
     [['what the slope actually did',real,live,(real/10).toFixed(1)+' cm'],
      ['what NISAR needed to notice',need,alarm,(need/1000).toFixed(1)+' m']].forEach(([lab,val,col,txt],i)=>{
       const y=62+i*132;
@@ -1113,8 +1120,10 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
       cx.fillStyle=edge;cx.fillRect(x0,y,bw,42);
       cx.fillStyle=col;cx.fillRect(x0,y,Math.max(4,bw*val/need),42);
       cx.fillStyle=col;cx.font='700 30px "JetBrains Mono",monospace';cx.fillText(txt,x0+bw+20,y+32);});
-    $('#s8verdict').innerHTML=`Over 222 days it moved <b>${(real/10).toFixed(1)} cm</b>.<br>`+
-      `You needed <span>${(need/1000).toFixed(1)} metres</span> to see it.`;
+    const blk=(D.scar_floor&&D.scar_floor.worst_block)||NaN;
+    $('#s8verdict').innerHTML=`Over 222 days it moved <b>${(real/10).toFixed(1)} cm</b> in line of sight.<br>`+
+      `One pixel needed <span>${(need/1000).toFixed(1)} metres</span> to see it — `+
+      `<b>${fmt(fl/P,0)}×</b> too little. Averaged over 1 km, <b>${fmt(blk/P,0)}×</b>.`;
   }
   window.__paintS8=paint;
   new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)paint();}),{threshold:.2}).observe($('#st8'));

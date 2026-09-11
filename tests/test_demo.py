@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+
+import pytest
 from datetime import date, datetime
 from pathlib import Path
 
@@ -43,7 +45,7 @@ def test_no_pre_event_interval_may_end_after_the_collapse():
     """
     out = run()
     assert out.returncode == 0
-    body = out.stdout.split("mapped scar, over the seven weeks")[1].split("A bound")[0]
+    body = out.stdout.split("over the seven weeks before failure")[1].split("A bound")[0]
     spans = [ln.split()[0] for ln in body.strip().splitlines() if "_" in ln]
     assert spans, "no intervals listed"
     for s in spans:
@@ -54,7 +56,7 @@ def test_no_pre_event_interval_may_end_after_the_collapse():
 def test_the_bound_is_the_weakest_pre_event_interval():
     """A bound across a window is set by its worst interval, not its median."""
     out = run()
-    body = out.stdout.split("mapped scar, over the seven weeks")[1].split("A bound")[0]
+    body = out.stdout.split("over the seven weeks before failure")[1].split("A bound")[0]
     floors = [float(ln.split()[1]) for ln in body.strip().splitlines() if "_" in ln]
     quoted = float(out.stdout.split("weakest interval:")[1].split("mm/day")[0])
     assert quoted == max(floors)
@@ -72,16 +74,30 @@ def test_the_detector_really_runs_and_finds_nothing():
 
 def test_the_headline_ratio_is_derived_not_typed():
     """
-    floor / sensitivity / precursor must agree with the printed multiple, at
-    both ends of the range. The range exists because four candidate detachment
-    surfaces survive the optical evidence; quoting a single figure there was
-    the over-claim this test now guards against.
+    The printed multiple must be the printed floors divided by the precursor,
+    line of sight against line of sight, at both ends of the estimator
+    bracket - and it must agree with the table bound.py writes. The old
+    headline divided a downslope bound by a line-of-sight rate, and carried an
+    upper end from a candidate with no valid offsets at all.
     """
+    import csv
+    from bound import PRECURSOR_MM_DAY
     out = run()
-    span = out.stdout.split("as downslope motion")[1].split("mm/day")[0]
-    lo, hi = (float(x) for x in span.strip().split("-"))
-    mult = out.stdout.split("repeat was")[1].split("too")[0]
+    span = out.stdout.split("what NISAR offsets saw")[1].split("mm/day")[0]
+    lo, hi = (float(x) for x in span.strip().split(" - "))
+    mult = out.stdout.split("was about")[1].split("too")[0]
     m_lo, m_hi = (float(x.strip().rstrip("x")) for x in mult.split(" to "))
-    assert abs(m_lo - lo / 0.33) < 2.0
-    assert abs(m_hi - hi / 0.33) < 2.0
+    assert abs(m_lo - lo / PRECURSOR_MM_DAY) < 1.0
+    assert abs(m_hi - hi / PRECURSOR_MM_DAY) < 1.0
     assert hi > lo, "the bound must be reported as a range, not a point"
+    row = next(r for r in csv.DictReader(open(ROOT / "outputs" / "bound_source.csv"))
+               if r["matches_published_elevation"] == "True")
+    assert float(row["ratio_los_pixel"]) == pytest.approx(m_hi, abs=1.0)
+    assert float(row["ratio_los_block"]) == pytest.approx(m_lo, abs=1.0)
+
+
+def test_no_single_candidate_is_called_the_scar():
+    """Four candidates survive the optical evidence. The demo must show all four."""
+    out = run()
+    assert "mapped scar" not in out.stdout
+    assert out.stdout.count("candidate ") >= 4
