@@ -5,6 +5,14 @@ We measured the answer instead of assuming it: **none, and we can say by how
 much.** Built on NASA NISAR L-band products, tested against the 26 August 2026
 Langtang Lirung failure that killed more than a thousand people.
 
+### ▶ [Run the analysis yourself](https://moshiour0.github.io/SARGuardian/)
+
+**[moshiour0.github.io/SARGuardian](https://moshiour0.github.io/SARGuardian/)** —
+eight stations, and your browser does the arithmetic on the real measurements.
+Drag the aspect dial and watch NISAR go blind; run the detector and then let
+post-event data in to see a forecast built on hindsight. No install, no
+credentials, nothing pre-rendered.
+
 ![The detection floor against the precursor that existed](docs/figures/ladder.png)
 
 On 26 August 2026 a rock and ice face detached from Langtang Lirung, fell
@@ -23,7 +31,7 @@ happening"; it is a measured requirement, and it names the fix: precursor
 detection here needs interferometric *phase*, not offset tracking, and two
 orders of magnitude more sensitivity.
 
-### See it in thirty seconds
+### Or in thirty seconds at a terminal
 
 ```bash
 git clone https://github.com/moshiour0/SARGuardian.git && cd SARGuardian
@@ -32,19 +40,21 @@ python demo.py
 ```
 
 No credentials, no downloads, no 51 GB archive. Every number it prints is
-computed live from committed measurements. Then:
+computed from committed measurements when you run it. Then:
 
 ```bash
-python -m pytest tests/ -q     # 149 tests
-python tests/mutate.py         # 56 historical bugs reintroduced; all must be caught
+python -m pytest tests/ -q     # 161 tests
+python tests/mutate.py         # 58 historical bugs reintroduced; all must be caught
 ```
 
 | | |
 |---|---|
+| **Run it in a browser** | [the interactive lab](https://moshiour0.github.io/SARGuardian/) - source in [`docs/site/`](docs/site/) |
 | **Where it failed** | [mapped from Sentinel-2](#mapping-the-scar-from-optical-imagery) - and the assumed point was wrong |
 | **What we could see** | [the floor at the point](#the-bound-at-the-point-not-over-the-area), with intervals |
 | **Why phase, not offsets** | [the four regimes](#the-four-regimes) |
 | **Reproduce every number** | [REPRODUCE_RESULTS.md](REPRODUCE_RESULTS.md) |
+| **Pitch it in 30 seconds** | [the video script](docs/VIDEO_SCRIPT.md) |
 | **What is still wrong** | [known limitations](#known-limitations) |
 
 ---
