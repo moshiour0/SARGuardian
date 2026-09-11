@@ -147,3 +147,57 @@ def test_duplicate_products_are_resolved_not_averaged(tmp_path):
     kept = [q for q in pairs if q.ref == date(2026, 8, 16)][0]
     assert kept.value == pytest.approx(-14.66), (
         "kept the fringe-offset branch, or averaged the two")
+
+
+# ---------------------------------------------------------------------------
+# One datum per geometry
+# ---------------------------------------------------------------------------
+def _lattice_stack(errs, target_mm=40.0, shape=(60, 60), block=slice(10, 40)):
+    """
+    Pairs on one lattice, each carrying its own datum error, with a moving
+    target covering a large block - large enough that a datum allowed onto
+    it would be dragged by its motion.
+    """
+    from rasterio.transform import from_origin
+    rng = np.random.default_rng(7)
+    grid = {"transform": from_origin(0.0, 60 * 80.0, 80.0, 80.0), "res_x": 80.0}
+    pairs, lat = [], {}
+    for k, e in enumerate(errs):
+        a = rng.normal(0, 2, shape)
+        a[block, block] += target_mm
+        from datetime import timedelta
+        ref = date(2026, 7, 2) + timedelta(days=12 * k)
+        p = Pair(path=98, direction="A", ref=ref, sec=ref + timedelta(days=12),
+                 source=f"p{k}")
+        pairs.append(p)
+        lat[id(p)] = (a + e, grid, 4326)
+    return pairs, lat
+
+
+def _run(pairs, lat, buffer_km):
+    from timeseries import apply_common_datum
+    # target at the block centre: row 25, col 25 -> x = 25.5*80, y = (60-25.5)*80
+    apply_common_datum(pairs, lat, target_lat=(60 - 25.5) * 80.0,
+                       target_lon=25.5 * 80.0, radius_px=3, buffer_km=buffer_km)
+
+
+def test_common_datum_removes_each_pairs_private_error():
+    """Three pairs, three different datum errors; the target reads 40 in all."""
+    pairs, lat = _lattice_stack([-46.0, 21.0, -12.0])
+    _run(pairs, lat, buffer_km=1.6)
+    for p in pairs:
+        assert p.value == pytest.approx(40.0, abs=2.0)
+
+
+def test_common_datum_is_not_set_on_the_moving_target():
+    """
+    With the target excluded, the datum is the stable ground and the target
+    reads its true 40 mm. With no buffer the moving block drags the datum.
+    """
+    pairs, lat = _lattice_stack([0.0, 0.0, 0.0], block=slice(0, 50))
+    _run(pairs, lat, buffer_km=2.0)
+    good = [p.value for p in pairs]
+    pairs2, lat2 = _lattice_stack([0.0, 0.0, 0.0], block=slice(0, 50))
+    _run(pairs2, lat2, buffer_km=0.0)
+    assert all(v == pytest.approx(40.0, abs=2.0) for v in good)
+    assert all(p.value < 20.0 for p in pairs2)

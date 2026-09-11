@@ -413,6 +413,18 @@ MUTATIONS = [
      "        pass",
      "test_the_datum_is_never_set_on_the_target"),
 
+    ("timeseries common datum allowed onto the moving target",
+     "timeseries.py",
+     "            stable &= ~buffer_mask(stable.shape, [centre], int(round(buffer_km * 1000 / px)))",
+     "            pass",
+     "test_common_datum_is_not_set_on_the_moving_target"),
+
+    ("a floors file mixes two targets' noise",
+     "local_floor.py",
+     '        raise ValueError("--as-floors needs a single target")',
+     "        pass",
+     "test_floors_from_two_targets_are_refused"),
+
     ("a pair straddling the release gap is called BETA",
      "gunw_reader.py",
      "    if lo <= ref <= hi and lo <= sec <= hi:",

@@ -185,3 +185,32 @@ def test_compare_reports_the_interval_alongside_the_floor():
     c = compare(aoi, win, 12.0)
     assert c["usable"]
     assert c["local_floor_ci_lo"] < c["local_floor_mm_day"] < c["local_floor_ci_hi"]
+
+
+def test_local_floors_round_trip_into_the_detector(tmp_path):
+    """
+    A series measured at a point must be gated on the floor AT the point.
+    --as-floors writes exactly what inverse_velocity.load_floors reads.
+    """
+    from datetime import date
+    from inverse_velocity import load_floors
+    from local_floor import write_as_floors
+    rows = [{"file": "GOFF_20260702_20260714_PR_HH-layer2.tif", "usable": True,
+             "target_id": "4", "local_floor_mm_day": 32.01},
+            {"file": "GOFF_20260629_20260711_PR_HH-layer2.tif", "usable": True,
+             "target_id": "4", "local_floor_mm_day": 255.3}]
+    out = tmp_path / "f.csv"
+    assert write_as_floors(rows, out, "layer2") == 2
+    f = load_floors(out, "layer2")
+    assert f[(date(2026, 7, 2), date(2026, 7, 14))] == 32.01
+    assert f[(date(2026, 6, 29), date(2026, 7, 11))] == 255.3
+
+
+def test_floors_from_two_targets_are_refused(tmp_path):
+    """One slope must never be gated on another's noise."""
+    import pytest
+    from local_floor import write_as_floors
+    rows = [{"file": "GOFF_20260702_20260714_x.tif", "usable": True,
+             "target_id": t, "local_floor_mm_day": 1.0} for t in ("1", "4")]
+    with pytest.raises(ValueError):
+        write_as_floors(rows, tmp_path / "f.csv", "layer2")

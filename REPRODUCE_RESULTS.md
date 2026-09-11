@@ -458,6 +458,21 @@ python src/bound.py
   +1.77 and -0.51 mm/day on the summer block. On that datum the fastest
   covering interval is 5.2 mm/day at candidate 4.
 
+**The same common datum from the products** (needs the 16 GOFF granules), and
+the detector gated on the floors measured at candidate 4 on both tracks:
+
+```bash
+python src/timeseries.py --dir data/nisar_l2/GOFF --product GOFF     --goff-layer layer2 --aoi source --invert --auto-ref --common-ref     --target-lat 28.27799 --target-lon 85.52983 --target-radius 6     --csv outputs/ts_goff_cand4_common.csv
+python src/local_floor.py --dir outputs/export_goff_src --match layer2     --lat 28.27799 --lon 85.52983 --radius 6 --exclude _UR_ 20260828 20260831     --csv outputs/local_floor_cand4.csv --as-floors outputs/local_floor_cand4_as_floors.csv
+python src/inverse_velocity.py --ts outputs/ts_goff_cand4_common.csv     --floors outputs/local_floor_cand4_as_floors.csv --floors-layer layer2     --event-date 2026-08-26
+```
+
+**Expect** ascending datum errors of +1.98, +1.24, +2.52, -0.34, -3.90, +1.82
+and -0.49 mm/day on the pre-event pairs, and **no alarm in any block**, the
+fastest interval at **0.44x** its own floor. `--as-floors` writes the
+candidate's own floors, both tracks, in the layout `--floors` reads; gating a
+point series on the AOI floors instead would be lenient.
+
 The gap is the precursor (0.33 mm/day, taken as line of sight) against the
 line-of-sight floors. It used to be quoted as 180x-360x, which divided a
 downslope bound by a line-of-sight rate and took its upper end from candidate 9.

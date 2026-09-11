@@ -493,7 +493,8 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
                   clip_aoi: bool, flip_sign: bool,
                   target_lat: float | None = None, target_lon: float | None = None,
                   target_radius_px: int = 5, auto_ref: bool = False,
-                  goff_layer: str = "layer2") -> None:
+                  goff_layer: str = "layer2", common_ref: bool = False,
+                  buffer_km: float = 2.0) -> None:
     """
     Fill Pair.value with a displacement measurement from each GUNW.
 
@@ -508,6 +509,7 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
     """
     from gunw_reader import read_gunw
 
+    lattices: dict[int, np.ndarray] = {}
     for p in pairs:
         if not p.source or not Path(p.source).exists():
             continue
@@ -535,6 +537,22 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
             continue
         valid = r["valid"]
         disp = r["displacement_mm"]
+
+        if common_ref:
+            # Onto the fixed AOI lattice, so every pair of a geometry shares
+            # pixel centres and one datum can be set across all of them.
+            import gunw_reader as _g
+            grid = _g.aoi_grid(r["xs"], r["ys"], _g.AOI_RING, r["epsg"])
+            if grid is None:
+                logger.error("%s: off the AOI lattice, cannot join a common datum; "
+                             "excluded", Path(p.source).name)
+                continue
+            lattices[id(p)] = (_g.place_on_grid(np.where(valid, disp, np.nan), grid),
+                               grid, r["epsg"])
+            p.n_px = int(valid.sum())
+            p.coherence = (float(r["coherence"][valid].mean())
+                           if r["coherence"] is not None and valid.any() else None)
+            continue
 
         if target_lat is not None and target_lon is not None and r["xs"] is not None:
             xs, ys = r["xs"], r["ys"]
@@ -565,6 +583,74 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
         logger.info("%s -> %s : %+8.2f mm  (%d px, coh %.2f)",
                     p.ref, p.sec, p.value, n,
                     p.coherence if p.coherence is not None else float("nan"))
+
+    if common_ref:
+        apply_common_datum(pairs, lattices, target_lat, target_lon,
+                           target_radius_px, buffer_km)
+
+
+def apply_common_datum(pairs: list[Pair], lattices: dict, target_lat, target_lon,
+                       radius_px: int, buffer_km: float) -> None:
+    """
+    Fill Pair.value on ONE datum per geometry, not one per pair.
+
+    Every pair used to carry its own reference - an auto-reference block for
+    GUNW, a deramp plane for GOFF - and the inversion summed those differences
+    as though they shared a zero. Here the datum is the median over pixels
+    valid in every pair of the geometry and more than buffer_km from the
+    target, so it is never set on the ground being measured. The constant
+    removed from each pair is logged: it is exactly the step that pair's
+    private reference would have put into the series.
+    """
+    from rasterio.transform import rowcol
+    from common_ref import buffer_mask, common_mask, rereference, window_median
+
+    groups: dict[tuple, list[Pair]] = defaultdict(list)
+    for p in pairs:
+        if id(p) in lattices:
+            groups[(p.direction, p.path)].append(p)
+
+    for (direction, path), group in sorted(groups.items()):
+        stack = [lattices[id(p)][0] for p in group]
+        _, grid, epsg = lattices[id(group[0])]
+        if any(lattices[id(p)][0].shape != stack[0].shape for p in group):
+            logger.error("%s path %s: pairs landed on different lattices - no "
+                         "common datum", direction, path)
+            continue
+        centre = None
+        if target_lat is not None and target_lon is not None:
+            tx, ty = target_lon, target_lat
+            if epsg and epsg != 4326:
+                from pyproj import Transformer
+                tx, ty = Transformer.from_crs(4326, epsg, always_xy=True).transform(
+                    target_lon, target_lat)
+            centre = rowcol(grid["transform"], tx, ty)
+        stable = common_mask(stack)
+        if centre is not None:
+            px = grid["res_x"]
+            stable &= ~buffer_mask(stable.shape, [centre], int(round(buffer_km * 1000 / px)))
+        try:
+            fixed, consts = rereference(stack, stable)
+        except ValueError as exc:
+            logger.error("%s path %s: %s - no common datum, pairs left unmeasured",
+                         direction, path, exc)
+            continue
+        logger.info("%s path %s: common datum on %d px valid in all %d pairs",
+                    direction, path, int(stable.sum()), len(group))
+        for p, f, k in zip(group, fixed, consts):
+            if centre is not None:
+                p.value, n = window_median(f, centre, radius_px)
+            else:
+                v = f[np.isfinite(f)]
+                p.value, n = (float(np.median(v)) if v.size else float("nan")), int(v.size)
+            if not np.isfinite(p.value):
+                p.value = None
+                logger.warning("%s -> %s: no valid pixel at the target, excluded",
+                               p.ref, p.sec)
+                continue
+            logger.info("%s -> %s : %+8.2f mm on the common datum (%d px), "
+                        "datum error %+.1f mm = %+.2f mm/day",
+                        p.ref, p.sec, p.value, n, k, k / max(p.span_days, 1))
 
 
 def report_series(label: str, comp_index: int, result: dict) -> list[dict]:
@@ -667,6 +753,13 @@ def main() -> int:
     ap.add_argument("--target-lat", type=float, help="measure here instead of the AOI median")
     ap.add_argument("--target-lon", type=float)
     ap.add_argument("--target-radius", type=int, default=5, help="target window half-width in px")
+    ap.add_argument("--common-ref", action="store_true",
+                    help="reference every pair of a geometry to ONE datum: pixels "
+                         "valid in all of them, --buffer-km clear of the target. "
+                         "Without it each pair keeps its own reference and the "
+                         "series inherits a step at every epoch")
+    ap.add_argument("--buffer-km", type=float, default=2.0,
+                    help="with --common-ref, no datum pixel within this of the target")
     ap.add_argument("--no-clip", action="store_true")
     ap.add_argument("--flip-sign", action="store_true")
     ap.add_argument("--csv", metavar="OUT.csv")
@@ -721,7 +814,8 @@ def main() -> int:
         measure_pairs(pairs, args.coh_threshold, args.ref_lat, args.ref_lon,
                       not args.no_clip, args.flip_sign,
                       args.target_lat, args.target_lon, args.target_radius,
-                      auto_ref=args.auto_ref, goff_layer=args.goff_layer)
+                      auto_ref=args.auto_ref, goff_layer=args.goff_layer,
+                      common_ref=args.common_ref, buffer_km=args.buffer_km)
 
     by_geom = defaultdict(list)
     for p in pairs:

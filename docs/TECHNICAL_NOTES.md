@@ -122,20 +122,47 @@ simply "use phase".
 
 Every GOFF pair used to be referenced and deramped on its own ground, so a
 differential error between two reference areas entered the series as a step -
-the largest unfixed defect under the headline bound. `src/common_ref.py` now
-puts each block on one datum: pixels valid in every pair, at least 2 km from
-any candidate. The datum errors it removes are **up to 3.9 mm/day** on the
-summer block and 2.2 mm/day on the winter one - ten times the precursor, and a
-tenth of the per-pixel floor.
+the largest unfixed defect under the headline bound. It is now fixed in two
+places that agree with each other:
 
-On the common datum the fastest covering interval is 5.2 mm/day at candidate 4
-(0.16x its per-pixel floor, 0.56x the 1 km median floor), 2.7 at candidate 5,
-and 11.6 at candidate 1 - which is 0.37x its per-pixel floor but 1.26x the
-optimistic median floor, for one interval, reversing sign in the next, on a
-52-degree face at 6,255 m that shows offsets of the same size in winter. One
-interval above the optimistic floor, not persisting, is not a detection, and
-the inverse-velocity detector (three consecutive intervals, one direction)
-does not fire.
+- `timeseries.py --common-ref` puts every pair of a geometry on the fixed AOI
+  lattice and references all of them to one datum - pixels valid in every
+  pair, at least 2 km from the target - straight from the products.
+- `common_ref.py` does the same on the exported rasters, for when the
+  products are not on disk.
+
+The datum errors removed are **up to 3.9 mm/day on ascending** - ten times the
+precursor and a tenth of the per-pixel floor - and up to 18 mm/day on the
+already-blind descending track. Both routes give the same candidate-4 values
+to within a millimetre (62.8 / -8.5 / 37.3 mm from the products against
+62.3 / -7.9 / 37.7 from the exports).
+
+On that datum, gated on the floors measured **at candidate 4 on both tracks**
+(`outputs/local_floor_cand4_as_floors.csv`), the inverse-velocity detector
+raises no alarm in any block, and the fastest pre-event interval reaches
+**0.44x its own floor**. Descending floors at that candidate run 136-359
+mm/day, which is what a sensitivity of -0.3 on a noisy track looks like.
+
+Gating a point series on AOI floors, or on one track's floors, is lenient in
+exactly the wrong direction, and the first attempt at this run did both: it
+showed a descending interval at 1.79x a fallback ascending floor. That is why
+`local_floor.py --as-floors` exists: it writes the floors at the target, on
+every track, in the layout `--floors` reads.
+
+Across the other candidates, measured on the exports: the fastest covering
+interval is 2.7 mm/day at candidate 5 and 11.6 at candidate 1 - which is 0.37x
+its per-pixel floor but 1.26x the optimistic median floor, for one interval,
+reversing sign in the next, on a 52-degree face at 6,255 m that shows offsets
+of the same size in winter. One interval above the optimistic floor, not
+persisting, is not a detection.
+
+### Reproduced from the raw products
+
+With the 51 GB archive re-read from scratch on 11 September 2026, every
+committed GOFF and GUNW statistic and every one of the 33 exported rasters
+came out identical to what is committed - zero field differences, zero pixel
+differences - and the readers now write `track`, `maturity`, `crid` and
+`processing` themselves.
 
 ### A consistency check that does not close
 
@@ -1573,12 +1600,11 @@ were on this list and have been fixed; they stay so the fix can be checked.
    only one at the published 5,200-5,400 m, and it is flagged on that basis.
    *(Closed in its old form: the reported point 28.28771 N 85.52809 E is
    tested and is not a scar.)*
-2. **Common datum - closed for the exported stack.** `common_ref.py` puts each
-   block on pixels valid in every pair, 2 km clear of any candidate. It
-   removes datum errors up to 3.9 mm/day. It re-references; it does not
-   re-deramp, so a tilt that differs between pairs is not removed. The
-   original products were deleted after export, so the fix is applied to the
-   exports rather than inside `timeseries.py`.
+2. **Common datum - closed.** `timeseries.py --common-ref` (from the
+   products) and `common_ref.py` (from the exports) put each geometry on
+   pixels valid in every pair, 2 km clear of the target. They remove datum
+   errors up to 3.9 mm/day on ascending. Both re-reference; neither
+   re-deramps, so a tilt that differs between pairs is not removed.
 3. **The final seven days before the failure are unobserved**, and the interval
    covering late August is a 24-day average. The floor is `3 * MAD / span`, so
    a longer span mechanically lowers it.

@@ -277,6 +277,11 @@ def main() -> int:
                          "should, because pooling tracks whose floors differ "
                          "fivefold gives a median that describes neither")
     ap.add_argument("--csv", metavar="OUT.csv")
+    ap.add_argument("--as-floors", metavar="OUT.csv",
+                    help="also write the local floors in the layout "
+                         "inverse_velocity.py --floors reads, so a series "
+                         "measured at a point is gated on the floor AT that "
+                         "point rather than the more lenient AOI floor")
     args = ap.parse_args()
 
     try:
@@ -338,7 +343,32 @@ def main() -> int:
             for x in rows:
                 w.writerow(x)
         logger.info("Wrote %s", p)
+    if args.as_floors:
+        write_as_floors(rows, Path(resolve(args.as_floors)), args.match or "")
     return 0
+
+
+def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
+    """
+    Usable local floors as reference, secondary, layer, detect_floor_mm_day.
+
+    One target only: a floors file keyed by pair cannot say which point it
+    describes, so mixing targets would gate one slope on another's noise.
+    """
+    usable = [r for r in rows if r["usable"]]
+    if len({r.get("target_id", "") for r in usable}) > 1:
+        raise ValueError("--as-floors needs a single target")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["reference", "secondary", "layer",
+                                           "detect_floor_mm_day"])
+        w.writeheader()
+        for r in usable:
+            a, b = DATE.search(r["file"]).groups()
+            w.writerow({"reference": a, "secondary": b, "layer": layer,
+                        "detect_floor_mm_day": round(r["local_floor_mm_day"], 3)})
+    logger.info("Wrote %s (%d floors)", path, len(usable))
+    return len(usable)
 
 
 def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
