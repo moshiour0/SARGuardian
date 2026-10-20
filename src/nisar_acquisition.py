@@ -153,7 +153,7 @@ def asf_query(warn_on_cap: bool = True, **params) -> list[dict]:
     """
     payload = {
         "intersectsWith": SEARCH_WKT,
-        "output": "jsonlite",
+        "output": "json",
         "maxResults": str(RESULT_CAP),
     }
     payload.update({k: v for k, v in params.items() if v is not None})
