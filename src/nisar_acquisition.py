@@ -135,9 +135,23 @@ def _get(url: str, retries: int = 4) -> dict | list:
             with urllib.request.urlopen(url, timeout=180) as response:
                 return json.loads(response.read().decode())
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            last = exc
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    body = exc.read(4096).decode("utf-8", errors="replace").strip()
+                except Exception:
+                    body = ""
+                body = re.sub(r"https?://[^\s\"'<>]+", "[URL]", body)
+                body = re.sub(
+                    r"(?i)\b(password|passwd|token|access[_-]?token|refresh[_-]?token|authorization)\b\s*[:=]\s*[^,;\s<>]+",
+                    r"\1=[REDACTED]",
+                    body,
+                )
+                body = re.sub(r"\s+", " ", body).strip()[:350]
+                last = RuntimeError(f"HTTP Error {exc.code}: {body or exc.reason}")
+            else:
+                last = exc
             if attempt < retries - 1:
-                logger.warning("Query failed (%s), retrying in %.0fs...", exc, delay)
+                logger.warning("Query failed (%s), retrying in %.0fs...", last, delay)
                 time.sleep(delay)
                 delay *= 2
     raise RuntimeError(f"ASF query failed after {retries} attempts: {last}")
