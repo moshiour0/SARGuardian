@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import synth
-from gunw_reader import check_consistency, read_gunw, verify_products
+from gunw_reader import check_consistency, decode_gunw_mask, read_gunw, verify_products
 
 TOL_MM = 1.5
 
@@ -305,3 +305,35 @@ def test_a_name_that_is_not_a_granule_yields_no_track():
     from gunw_reader import track_of
     assert track_of("GOFF_20251128_20251210_PR_HH-layer2.tif") == ""
     assert track_of("") == ""
+
+
+
+def test_uint32_mask_decodes_low_byte_separately_from_iono_bit_and_anomaly_flags():
+    """P05023 mask values must not be parsed as one giant decimal code."""
+    raw = np.array([[
+        11, 12, 111, 16777228, 16777216, 16777340, 255,
+        0x0000010C, 0x0001000C, 0x0200000C,
+    ]], dtype=np.uint32)
+    raw_before = raw.copy()
+    corrected = decode_gunw_mask(raw, apply_iono=True)
+    uncorrected = decode_gunw_mask(raw, apply_iono=False)
+
+    assert np.array_equal(raw, raw_before)
+    assert corrected["land_valid_subswaths_low_byte"].tolist() == [[
+        True, True, False, True, False, False, False, True, True, True
+    ]]
+    assert corrected["ionosphere_interpolated_mask"].tolist() == [[
+        False, False, False, True, True, True, False, False, False, False
+    ]]
+    assert corrected["anomaly_flags_nonzero"].tolist() == [[
+        False, False, False, False, False, False, False, True, True, False
+    ]]
+    assert corrected["reserved_bits_nonzero"].tolist() == [[
+        False, False, False, False, False, False, False, False, False, True
+    ]]
+    assert corrected["usable_mask_for_policy"].tolist() == [[
+        True, True, False, False, False, False, False, False, False, False
+    ]]
+    assert uncorrected["usable_mask_for_policy"].tolist() == [[
+        True, True, False, True, False, False, False, False, False, False
+    ]]
