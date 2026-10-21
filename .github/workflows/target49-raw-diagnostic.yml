@@ -8,6 +8,7 @@ on:
       - "tools/download_target49_products.py"
       - "tools/target49_gate_diagnostic.py"
       - "tests/**"
+      - ".github/workflows/target49-raw-diagnostic.yml"
 
 permissions:
   contents: read
