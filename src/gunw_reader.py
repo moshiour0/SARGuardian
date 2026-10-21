@@ -101,25 +101,37 @@ def track_of(name: str) -> str:
 # physical one. Classified from the dates rather than from the CRID letter
 # because the CRID encoding is not documented where it can be cited; the CRID
 # is carried alongside so a reader can check.
+# Product maturity. ASF's current NISAR availability guide says CRID is the
+# reliable release identifier and supplemental P05023 products can be reprocessed
+# from acquisitions before 2026-06-17; acquisition dates alone are not authoritative.
+# Sources: https://nisar-docs.asf.alaska.edu/availability-overview/
+#          https://nisar-docs.asf.alaska.edu/provisional-known-issues/
 BETA_WINDOW = ("20251017", "20260120")
 PROVISIONAL_FROM = "20260617"
-CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}")
-STAMP_RE = re.compile(r"_(\d{8})T\d{6}")
+CRID_RE = re.compile(r"_([A-Z]\\d{5})_[A-Z]_[A-Z]_[A-Z]_\\d{3}")
+STAMP_RE = re.compile(r"_(\\d{8})T\\d{6}")
+PROVISIONAL_CRID_MIN = 5023
 
 
 def crid_of(name: str) -> str:
-    """The composite release ID in a granule name, e.g. 'X05010'; '' if absent."""
+    """The composite release ID in a granule name, e.g. 'P05023'; '' if absent."""
     m = CRID_RE.search(str(name))
     return m.group(1) if m else ""
 
 
 def product_maturity(name: str) -> str:
-    """
-    'BETA', 'PROVISIONAL' or 'UNKNOWN' for a granule name, from its dates.
+    """Return BETA, PROVISIONAL or UNKNOWN, preferring recognized CRID over dates."""
+    crid = crid_of(name)
+    if crid:
+        family, version = crid[0], int(crid[1:])
+        if family == "P" and version >= PROVISIONAL_CRID_MIN:
+            return "PROVISIONAL"
+        if family == "X" and version < PROVISIONAL_CRID_MIN:
+            return "BETA"
+        # An unfamiliar CRID may represent a new release policy; do not guess by date.
+        return "UNKNOWN"
 
-    A pair is only as mature as its older acquisition, so both must fall in a
-    window; a pair straddling the release gap would be 'UNKNOWN', not rounded.
-    """
+    # Backward-compatible date fallback only for names without a parseable CRID.
     stamps = STAMP_RE.findall(str(name))
     if len(stamps) < 4:
         return "UNKNOWN"

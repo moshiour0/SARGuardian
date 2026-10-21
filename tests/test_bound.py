@@ -43,9 +43,26 @@ def test_winter_pairs_are_beta_and_summer_pairs_provisional():
 
 
 def test_a_pair_straddling_the_release_gap_is_not_rounded_to_either():
-    """Jan 2026 to Jul 2026 is neither window. Calling it BETA would hide that."""
-    gap = BETA.replace("20251210T233920_20251210T233955", "20260714T233920_20260714T233954")
+    """Date-only fallback preserves UNKNOWN for a pair spanning release windows."""
+    # Strip the CRID to exercise only the backwards-compatible date fallback.
+    gap = BETA.replace("X05010_N_F_J_001", "N_F_J_001").replace(
+        "20251210T233920_20251210T233955", "20260714T233920_20260714T233954"
+    )
+    assert crid_of(gap) == ""
     assert product_maturity(gap) == "UNKNOWN"
+
+
+def test_crid_takes_precedence_over_dates_for_supplemental_provisional():
+    """ASF documents supplemental PROVISIONAL products with earlier acquisitions."""
+    supplemental = ("NISAR_L2_PR_GUNW_009_098_A_016_010_4000_SH_"
+                    "20260103T233921_20260103T233956_20260115T233922_20260115T233956_"
+                    "P05023_N_F_J_001.h5")
+    assert product_maturity(supplemental) == "PROVISIONAL"
+
+
+def test_unknown_recognized_crid_is_not_overridden_by_date_guess():
+    unfamiliar = BETA.replace("X05010", "V05030")
+    assert product_maturity(unfamiliar) == "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
