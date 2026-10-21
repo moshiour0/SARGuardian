@@ -141,9 +141,10 @@ def audit_gunw(path, aoi, radius, coh_min):
                 before = valid.copy()
                 counts["after_mask_ignoring_water"] += int((before & gates["both_subswaths_valid_ignoring_water"]).sum())
                 counts["after_current_reader_mask_gate"] += int((before & gates["current_reader_mask_gate"]).sum())
+                valid &= gates["current_reader_mask_gate"]
             else: counts["mask_missing_or_shape_mismatch"] += 1
             am = make_aoi_mask(xs,ys[rs],aoi,epsg)
-            counts["after_aoi"] += int((valid & (gates["current_reader_mask_gate"] if gates is not None else True) & am).sum())
+            counts["after_aoi"] += int((valid & am).sum())
             aoi_cells += int(am.sum())
             for tid,t in targets.items():
                 if not t["inside_grid_extent"]: continue
