@@ -85,31 +85,17 @@ def track_of(name: str) -> str:
     return ("ASC " if m.group(2) == "A" else "DESC ") + m.group(1)
 
 
-# Product maturity. NISAR products are not all the same quality, and nothing in
-# this repository used to say so. ASF releases them in stages, by ACQUISITION
-# date (nisar-docs.asf.alaska.edu/availability-overview):
-#
-#     BETA         released 27 Feb 2026, acquisitions 17 Oct 2025 - 20 Jan 2026,
-#                  "pre-calibration", with known issues
-#     PROVISIONAL  released 20 Jul 2026, acquisitions from 17 Jun 2026,
-#                  "fully calibrated", validated at a limited set of sites
-#
-# Every winter pair here is BETA and every summer pair PROVISIONAL, so any
-# winter-against-monsoon comparison is ALSO a BETA-against-PROVISIONAL
-# comparison. The two cannot be separated with this archive, and the gap
-# between the two windows (20 Jan - 17 Jun 2026) is a release gap, not a
-# physical one. Classified from the dates rather than from the CRID letter
-# because the CRID encoding is not documented where it can be cited; the CRID
-# is carried alongside so a reader can check.
-# Product maturity. ASF's current NISAR availability guide says CRID is the
-# reliable release identifier and supplemental P05023 products can be reprocessed
-# from acquisitions before 2026-06-17; acquisition dates alone are not authoritative.
-# Sources: https://nisar-docs.asf.alaska.edu/availability-overview/
-#          https://nisar-docs.asf.alaska.edu/provisional-known-issues/
+# Product maturity is inferred from the NISAR Composite Release ID (CRID)
+# first. ASF documents P05023+ as PROVISIONAL and older CRIDs as BETA; selected
+# supplemental PROVISIONAL products can have acquisition dates earlier than
+# 2026-06-17, so dates alone are not authoritative.
+# Sources:
+# https://nisar-docs.asf.alaska.edu/availability-overview/
+# https://nisar-docs.asf.alaska.edu/provisional-known-issues/
 BETA_WINDOW = ("20251017", "20260120")
 PROVISIONAL_FROM = "20260617"
-CRID_RE = re.compile(r"_([A-Z]\\d{5})_[A-Z]_[A-Z]_[A-Z]_\\d{3}")
-STAMP_RE = re.compile(r"_(\\d{8})T\\d{6}")
+CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}")
+STAMP_RE = re.compile(r"_(\d{8})T\d{6}")
 PROVISIONAL_CRID_MIN = 5023
 
 
