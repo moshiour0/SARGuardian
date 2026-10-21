@@ -54,3 +54,33 @@ def test_target4_is_explicitly_inside_source_polygon():
     t=TARGETS["4"]
     assert point_in_ring(t["lon"],t["lat"],AOIS["source"])
     assert not point_in_ring(TARGETS["9"]["lon"],TARGETS["9"]["lat"],AOIS["source"])
+
+
+def test_uint32_product_mask_does_not_treat_bit24_as_decimal_water_code():
+    """A 0x01000000 ionosphere-screen flag must be separate from low-byte digits."""
+    raw = np.array([[
+        11, 12, 111, 16777228, 16777216, 16777340, 255,
+        0x0000010C, 0x0001000C, 0x0200000C,
+    ]], dtype=np.uint32)
+    before = raw.copy()
+    corrected = decode_wrs_mask(raw, apply_iono=True)
+    uncorrected = decode_wrs_mask(raw, apply_iono=False)
+    assert np.array_equal(raw, before)
+    assert corrected["land_valid_subswaths_low_byte"].tolist() == [[
+        True, True, False, True, False, False, False, True, True, True
+    ]]
+    assert corrected["ionosphere_interpolated_mask"].tolist() == [[
+        False, False, False, True, True, True, False, False, False, False
+    ]]
+    assert corrected["anomaly_flags_nonzero"].tolist() == [[
+        False, False, False, False, False, False, False, True, True, False
+    ]]
+    assert corrected["reserved_bits_nonzero"].tolist() == [[
+        False, False, False, False, False, False, False, False, False, True
+    ]]
+    assert corrected["current_reader_mask_gate"].tolist() == [[
+        True, True, False, False, False, False, False, False, False, False
+    ]]
+    assert uncorrected["current_reader_mask_gate"].tolist() == [[
+        True, True, False, True, False, False, False, False, False, False
+    ]]
