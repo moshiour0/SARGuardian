@@ -317,6 +317,59 @@ def build_aoi_mask(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None) -> np
 # ---------------------------------------------------------------------------
 # Core read
 # ---------------------------------------------------------------------------
+# GUNW masks use a 32-bit packed field. Bits 0-7 contain the legacy
+# three-digit water/reference-subswath/secondary-subswath code. Bits 8-15
+# and 16-23 contain secondary/reference anomaly flags; bit 24 flags pixels
+# masked and interpolated in the ionosphere-screen filtering; bits 25-31 are
+# reserved. These definitions are taken from each P05023 HDF5 mask dataset's
+# own `description` attribute and cross-checked against the NISAR product
+# format documentation. Never decode the entire uint32 value as decimal digits.
+GUNW_MASK_LOW_BYTE = 0x000000FF
+GUNW_MASK_ANOMALY_BITS = 0x00FFFF00
+GUNW_MASK_IONOSPHERE_INTERPOLATED = 0x01000000
+GUNW_MASK_RESERVED_BITS = 0xFE000000
+
+
+def decode_gunw_mask(mask: np.ndarray, *, apply_iono: bool = True) -> dict[str, np.ndarray]:
+    """Decode GUNW water/subswath digits and higher-order quality bits separately.
+
+    With ionosphere correction enabled, exclude pixels whose ionosphere-screen
+    values were masked and interpolated. With correction disabled, that
+    screen-only flag is not itself a reason to discard the delivered phase.
+    Anomaly and reserved bits remain conservatively excluded in either mode.
+    """
+    raw = np.asarray(mask)
+    if not np.issubdtype(raw.dtype, np.integer):
+        raise TypeError(f"GUNW mask must have integer dtype; got {raw.dtype}")
+    m = raw.astype(np.uint64, copy=False)
+    low = m & np.uint64(GUNW_MASK_LOW_BYTE)
+    fill = m == 255
+    water = (low // 100) % 10
+    ref_sub = (low // 10) % 10
+    sec_sub = low % 10
+    anomaly = (m & np.uint64(GUNW_MASK_ANOMALY_BITS)) != 0
+    iono_interpolated = (m & np.uint64(GUNW_MASK_IONOSPHERE_INTERPOLATED)) != 0
+    reserved = (m & np.uint64(GUNW_MASK_RESERVED_BITS)) != 0
+    valid_subswaths = (ref_sub > 0) & (sec_sub > 0)
+    land_subswaths = (water == 0) & valid_subswaths & ~fill
+    format_supported = ~reserved
+    base = land_subswaths & ~anomaly & format_supported
+    usable = base & (~iono_interpolated if apply_iono else True)
+    return {
+        "fill_255": fill,
+        "water_flag_nonzero": water != 0,
+        "reference_subswath_zero": ref_sub == 0,
+        "secondary_subswath_zero": sec_sub == 0,
+        "both_subswaths_valid_ignoring_water": valid_subswaths & ~fill,
+        "land_valid_subswaths_low_byte": land_subswaths,
+        "anomaly_flags_nonzero": anomaly,
+        "ionosphere_interpolated_mask": iono_interpolated,
+        "reserved_bits_nonzero": reserved,
+        "usable_mask_for_policy": usable,
+        "current_reader_mask_gate": usable,
+    }
+
+
 def read_gunw(
     path: Path,
     coherence_threshold: float = DEFAULT_COHERENCE,
@@ -432,21 +485,16 @@ def read_gunw(
         valid &= components > 0          # component 0 = not reliably unwrapped
         gates["connected_component>0"] = int(valid.sum())
     if losmask is not None and losmask.shape == valid.shape:
-        # NISAR's GUNW 'mask' is NOT a layover/shadow flag. Per its own
-        # description it is a three-digit code:
-        #     hundreds = water flag in the reference RSLC (1 = water)
-        #     tens     = subswath number in the reference RSLC (0 = invalid)
-        #     units    = subswath number in the secondary RSLC (0 = invalid)
-        # So a usable pixel is dry land that fell inside a real subswath in
-        # BOTH acquisitions. Naively keeping mask == 0 keeps precisely the
-        # pixels that were invalid in both - the exact inverse of what you want.
-        m = losmask.astype(np.int32)
-        water = m // 100
-        ref_sub = (m // 10) % 10
-        sec_sub = m % 10
-        usable = (water == 0) & (ref_sub > 0) & (sec_sub > 0) & (losmask != 255)
-        valid &= usable
-        gates["land + valid subswath"] = int(valid.sum())
+        mask_bits = decode_gunw_mask(losmask, apply_iono=apply_iono)
+        valid &= mask_bits["land_valid_subswaths_low_byte"]
+        gates["land + valid subswath (low-byte code)"] = int(valid.sum())
+        valid &= ~mask_bits["anomaly_flags_nonzero"]
+        gates["reference/secondary anomaly flags clear"] = int(valid.sum())
+        if apply_iono:
+            valid &= ~mask_bits["ionosphere_interpolated_mask"]
+            gates["ionosphere correction not interpolated at pixel"] = int(valid.sum())
+        valid &= ~mask_bits["reserved_bits_nonzero"]
+        gates["reserved mask bits zero"] = int(valid.sum())
 
     # Quality mask WITHOUT the AOI clip. The reference point is usually chosen
     # on stable ground outside the area of interest, so it must not be clipped
@@ -956,7 +1004,8 @@ def export_clipped(result: dict, outdir: Path) -> dict:
 
 
 def find_common_reference(files: list[Path], coherence_threshold: float,
-                          ref_radius_px: int = 5) -> tuple[float, float] | None:
+                          ref_radius_px: int = 5,
+                          apply_iono: bool = True) -> tuple[float, float] | None:
     """
     One reference point for the whole stack, valid in every pair.
 
@@ -1033,8 +1082,7 @@ def find_common_reference(files: list[Path], coherence_threshold: float,
         if conn is not None:
             v &= conn > 0
         if msk is not None and msk.shape == shape:
-            m = msk.astype(np.int32)
-            v &= (m // 100 == 0) & ((m // 10) % 10 > 0) & (m % 10 > 0) & (msk != 255)
+            v &= decode_gunw_mask(msk, apply_iono=apply_iono)["usable_mask_for_policy"]
 
         always = v if always is None else (always & v)
         c = np.nan_to_num(coh, nan=0.0) if coh is not None else np.zeros(shape, np.float32)
@@ -1283,7 +1331,7 @@ def main() -> int:
         if args.common_ref:
             if args.ref_lat is not None or args.ref_lon is not None:
                 logger.warning("--common-ref overrides --ref-lat/--ref-lon.")
-            found = find_common_reference(files, args.coh_threshold, args.ref_radius)
+            found = find_common_reference(files, args.coh_threshold, args.ref_radius, apply_iono=not args.no_iono)
             if not found:
                 logger.error("Cannot establish a common reference; refusing to "
                              "invert pairs on different datums.")
