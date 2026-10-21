@@ -31,20 +31,36 @@ def sha256(path):
             h.update(block)
     return h.hexdigest()
 
-def decode_wrs_mask(raw):
-    """Expose documented decimal digits without rewriting the original codes."""
-    m = np.asarray(raw).astype(np.int64, copy=False)
+def decode_wrs_mask(raw, *, apply_iono=True):
+    """Decode packed GUNW mask fields without converting the whole word to decimal."""
+    raw = np.asarray(raw)
+    if not np.issubdtype(raw.dtype, np.integer):
+        raise TypeError(f"GUNW mask must have integer dtype; got {raw.dtype}")
+    m = raw.astype(np.uint64, copy=False)
+    low = m & np.uint64(0xFF)
     fill = m == 255
-    water = m // 100
-    ref_sub = (m // 10) % 10
-    sec_sub = m % 10
+    water = (low // 100) % 10
+    ref_sub = (low // 10) % 10
+    sec_sub = low % 10
+    anomaly = (m & np.uint64(0x00FFFF00)) != 0
+    iono_interpolated = (m & np.uint64(0x01000000)) != 0
+    reserved = (m & np.uint64(0xFE000000)) != 0
+    both = (ref_sub > 0) & (sec_sub > 0) & ~fill
+    land_subswaths = (water == 0) & both
+    usable = land_subswaths & ~anomaly & ~reserved
+    if apply_iono:
+        usable &= ~iono_interpolated
     return {
         "fill_255": fill,
         "water_flag_nonzero": (water != 0) & ~fill,
         "ref_subswath_zero": (ref_sub == 0) & ~fill,
         "secondary_subswath_zero": (sec_sub == 0) & ~fill,
-        "both_subswaths_valid_ignoring_water": (ref_sub > 0) & (sec_sub > 0) & ~fill,
-        "current_reader_mask_gate": (water == 0) & (ref_sub > 0) & (sec_sub > 0) & ~fill,
+        "both_subswaths_valid_ignoring_water": both,
+        "land_valid_subswaths_low_byte": land_subswaths,
+        "anomaly_flags_nonzero": anomaly,
+        "ionosphere_interpolated_mask": iono_interpolated,
+        "reserved_bits_nonzero": reserved,
+        "current_reader_mask_gate": usable,
     }
 
 def matching(datasets, group, parent, names, shape=None, ndim=2):
@@ -164,7 +180,7 @@ def _mask_numeric_layout_from_hist(histogram, dtype):
     }
 
 
-def audit_gunw(path, aoi, radius, coh_min):
+def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
     result_type = "GUNW"
     with h5py.File(path, "r") as h5:
         d = walk(h5)
@@ -203,13 +219,23 @@ def audit_gunw(path, aoi, radius, coh_min):
                 counts["after_connected_components_gt_0"] += int(valid.sum())
             else: counts["connected_components_dataset_missing"] += 1
             raw_mask = np.asarray(mask_ds[rs,:]) if mask_ds is not None else None
-            gates = decode_wrs_mask(raw_mask) if raw_mask is not None and raw_mask.shape == phase.shape else None
+            gates = decode_wrs_mask(raw_mask, apply_iono=apply_iono) if raw_mask is not None and raw_mask.shape == phase.shape else None
             if gates is not None:
                 hist_update(mhist,raw_mask)
                 before = valid.copy()
                 counts["after_mask_ignoring_water"] += int((before & gates["both_subswaths_valid_ignoring_water"]).sum())
-                counts["after_current_reader_mask_gate"] += int((before & gates["current_reader_mask_gate"]).sum())
-                valid &= gates["current_reader_mask_gate"]
+                valid &= gates["land_valid_subswaths_low_byte"]
+                counts["after_land_valid_subswaths_low_byte"] += int(valid.sum())
+                valid &= ~gates["anomaly_flags_nonzero"]
+                counts["after_anomaly_flags_clear"] += int(valid.sum())
+                if apply_iono:
+                    valid &= ~gates["ionosphere_interpolated_mask"]
+                    counts["after_iono_interpolated_mask_excluded"] += int(valid.sum())
+                else:
+                    counts["iono_interpolated_pixels_retained_no_iono"] += int((valid & gates["ionosphere_interpolated_mask"]).sum())
+                valid &= ~gates["reserved_bits_nonzero"]
+                counts["after_reserved_bits_clear"] += int(valid.sum())
+                counts["after_current_reader_mask_gate"] += int(valid.sum())
             else: counts["mask_missing_or_shape_mismatch"] += 1
             am = make_aoi_mask(xs,ys[rs],aoi,epsg)
             counts["after_aoi"] += int((valid & am).sum())
@@ -231,7 +257,17 @@ def audit_gunw(path, aoi, radius, coh_min):
                 if gates is not None:
                     gm={k:v[local_sl,cc] for k,v in gates.items()}
                     tc["after_mask_ignoring_water"] += int((pv & gm["both_subswaths_valid_ignoring_water"]).sum())
-                    pv &= gm["current_reader_mask_gate"]
+                    pv &= gm["land_valid_subswaths_low_byte"]
+                    tc["after_land_valid_subswaths_low_byte"] += int(pv.sum())
+                    pv &= ~gm["anomaly_flags_nonzero"]
+                    tc["after_anomaly_flags_clear"] += int(pv.sum())
+                    if apply_iono:
+                        pv &= ~gm["ionosphere_interpolated_mask"]
+                        tc["after_iono_interpolated_mask_excluded"] += int(pv.sum())
+                    else:
+                        tc["iono_interpolated_pixels_retained_no_iono"] += int((pv & gm["ionosphere_interpolated_mask"]).sum())
+                    pv &= ~gm["reserved_bits_nonzero"]
+                    tc["after_reserved_bits_clear"] += int(pv.sum())
                     tc["after_current_reader_mask_gate"] += int(pv.sum())
                     hist_update(tmaskhist[tid],raw_mask[local_sl,cc])
                 pv &= aoi_sl; tc["after_aoi"] += int(pv.sum())
@@ -258,7 +294,7 @@ def audit_gunw(path, aoi, radius, coh_min):
             "x_dataset_metadata":_dataset_metadata(h5, xp),
             "y_dataset_metadata":_dataset_metadata(h5, yp),
             "x_dataset":xp,"y_dataset":yp,"epsg":epsg,"shape":list(shape),"attributes":attrs,
-            "thresholds":{"coherence_min":coh_min,"radius_px":radius,"requested_aoi":aoi},
+            "thresholds":{"coherence_min":coh_min,"radius_px":radius,"requested_aoi":aoi,"apply_iono":apply_iono},
             "global_stage_counts":dict(counts),"global_source_aoi_grid_cells":aoi_cells,
             "global_raw_mask_histogram":dict(mhist),"targets":target_obj,
             "warnings":[
@@ -324,7 +360,7 @@ def main():
     ap.add_argument("files",nargs="+",type=Path)
     ap.add_argument("--aoi",choices=sorted(AOIS),default="source")
     ap.add_argument("--radius",type=int,default=6)
-    ap.add_argument("--coherence",type=float,default=0.3)
+    ap.add_argument("--coherence",type=float,default=0.3)\n    ap.add_argument("--no-iono",action="store_true",help="diagnose without ionosphere correction; retain the screen-only mask bit")
     ap.add_argument("--correlation",type=float,default=0.3)
     ap.add_argument("--snr",type=float,default=3.0)
     ap.add_argument("--out",type=Path,default=Path("outputs/target49_gate_diagnostic.json"))
@@ -334,7 +370,7 @@ def main():
         "target_coordinates":TARGETS,"limits":["Diagnostic stage counts are not validation of geophysical truth."],"results":[],"errors":[]}
     for path in args.files:
         try:
-            item=audit_gunw(path,args.aoi,args.radius,args.coherence) if "GUNW" in path.name.upper() else audit_goff(path,args.aoi,args.radius,args.correlation,args.snr)
+            item=audit_gunw(path,args.aoi,args.radius,args.coherence,apply_iono=not args.no_iono) if "GUNW" in path.name.upper() else audit_goff(path,args.aoi,args.radius,args.correlation,args.snr)
             report["results"].append(item); print("PASS diagnostic",path.name,item["type"],item["sha256"])
         except Exception as exc:
             report["errors"].append({"file":path.name,"type":type(exc).__name__,"message":str(exc)})
