@@ -96,6 +96,54 @@ def make_aoi_mask(xs, ys, aoi, epsg):
     if m is None: raise ValueError("Cannot build AOI mask; check pyproj and the product EPSG code")
     return m
 
+def _json_safe(value):
+    """Convert HDF5 attribute values to JSON while preserving scalar/array data."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, np.ndarray):
+        return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _dataset_metadata(h5, path):
+    if not path or path not in h5:
+        return None
+    ds = h5[path]
+    return {
+        "path": path,
+        "dtype": str(ds.dtype),
+        "shape": list(ds.shape),
+        "attrs": {str(k): _json_safe(v) for k, v in ds.attrs.items()},
+        "parent_group_attrs": {str(k): _json_safe(v) for k, v in ds.parent.attrs.items()},
+    }
+
+
+def _mask_numeric_layout(mask):
+    """Report raw number decomposition only; does not assign scientific meaning."""
+    flat = np.asarray(mask).astype(np.uint64, copy=False).ravel()
+    low_byte = flat & np.uint64(0xFF)
+    high_word = flat & np.uint64(0xFFFFFF00)
+    return {
+        "dtype": str(np.asarray(mask).dtype),
+        "high_word_histogram_hex": {
+            f"0x{int(k):08x}": int(v) for k, v in sorted(Counter(high_word.tolist()).items())
+        },
+        "low_byte_histogram_decimal": {
+            str(k): int(v) for k, v in sorted(Counter(low_byte.tolist()).items())
+        },
+        "bit_set_counts_lsb0": {
+            str(bit): int(((flat >> np.uint64(bit)) & np.uint64(1)).sum())
+            for bit in range(32)
+            if np.any((flat >> np.uint64(bit)) & np.uint64(1))
+        },
+        "warning": "Numeric decomposition only; do not infer mask semantics without product-format verification.",
+    }
+
+
 def audit_gunw(path, aoi, radius, coh_min):
     result_type = "GUNW"
     with h5py.File(path, "r") as h5:
@@ -182,6 +230,13 @@ def audit_gunw(path, aoi, radius, coh_min):
             "crid":next((x for x in re.findall(r"_([A-Z]\d{5})_",path.name)),None),
             "phase_dataset":pphase,"coherence_dataset":coh,"components_dataset":comp,"mask_dataset":mask,
             "mask_dtype":str(mask_ds.dtype) if mask_ds is not None else None,
+            "mask_dataset_metadata":_dataset_metadata(h5, mask),
+            "           mask_numeric_layout_sampled_rows":_mask_numeric_layout(mask_ds[::CHUNK_ROWS, :] if mask_ds is not None else np.array([], dtype=np.uint8)),
+            "phase_dataset_metadata":_dataset_metadata(h5, pphase),
+            "coherence_dataset_metadata":_dataset_metadata(h5, coh),
+            "components_dataset_metadata":_dataset_metadata(h5, comp),
+            "x_dataset_metadata":_dataset_metadata(h5, xp),
+            "y_dataset_metadata":_dataset_metadata(h5, yp),
             "x_dataset":xp,"y_dataset":yp,"epsg":epsg,"shape":list(shape),"attributes":attrs,
             "thresholds":{"coherence_min":coh_min,"radius_px":radius,"requested_aoi":aoi},
             "global_stage_counts":dict(counts),"global_source_aoi_grid_cells":aoi_cells,
