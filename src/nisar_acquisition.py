@@ -126,6 +126,48 @@ ACQUISITION = ["RSLC", "GSLC", "GCOV"]
 # ---------------------------------------------------------------------------
 # Catalogue search - stdlib only, no credentials
 # ---------------------------------------------------------------------------
+def _sensitive_error_key(key: object) -> bool:
+    """Recognise secret-bearing JSON keys independent of quoting/case/separators."""
+    normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+    return normalized in {
+        "password", "passwd", "passphrase", "token", "accesstoken",
+        "refreshtoken", "authorization", "clientsecret", "secret",
+        "apikey", "cookie", "setcookie",
+    }
+
+
+def _redact_error_payload(value):
+    """Redact secret-bearing values from nested JSON error responses."""
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if _sensitive_error_key(key) else _redact_error_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_error_payload(item) for item in value]
+    return value
+
+
+def _sanitize_error_body(raw: str) -> str:
+    """Keep useful API diagnostics while removing URLs and secret values."""
+    body = re.sub(r"https?://[^\s\"'<>]+", "[URL]", raw)
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        payload = None
+
+    if isinstance(payload, (dict, list)):
+        body = json.dumps(_redact_error_payload(payload), ensure_ascii=False, separators=(",", ":"))
+    else:
+        # Covers JSON-like and plain-text key/value strings, including quoted JSON keys.
+        body = re.sub(
+            r"""(?ix)(["']?(?:password|passwd|passphrase|token|access[_-]?token|refresh[_-]?token|authorization|client[_-]?secret|secret|api[_-]?key|cookie|set-cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;\s<>]+)""",
+            r"\1[REDACTED]",
+            body,
+        )
+    return re.sub(r"\s+", " ", body).strip()[:350]
+
+
 def _get(url: str, retries: int = 4) -> dict | list:
     """GET with exponential backoff, so an unattended cron survives a blip."""
     delay = 2.0
@@ -140,13 +182,7 @@ def _get(url: str, retries: int = 4) -> dict | list:
                     body = exc.read(4096).decode("utf-8", errors="replace").strip()
                 except Exception:
                     body = ""
-                body = re.sub(r"https?://[^\s\"'<>]+", "[URL]", body)
-                body = re.sub(
-                    r"(?i)\b(password|passwd|token|access[_-]?token|refresh[_-]?token|authorization)\b\s*[:=]\s*[^,;\s<>]+",
-                    r"\1=[REDACTED]",
-                    body,
-                )
-                body = re.sub(r"\s+", " ", body).strip()[:350]
+                body = _sanitize_error_body(body)
                 last = RuntimeError(f"HTTP Error {exc.code}: {body or exc.reason}")
             else:
                 last = exc
@@ -155,7 +191,6 @@ def _get(url: str, retries: int = 4) -> dict | list:
                 time.sleep(delay)
                 delay *= 2
     raise RuntimeError(f"ASF query failed after {retries} attempts: {last}")
-
 
 def asf_query(warn_on_cap: bool = True, **params) -> list[dict]:
     """
