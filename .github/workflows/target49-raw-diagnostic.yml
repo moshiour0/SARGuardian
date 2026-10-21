@@ -51,6 +51,17 @@ jobs:
             python tools/download_target49_products.py --profile target4-9-focused --outdir data/target49_raw
           else
             echo "RAW_HDF5_DIAGNOSTIC_SKIPPED: Configure EARTHDATA_TOKEN or EARTHDATA_USERNAME and EARTHDATA_PASSWORD repository secrets." | tee -a "${GITHUB_STEP_SUMMARY}"
+            python - <<'PY'
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+Path("outputs/raw_hdf5_status.json").write_text(json.dumps({
+    "status": "skipped_auth_not_configured",
+    "created_utc": datetime.now(timezone.utc).isoformat(),
+    "downloaded_raw_hdf5": False,
+    "reason": "No Earthdata token/username/password repository secret is configured for this run."
+}, indent=2) + "\\n", encoding="utf-8")
+PY
             exit 0
           fi
           shopt -s nullglob
@@ -70,6 +81,7 @@ jobs:
           path: |
             outputs/target49_source_aoi.json
             outputs/target49_langtang_aoi.json
+            outputs/raw_hdf5_status.json
             data/target49_raw/download_manifest.json
           if-no-files-found: ignore
           retention-days: 14
