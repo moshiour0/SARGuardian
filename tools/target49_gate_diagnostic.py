@@ -144,6 +144,26 @@ def _mask_numeric_layout(mask):
     }
 
 
+def _mask_numeric_layout_from_hist(histogram, dtype):
+    """Exact bit/byte summary reconstructed from the complete raw-value histogram."""
+    high, low, bits = Counter(), Counter(), Counter()
+    for raw, count in histogram.items():
+        v, n = int(raw), int(count)
+        high[f"0x{(v & 0xFFFFFF00):08x}"] += n
+        low[str(v & 0xFF)] += n
+        for bit in range(32):
+            if v & (1 << bit):
+                bits[str(bit)] += n
+    return {
+        "dtype": str(dtype),
+        "high_word_histogram_hex": dict(sorted(high.items())),
+        "low_byte_histogram_decimal": dict(sorted(low.items(), key=lambda kv: int(kv[0]))),
+        "bit_set_counts_lsb0": dict(sorted(bits.items(), key=lambda kv: int(kv[0]))),
+        "coverage": "exact; derived from full-file raw mask histogram",
+        "warning": "Numeric decomposition only; no bit/byte semantics inferred.",
+    }
+
+
 def audit_gunw(path, aoi, radius, coh_min):
     result_type = "GUNW"
     with h5py.File(path, "r") as h5:
