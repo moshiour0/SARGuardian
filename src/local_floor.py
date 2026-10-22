@@ -280,8 +280,8 @@ def point_in_aoi(lon: float, lat: float, aoi_name: str) -> bool:
     return point_in_ring(lon, lat, AOIS[aoi_name])
 
 
-def infer_aoi_from_dir(directory: str | Path) -> str | None:
-    """Infer AOI from exact path tokens; ambiguous folder names require --aoi."""
+def aoi_tokens_from_dir(directory: str | Path) -> set[str]:
+    """Return exact AOI markers in a folder basename; never infer by substring."""
     tokens = set(filter(None, re.split(r"[^a-z0-9]+", Path(directory).name.lower())))
     found = set()
     if "source" in tokens or "src" in tokens:
@@ -290,6 +290,12 @@ def infer_aoi_from_dir(directory: str | Path) -> str | None:
         found.add("langtang")
     if "lhende" in tokens:
         found.add("lhende")
+    return found
+
+
+def infer_aoi_from_dir(directory: str | Path) -> str | None:
+    """Infer AOI only when the directory names exactly one polygon."""
+    found = aoi_tokens_from_dir(directory)
     return next(iter(found)) if len(found) == 1 else None
 
 
@@ -382,9 +388,15 @@ def main() -> int:
     else:
         ap.error("give --lat and --lon, or --targets")
 
-    aoi_name = args.aoi or infer_aoi_from_dir(args.dir)
-    if aoi_name is None:
+    folder_aois = aoi_tokens_from_dir(args.dir)
+    if len(folder_aois) > 1:
+        ap.error(f"--dir name contains conflicting AOI markers {sorted(folder_aois)}; use a dedicated export directory.")
+    inferred_aoi = next(iter(folder_aois)) if folder_aois else None
+    if args.aoi is None and inferred_aoi is None:
         ap.error("could not infer AOI from --dir; pass --aoi source|langtang|lhende explicitly")
+    if args.aoi is not None and inferred_aoi is not None and args.aoi != inferred_aoi:
+        ap.error(f"--aoi {args.aoi!r} conflicts with the AOI marker in --dir ({inferred_aoi!r}); use matching exports.")
+    aoi_name = args.aoi or inferred_aoi
     if aoi_name == "lhende" and not args.allow_event_affected_aoi:
         ap.error("LHENDE is an event-affected runout/impoundment corridor, not a stable-ground control; pass --allow-event-affected-aoi only for an explicitly justified analysis.")
     if aoi_name == "lhende":
