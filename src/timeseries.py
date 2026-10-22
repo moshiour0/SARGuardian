@@ -48,6 +48,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import re
 import sys
 from collections import defaultdict
@@ -65,31 +66,82 @@ from paths import NISAR, resolve  # noqa: E402
 
 EVENT_DATE = date(2026, 8, 26)
 
+GRANULE_HEAD_RE = re.compile(
+    r"^NISAR_L2_(?P<processing>PR|UR)_(?P<product>GUNW|GOFF)_"
+    r"(?P<cycle>\d+)_(?P<path>\d+)_(?P<direction>[AD])_"
+    r"(?P<frame>\d+)_(?P<subswath>\d+)_(?P<bandwidth>\d+)_"
+    r"(?P<polarisation>[A-Z]{2})_"
+)
+CRID_TAIL_RE = re.compile(
+    r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}(?:\.h5)?$", re.IGNORECASE
+)
+
+
+def granule_metadata(name: str) -> dict | None:
+    """Parse exact NISAR L2 footprint and processing/release identity."""
+    basename = Path(str(name)).name
+    match = GRANULE_HEAD_RE.match(basename)
+    if not match:
+        return None
+    fields = match.groupdict()
+    for key in ("cycle", "path", "frame", "subswath", "bandwidth"):
+        fields[key] = int(fields[key])
+    crid_match = CRID_TAIL_RE.search(basename)
+    fields["crid"] = crid_match.group(1).upper() if crid_match else "UNKNOWN"
+    return fields
+
 
 # ---------------------------------------------------------------------------
 # Pair inventory
 # ---------------------------------------------------------------------------
 class Pair:
-    """One interferogram: a measured difference between two epochs."""
+    """One interferogram with explicit spatial footprint and processing identity."""
 
-    __slots__ = ("path", "direction", "ref", "sec", "value", "n_px", "coherence", "source")
+    __slots__ = (
+        "path", "direction", "ref", "sec", "value", "n_px", "coherence", "source",
+        "product", "cycle", "frame", "subswath", "bandwidth", "polarisation",
+        "crid", "processing",
+    )
 
-    def __init__(self, path, direction, ref, sec, value=None, n_px=None, coherence=None, source=""):
+    def __init__(self, path, direction, ref, sec, value=None, n_px=None,
+                 coherence=None, source="", metadata=None):
         self.path = path
         self.direction = direction
         self.ref = ref
         self.sec = sec
-        self.value = value          # mm, region mean, filled by --invert
+        self.value = value
         self.n_px = n_px
         self.coherence = coherence
         self.source = source
+        meta = metadata or granule_metadata(source) or {}
+        for key in ("product", "cycle", "frame", "subswath", "bandwidth",
+                    "polarisation", "crid", "processing"):
+            setattr(self, key, meta.get(key))
 
     @property
     def span_days(self) -> int:
         return (self.sec - self.ref).days
 
+    def network_key(self) -> tuple:
+        """Separate frame/subswath/release series; never silently cross a CRID."""
+        if self.frame is None:
+            return (self.direction, self.path, None, None, None, None, None, self.product)
+        return (self.direction, self.path, self.frame, self.subswath,
+                self.bandwidth, self.polarisation, self.crid, self.product)
+
+    def network_label(self, *, short: bool = False) -> str:
+        label = f"{'ASCENDING' if self.direction == 'A' else 'DESCENDING'} path {self.path}"
+        if self.frame is not None:
+            label += (f" frame {self.frame} subswath {self.subswath} "
+                      f"bandwidth {self.bandwidth} pol {self.polarisation}")
+        if self.crid and self.crid != "UNKNOWN":
+            label += f" CRID {self.crid}"
+        if self.product:
+            label += f" {self.product}"
+        return label.replace("ASCENDING", "ASC").replace("DESCENDING", "DESC") if short else label
+
     def __repr__(self):
-        return f"<{self.direction}{self.path} {self.ref}->{self.sec}>"
+        return f"<{self.network_label()} {self.ref}->{self.sec}>"
 
 
 def pairs_from_granule_names(names: list[str], paths: list, directions: list) -> list[Pair]:
@@ -98,17 +150,15 @@ def pairs_from_granule_names(names: list[str], paths: list, directions: list) ->
         stamps = re.findall(r"_(\d{8})T\d{6}", name)
         if len(stamps) < 4:
             continue
-        out.append(
-            Pair(
-                path=path,
-                direction=(direction or "?")[0],
-                ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
-                sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
-                source=name,
-            )
-        )
+        metadata = granule_metadata(name)
+        out.append(Pair(
+            path=path,
+            direction=(direction or (metadata or {}).get("direction") or "?")[0],
+            ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
+            sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
+            source=name, metadata=metadata,
+        ))
     return out
-
 
 def pairs_from_catalogue() -> list[Pair]:
     """Query ASF for GUNW pairs over the AOI without downloading anything."""
