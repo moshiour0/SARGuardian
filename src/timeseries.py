@@ -470,6 +470,7 @@ def pairs_from_dir(directory: Path, product: str = "GUNW") -> list[Pair]:
         if len(stamps) < 4 or not m:
             logger.warning("Cannot parse %s", fp.name)
             continue
+        metadata = granule_metadata(fp.name)
         out.append(
             Pair(
                 path=int(m.group(1)),
@@ -477,6 +478,7 @@ def pairs_from_dir(directory: Path, product: str = "GUNW") -> list[Pair]:
                 ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
                 sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
                 source=str(fp),
+                metadata=metadata,
             )
         )
     return out
@@ -512,16 +514,19 @@ def connected_components(pairs: list[Pair]) -> list[list[date]]:
 
 def describe_network(pairs: list[Pair]) -> dict:
     by_geom: dict[tuple, list[Pair]] = defaultdict(list)
+    representative: dict[tuple, Pair] = {}
     for p in pairs:
-        by_geom[(p.direction, p.path)].append(p)
+        key = p.network_key()
+        by_geom[key].append(p)
+        representative.setdefault(key, p)
 
-    print(f"\n{len(pairs)} interferograms across {len(by_geom)} geometries\n")
+    print(f"\n{len(pairs)} interferograms across {len(by_geom)} spatial/release networks\n")
     summary = {}
 
-    for (direction, path), group in sorted(by_geom.items()):
+    for key, group in sorted(by_geom.items(), key=lambda item: str(item[0])):
         comps = connected_components(group)
         epochs = sorted({e for p in group for e in (p.ref, p.sec)})
-        label = f"{'ASCENDING' if direction == 'A' else 'DESCENDING'} path {path}"
+        label = representative[key].network_label()
         print("=" * 68)
         print(f"{label}   {len(group)} pairs, {len(epochs)} epochs, "
               f"{len(comps)} connected component(s)")
@@ -827,14 +832,14 @@ def apply_common_datum(pairs: list[Pair], lattices: dict, target_lat, target_lon
     groups: dict[tuple, list[Pair]] = defaultdict(list)
     for p in pairs:
         if id(p) in lattices:
-            groups[(p.direction, p.path)].append(p)
+            groups[p.network_key()].append(p)
 
-    for (direction, path), group in sorted(groups.items()):
+    for key, group in sorted(groups.items(), key=lambda item: str(item[0])):
+        label = group[0].network_label()
         stack = [lattices[id(p)][0] for p in group]
         _, grid, epsg = lattices[id(group[0])]
         if any(lattices[id(p)][0].shape != stack[0].shape for p in group):
-            logger.error("%s path %s: pairs landed on different lattices - no "
-                         "common datum", direction, path)
+            logger.error("%s: pairs landed on different lattices - no common datum", label)
             continue
         centre = None
         if target_lat is not None and target_lon is not None:
@@ -851,11 +856,11 @@ def apply_common_datum(pairs: list[Pair], lattices: dict, target_lat, target_lon
         try:
             fixed, consts = rereference(stack, stable)
         except ValueError as exc:
-            logger.error("%s path %s: %s - no common datum, pairs left unmeasured",
-                         direction, path, exc)
+            logger.error("%s: %s - no common datum, pairs left unmeasured",
+                         label, exc)
             continue
-        logger.info("%s path %s: common datum on %d px valid in all %d pairs",
-                    direction, path, int(stable.sum()), len(group))
+        logger.info("%s: common datum on %d px valid in all %d pairs",
+                    label, int(stable.sum()), len(group))
         for p, f, k in zip(group, fixed, consts):
             if centre is not None:
                 p.value, n = window_median(f, centre, radius_px)
@@ -1052,11 +1057,12 @@ def main() -> int:
 
     by_geom = defaultdict(list)
     for p in pairs:
-        by_geom[(p.direction, p.path)].append(p)
+        by_geom[p.network_key()].append(p)
 
     all_rows: list[dict] = []
-    for (direction, path), group in sorted(by_geom.items()):
-        label = f"{'ASC' if direction == 'A' else 'DESC'} path {path}"
+    representatives = {key: group[0] for key, group in by_geom.items()}
+    for key, group in sorted(by_geom.items(), key=lambda item: str(item[0])):
+        label = representatives[key].network_label(short=True)
         for k, comp in enumerate(connected_components(group), 1):
             inside = [p for p in group if p.ref in comp and p.sec in comp]
             all_rows += report_series(label, k, invert_component(inside, comp))
