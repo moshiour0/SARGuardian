@@ -24,8 +24,11 @@ def test_source_aoi_reports_target9_outside_without_relabeling_it_as_raw_no_data
     file=tmp_path/"synthetic_NISAR_L2_PR_GUNW.h5"
     tf=Transformer.from_crs(4326,32645,always_xy=True)
     x0,y0=tf.transform(85.47591,28.25460)
-    xs=x0+(np.arange(13)-6)*80.0
-    ys=y0+(6-np.arange(13))*80.0
+    # A wider synthetic grid makes the square target window intersect
+    # SOURCE_RING even though Target 9's centre is outside it. This reproduces
+    # the real GOFF case where one nearby in-AOI pixel must not qualify T9.
+    xs=x0+(np.arange(13)-6)*100.0
+    ys=y0+(6-np.arange(13))*100.0
     prefix="science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram"
     group=f"{prefix}/HH"
     with h5py.File(file,"w") as f:
@@ -47,10 +50,12 @@ def test_source_aoi_reports_target9_outside_without_relabeling_it_as_raw_no_data
     assert t9["has_finite_nonzero_phase_support"] is True
     assert t9["has_connected_component_support"] is True
     assert t9["has_current_reader_mask_support"] is True
+    assert t9["has_nearby_aoi_gated_support"] is True
     assert t9["has_aoi_gated_support"] is False
+    assert t9["has_target_point_support"] is False
     assert t9["cumulative_stage_counts"]["finite_nonzero_phase"]==169
     assert t9["cumulative_stage_counts"]["after_current_reader_mask_gate"]==168
-    assert t9["cumulative_stage_counts"]["after_aoi"] < 168
+    assert 0 < t9["cumulative_stage_counts"]["after_aoi"] < 168
     assert "mask_numeric_layout_sampled_rows" in result
     assert "mask_numeric_layout_exact" in result
     assert not any(key.startswith(" ") for key in result)
