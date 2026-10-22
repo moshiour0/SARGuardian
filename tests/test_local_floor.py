@@ -306,3 +306,34 @@ def test_floor_provenance_rejects_raster_without_resolvable_crs(tmp_path):
     )
     with pytest.raises(ValueError, match="CRS/EPSG metadata"):
         validate_export_provenance([unreferenced], "source")
+
+
+def test_zero_local_mad_is_not_published_as_zero_instrument_noise():
+    from local_floor import detection_floor, floor_ci
+
+    constant = np.full((13, 13), 5.0)
+    aoi = np.random.default_rng(20261022).normal(0.0, 20.0, (100, 100))
+    result = compare(aoi, constant, 12.0)
+
+    assert np.isnan(detection_floor(constant, 12.0))
+    assert not result["usable"]
+    assert result["status"] == "DEGENERATE_LOCAL_MAD"
+    assert np.isnan(result["local_floor_mm_day"])
+    lo, hi = floor_ci(constant.ravel(), 12.0)
+    assert np.isnan(lo) and np.isnan(hi)
+
+
+def test_zero_aoi_mad_does_not_turn_a_valid_local_floor_into_zero():
+    from local_floor import detection_floor
+
+    aoi = np.full((130, 130), 5.0)
+    window_values = np.random.default_rng(20261023).normal(0.0, 30.0, (13, 13))
+    result = compare(aoi, window_values, 12.0)
+
+    assert result["usable"]
+    assert np.isfinite(result["local_floor_mm_day"])
+    assert result["local_floor_mm_day"] > 0
+    assert np.isnan(detection_floor(aoi, 12.0))
+    assert np.isnan(result["aoi_floor_mm_day"])
+    assert np.isnan(result["ratio"])
+    assert result["status"] == "MEASURED_LOCAL_FLOOR_AOI_MAD_UNUSABLE"
