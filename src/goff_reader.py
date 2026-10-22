@@ -425,16 +425,33 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
 
     for name, L in sorted(res["layers"].items()):
         valid = L["valid"]
-        if not valid.any() or L["xs"] is None:
-            continue
+        if L["xs"] is None or L["ys"] is None:
+            raise RuntimeError(f"{name}: cannot export GOFF layer without x/y coordinates.")
+        if L["epsg"] is None:
+            raise RuntimeError(f"{name}: cannot export GOFF layer without EPSG/CRS metadata.")
+        if valid.ndim != 2 or any(
+            value is not None and np.asarray(value).shape != valid.shape
+            for value in (L["rng"], L["azi"], L["corr"])
+        ):
+            raise RuntimeError(f"{name}: GOFF export arrays do not share the validity-mask shape.")
+
         # Fixed AOI grid, so two layers or two pairs over the same ground come
         # out the same size and can be differenced. See gunw_reader.aoi_grid.
         grid = _g.aoi_grid(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
-
-        rows_any = valid.any(axis=1)
-        cols_any = valid.any(axis=0)
-        r0, r1 = int(np.argmax(rows_any)), int(len(rows_any) - np.argmax(rows_any[::-1]))
-        c0, c1 = int(np.argmax(cols_any)), int(len(cols_any) - np.argmax(cols_any[::-1]))
+        aoi_mask = None
+        if grid is None:
+            # A non-lattice product must still be represented if it covers the
+            # AOI, even if no offset pixel passes quality gates.
+            aoi_mask = build_aoi_mask(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
+            if not aoi_mask.any():
+                logger.warning("%s has no AOI grid cells; no clipped raster can represent this AOI.", name)
+                out.append({"layer": name, "export_file": "", "export_status": "NO_AOI_GRID_COVERAGE",
+                            "export_valid_px": 0, "export_rows": 0, "export_cols": 0})
+                continue
+            rows_any = np.any(aoi_mask, axis=1)
+            cols_any = np.any(aoi_mask, axis=0)
+            r0, r1 = int(np.argmax(rows_any)), int(len(rows_any) - np.argmax(rows_any[::-1]))
+            c0, c1 = int(np.argmax(cols_any)), int(len(cols_any) - np.argmax(cols_any[::-1]))
 
         def band(key, scale=1.0):
             if L.get(key) is None:
@@ -451,8 +468,6 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         if not bands:
             continue
 
-        if grid is not None:
-            transform = grid["transform"]
         else:
             xs, ys = L["xs"][c0:c1], L["ys"][r0:r1]
             resx = abs(float(L["xs"][1] - L["xs"][0]))
@@ -461,6 +476,8 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                                     float(ys.max()) + resy / 2, resx, resy)
             if ys[0] < ys[-1]:
                 bands = [(np.flipud(a), d) for a, d in bands]
+        valid_export_px = int(np.isfinite(bands[0][0]).sum())
+        export_status = "WRITTEN" if valid_export_px else "NO_VALID_PIXELS"
 
         safe = name.replace("/", "-")
         target = outdir / (f"GOFF_{res['reference_date']}_{res['secondary_date']}"
@@ -481,13 +498,22 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                             correlation_min=str(res["correlation_min"]),
                             snr_min=str(res["snr_min"]),
                             cull_sigma=str(res["cull_sigma"]),
+                            export_status=export_status,
+                            valid_pixel_count=str(valid_export_px),
+                            grid_policy=("common_aoi_lattice" if grid is not None else "per_product_aoi_window_not_common_lattice"),
                             crid=_g.crid_of(res["file"]),
                             maturity=_g.product_maturity(res["file"]))
         mb = target.stat().st_size / 1024 / 1024
         logger.info("Exported %s  %dx%d  %.2f MB", target.name,
                     bands[0][0].shape[0], bands[0][0].shape[1], mb)
         out.append({"layer": name, "export_file": target.name,
-                    "export_mb": round(mb, 3)})
+                    "export_mb": round(mb, 3),
+                    "export_rows": bands[0][0].shape[0],
+                    "export_cols": bands[0][0].shape[1],
+                    "export_valid_px": valid_export_px,
+                    "export_status": export_status,
+                    "export_grid_policy": ("common_aoi_lattice" if grid is not None
+                                           else "per_product_aoi_window_not_common_lattice")})
     return out
 
 
