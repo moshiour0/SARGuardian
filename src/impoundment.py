@@ -96,7 +96,7 @@ NB = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
 # DEM loading
 # ---------------------------------------------------------------------------
 API_ENDPOINT = "https://api.opentopodata.org/v1/srtm30m"
-API_CACHE_SCHEMA = 1
+API_CACHE_SCHEMA = 2
 
 
 def api_grid_shape(bbox, target_cells: int = 12000) -> tuple[int, int, float]:
@@ -146,6 +146,10 @@ def _validate_elevation_grid(z, lats, lons, bbox) -> None:
         raise ValueError("DEM cache must contain a 2-D elevation grid and 1-D axes.")
     if z.shape != (lats.size, lons.size) or min(z.shape) < 2:
         raise ValueError(f"DEM shape {z.shape} does not match coordinate axes ({lats.size}, {lons.size}).")
+    # NaN represents an API/DEM no-data cell. +/-Inf is never a valid elevation
+    # and must not flow into slopes, depression filling, or pool volumes.
+    if np.isinf(z).any():
+        raise ValueError("DEM grid contains infinite elevations; refusing the hydrology calculation.")
     if not (np.all(np.isfinite(lats)) and np.all(np.isfinite(lons)) and np.isfinite(z).any()):
         raise ValueError("DEM grid has invalid coordinate axes or no finite elevation samples.")
     if not (np.all(np.diff(lats) < 0) and np.all(np.diff(lons) > 0)):
@@ -214,6 +218,33 @@ def _save_api_cache(path: Path, z, lats, lons, bbox, target_cells: int) -> None:
     logger.info("Saved fixed DEM grid %s sha256=%s", path, metadata["grid_sha256"])
 
 
+def _api_coordinate_axes(bbox, ny: int, nx: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return exactly the coordinate grid sent to the API, at its 5-decimal precision.
+
+    Requests are serialized to five decimal places; storing the unrounded
+    linspace axes made provenance slightly disagree with the actual SRTM sample
+    locations. Axes are rounded inward to stay inside the requested AOI bbox.
+    If the requested grid is finer than the API coordinate precision, refuse
+    instead of silently duplicating coordinates.
+    """
+    west, south, east, north = map(float, bbox)
+    scale = 100_000.0
+    west_i = math.ceil(west * scale) / scale
+    east_i = math.floor(east * scale) / scale
+    south_i = math.ceil(south * scale) / scale
+    north_i = math.floor(north * scale) / scale
+    if not (west_i < east_i and south_i < north_i):
+        raise ValueError("AOI bbox is narrower than OpenTopoData's five-decimal coordinate precision.")
+    lats = np.clip(np.round(np.linspace(north, south, ny), 5), south_i, north_i)
+    lons = np.clip(np.round(np.linspace(west, east, nx), 5), west_i, east_i)
+    if (not np.all(np.diff(lats) < 0) or not np.all(np.diff(lons) > 0)):
+        raise ValueError(
+            f"Requested {ny}x{nx} grid is finer than the API's 0.00001-degree coordinate precision; "
+            "reduce --cells to avoid duplicate sampling locations."
+        )
+    return lats, lons
+
+
 def dem_from_api(bbox, target_cells: int = 12000, cache_path: Path | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Sample SRTM 30 m through OpenTopoData, optionally pinning the exact grid.
 
@@ -224,10 +255,7 @@ def dem_from_api(bbox, target_cells: int = 12000, cache_path: Path | None = None
     if cache_path is not None and cache_path.exists():
         return _load_api_cache(cache_path, bbox, target_cells)
 
-    lon0, lat0, lon1, lat1 = map(float, bbox)
-    h_km = (lat1 - lat0) * 110.57
-    lats = np.linspace(lat1, lat0, ny)
-    lons = np.linspace(lon0, lon1, nx)
+    lats, lons = _api_coordinate_axes(bbox, ny, nx)
     pts = [(la, lo) for la in lats for lo in lons]
     n_calls = (len(pts) + 99) // 100
     logger.info("Sampling %d x %d = %d cells (~%.0f m) via OpenTopoData: %d calls, ~%.0f s",
