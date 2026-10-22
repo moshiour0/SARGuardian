@@ -519,6 +519,18 @@ def test_analyse_runs_end_to_end_with_a_valid_rectangular_dem(caplog):
         assert np.isfinite(site["lat"]) and np.isfinite(site["lon"])
         assert site["threshold_height_m"] in {10.0, 25.0}
         assert np.isfinite(site["max_volume_Mm3"])
+        scenarios = site["by_height"]
+        ordered = [scenarios[h] for h in sorted(scenarios)]
+        assert all(np.isfinite(v["volume_Mm3"]) and v["volume_Mm3"] > 0
+                   for v in ordered)
+        assert all(np.isfinite(v["area_km2"]) and v["area_km2"] > 0
+                   for v in ordered)
+        assert all(b["volume_Mm3"] >= a["volume_Mm3"]
+                   for a, b in zip(ordered, ordered[1:])), (
+            "raising the water level must not decrease ponded volume")
+        assert all(b["area_km2"] >= a["area_km2"]
+                   for a, b in zip(ordered, ordered[1:])), (
+            "raising the water level must not decrease ponded area")
 
 
 def test_priority_flood_flat_plateau_routes_to_outlet_without_losing_cells():
