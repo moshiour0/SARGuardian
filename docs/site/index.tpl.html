@@ -579,6 +579,43 @@ let GRID=null, LASTLAB=null, LASTSIZES=null;
     const px=oc.getImageData(0,0,W,H).data;
     const d=new Float32Array(W*H),pre=new Float32Array(W*H),both=new Uint8Array(W*H);
     for(let i=0,j=0;i<W*H;i++,j+=4){d[i]=px[j]/127.5-1;pre[i]=px[j+1]/127.5-1;both[i]=px[j+2]>128?1:0;}
+
+    // Fail closed if this bundle lacks exact polygon/grid metadata. The old
+    // rectangle-only cache included candidate centres outside SOURCE_RING.
+    const affine=D.meta.grid.affine_utm, ring=D.meta.grid.aoi_polygon_projected;
+    if(!Array.isArray(affine)||affine.length!==6||!Array.isArray(ring)||ring.length<3||
+       ring.some(p=>!Array.isArray(p)||p.length!==2||!Number.isFinite(p[0])||!Number.isFinite(p[1]))){
+      $('#s3cmp').textContent='polygon metadata missing';
+      $('#s3run').disabled=true;
+      $('#s3insight').style.display='block';
+      $('#s3insight').textContent='Analysis disabled: this data bundle does not declare the exact source polygon and grid transform.';
+      return;
+    }
+    function insidePolygon(x,y,poly){
+      let inside=false;
+      for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+        const [xi,yi]=poly[i],[xj,yj]=poly[j];
+        const cross=(x-xi)*(yj-yi)-(y-yi)*(xj-xi);
+        if(Math.abs(cross)<=1e-7&&x>=Math.min(xi,xj)-1e-7&&x<=Math.max(xi,xj)+1e-7&&
+           y>=Math.min(yi,yj)-1e-7&&y<=Math.max(yi,yj)+1e-7)return true;
+        if((yi>y)!==(yj>y)&&x<(xj-xi)*(y-yi)/(yj-yi)+xi)inside=!inside;
+      }
+      return inside;
+    }
+    let aoiPx=0,usablePx=0;
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+      const i=y*W+x;
+      const gx=affine[0]+(x+0.5)*affine[1]+(y+0.5)*affine[2];
+      const gy=affine[3]+(x+0.5)*affine[4]+(y+0.5)*affine[5];
+      const eligible=insidePolygon(gx,gy,ring);
+      if(eligible)aoiPx++;
+      else both[i]=0;
+      if(both[i])usablePx++;
+    }
+    D.meta.grid.aoi_px=aoiPx;
+    D.meta.grid.usable_px=usablePx;
+    D.meta.grid.usable_pct=aoiPx?Math.round(1000*usablePx/aoiPx)/10:0;
+    D.meta.grid.aoi_geometry='source-ring-v1';
     GRID={d,pre,both,W,H};
     $('#s3cmp').textContent=D.meta.grid.usable_pct+'%';
     paint();

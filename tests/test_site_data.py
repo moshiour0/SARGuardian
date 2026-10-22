@@ -17,11 +17,15 @@ floor at 21,209 mm/day instead of 21.2.
 
 from __future__ import annotations
 
+import base64
 import csv
+import io
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "docs" / "site" / "site_data.json"
@@ -115,3 +119,44 @@ def test_the_reported_failure_point_is_observed_and_not_a_scar(site):
 def test_the_payload_cannot_break_out_of_its_script_tag(site):
     raw = SITE.read_text(encoding="utf-8")
     assert "</script" not in raw.lower()
+
+
+def test_site_bundle_uses_exact_source_polygon_for_grid_and_candidates(site):
+    """The bbox is only an I/O window; all displayed measurements use SOURCE_RING."""
+    from local_floor import point_in_aoi
+    grid = site["meta"]["grid"]
+    assert grid["aoi_geometry"] == "source-ring-v1"
+    assert len(grid["affine_utm"]) == 6
+    assert len(grid["aoi_polygon_projected"]) == 10
+    assert grid["aoi_px"] > grid["usable_px"] >= 0
+    assert grid["usable_pct"] == pytest.approx(
+        round(100 * grid["usable_px"] / grid["aoi_px"], 1), abs=0.01
+    )
+
+    encoded = base64.b64decode(site["change_png"], validate=True)
+    with Image.open(io.BytesIO(encoded)) as im:
+        rgb = np.asarray(im.convert("RGB"), dtype=np.uint8)
+    from scar_map import source_aoi_mask
+    exact = source_aoi_mask()
+    assert rgb.shape[:2] == exact.shape
+    assert not np.any(rgb[:, :, 2][~exact] > 128), (
+        "PNG still marks rectangle-corner pixels outside SOURCE_RING as usable"
+    )
+
+    for candidate in site["clusters"]:
+        assert point_in_aoi(float(candidate["lon"]), float(candidate["lat"]), "source"), (
+            f"candidate {candidate['id']} is outside the source polygon"
+        )
+    for candidate in site["bound"]["candidates"]:
+        assert point_in_aoi(float(candidate["lon"]), float(candidate["lat"]), "source"), (
+            f"source bound {candidate['id']} is outside the source polygon"
+        )
+
+
+def test_site_html_is_generated_from_the_exact_committed_payload(site):
+    template_path = ROOT / "docs" / "site" / "index.tpl.html"
+    html_path = ROOT / "docs" / "site" / "index.html"
+    payload = SITE.read_text(encoding="utf-8")
+    expected = template_path.read_text(encoding="utf-8").replace("{{DATA}}", payload)
+    assert html_path.read_text(encoding="utf-8") == expected
+    assert "</script" not in payload.lower()

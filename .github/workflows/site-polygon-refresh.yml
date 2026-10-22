@@ -1,0 +1,67 @@
+name: Refresh exact-polygon site bundle
+
+on:
+  push:
+    branches:
+      - science/valid-pixel-target4-9-audit
+    paths:
+      - ".github/workflows/site-polygon-refresh.yml"
+      - "docs/site/build_data.py"
+      - "docs/site/index.tpl.html"
+      - "src/scar_map.py"
+      - "src/gunw_reader.py"
+      - "tools/refresh_site_polygon_guard.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: site-polygon-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the isolated science branch
+        uses: actions/checkout@v4
+        with:
+          ref: science/valid-pixel-target4-9-audit
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned scientific dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r requirements.txt
+
+      - name: Refresh the PNG mask, scene cloud metrics, candidate labels, and bound rows
+        run: |
+          set -euo pipefail
+          python tools/refresh_site_polygon_guard.py \
+            --scenes-cache "$RUNNER_TEMP/scenes-polygon-v2.json"
+
+      - name: Validate exact AOI, reference values, and payload-to-HTML identity
+        run: |
+          set -euo pipefail
+          python tools/refresh_site_polygon_guard.py --check
+          python -m pytest tests/test_site_data.py -q
+          git diff --check
+
+      - name: Commit refreshed static bundle only on the isolated branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/site/site_data.json docs/site/index.html
+          if git diff --cached --quiet; then
+            echo "SITE_BUNDLE_UNCHANGED=yes" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "Refresh site bundle with exact source AOI mask"
+          git push origin HEAD:science/valid-pixel-target4-9-audit
+          echo "SITE_BUNDLE_COMMITTED=yes" >> "$GITHUB_STEP_SUMMARY"

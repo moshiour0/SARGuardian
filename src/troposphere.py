@@ -165,7 +165,13 @@ def fit_elevation_trend(elev_m: np.ndarray, disp_mm: np.ndarray,
     if e.size < MIN_SAMPLES:
         e, d, keep = e_all, d_all, np.ones(e_all.shape, dtype=bool)
     slope, intercept = np.polyfit(e, d, 1)
-    r = float(np.corrcoef(e, d)[0, 1]) if np.ptp(e) > 0 else float("nan")
+    # np.corrcoef divides by both standard deviations. A constant displacement
+    # field has no defined Pearson correlation; avoid emitting RuntimeWarnings
+    # or accidentally treating NaN as a highly significant trend.
+    if np.ptp(e) > 0 and np.ptp(d) > 0:
+        r = float(np.corrcoef(e, d)[0, 1])
+    else:
+        r = float("nan")
 
     # How far the line is asked to reach beyond the elevations that constrain
     # it. Most valid pixels sit in a narrow band; a handful of high ones set the

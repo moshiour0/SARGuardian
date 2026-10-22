@@ -140,6 +140,7 @@ logger = logging.getLogger("scar_map")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import resolve  # noqa: E402
+from gunw_reader import SOURCE_RING  # noqa: E402
 
 STAC = "https://earth-search.aws.element84.com/v1/search"
 COLLECTION = "sentinel-2-l2a"
@@ -157,6 +158,34 @@ SNOW = 11
 GRID = (602, 457)
 
 EVENT = "2026-08-26"
+
+
+_SOURCE_AOI_MASK: np.ndarray | None = None
+
+
+def source_aoi_mask() -> np.ndarray:
+    """Exact source polygon on the common grid, not just the bounding rectangle.
+
+    The source AOI tuple is used for STAC discovery and raster reads, because
+    those APIs consume rectangular windows. All scientific area statistics,
+    change masks and candidate clusters must additionally use SOURCE_RING.
+    Pixel centres on the polygon boundary are treated as inside.
+    """
+    global _SOURCE_AOI_MASK
+    if _SOURCE_AOI_MASK is None:
+        import rasterio
+        from rasterio.features import geometry_mask
+        from rasterio.warp import transform_geom
+
+        ring = [list(p) for p in SOURCE_RING]
+        ring.append(ring[0])
+        geom = {"type": "Polygon", "coordinates": [ring]}
+        projected = transform_geom("EPSG:4326", "EPSG:32645", geom)
+        _SOURCE_AOI_MASK = geometry_mask(
+            [projected], out_shape=GRID, transform=grid_transform(),
+            all_touched=False, invert=True,
+        )
+    return _SOURCE_AOI_MASK
 
 
 def _stac(body: dict) -> list[dict]:
@@ -180,7 +209,11 @@ def by_id(ids: list[str]) -> dict[str, dict]:
 
 
 def _read(feature: dict, asset: str) -> np.ndarray:
-    """One asset, clipped to the AOI and resampled onto the common grid."""
+    """Read the AOI bounding window, resampled to the common grid.
+
+    This is a rectangular I/O optimisation. Exact polygon eligibility is applied
+    by source_aoi_mask() before any scene coverage or candidate statistics.
+    """
     import rasterio
     from rasterio.enums import Resampling
     from rasterio.warp import transform_bounds
@@ -209,14 +242,18 @@ def grid_transform():
 
 
 def aoi_cloud(feature: dict) -> dict:
-    """Cloud over the AOI, which is not the scene-level figure."""
+    """Cloud/clear/snow percentages inside the exact source polygon."""
     scl = _read(feature, "scl").astype(int)
+    inside = source_aoi_mask()
     bad = np.isin(scl, list(UNUSABLE))
+    denominator = int(inside.sum())
+    if denominator == 0:
+        raise RuntimeError("SOURCE_AOI_HAS_NO_GRID_CELLS")
     return {"id": feature["id"], "date": feature["properties"]["datetime"][:10],
             "scene_cloud": feature["properties"].get("eo:cloud_cover", float("nan")),
-            "aoi_cloud_pct": 100.0 * bad.mean(),
-            "aoi_clear_pct": 100.0 * (~bad).mean(),
-            "snow_pct": 100.0 * (scl == SNOW).mean()}
+            "aoi_cloud_pct": 100.0 * int((bad & inside).sum()) / denominator,
+            "aoi_clear_pct": 100.0 * int((~bad & inside).sum()) / denominator,
+            "snow_pct": 100.0 * int(((scl == SNOW) & inside).sum()) / denominator}
 
 
 def ndsi(feature: dict) -> tuple:
@@ -226,7 +263,9 @@ def ndsi(feature: dict) -> tuple:
     scl = _read(feature, "scl").astype(int)
     den = g + sw
     n = np.where(den > 0, (g - sw) / np.maximum(den, 1.0), np.nan)
-    return n, ~np.isin(scl, list(UNUSABLE))
+    inside = source_aoi_mask()
+    n[~inside] = np.nan
+    return n, (~np.isin(scl, list(UNUSABLE)) & inside)
 
 
 def composite(features: list[dict]) -> tuple:
@@ -276,6 +315,55 @@ def enumerate_candidates(both, pre, d, drop, was_snow, min_px):
     return out
 
 
+def point_in_ring(lon: float, lat: float, ring) -> bool:
+    """Exact point-in-polygon for a small WGS84 lon/lat ring.
+
+    Points on an edge count as inside. The AOI is local and small enough that
+    ray casting in geographic coordinates is adequate for eligibility; metric
+    ranking and terrain sampling still use the projected grid coordinates.
+    """
+    if len(ring) < 3 or not (math.isfinite(lon) and math.isfinite(lat)):
+        return False
+    inside = False
+    eps = 1e-10
+    for i, (x1, y1) in enumerate(ring):
+        x2, y2 = ring[(i + 1) % len(ring)]
+        cross = (lon - x1) * (y2 - y1) - (lat - y1) * (x2 - x1)
+        if (abs(cross) <= eps
+                and min(x1, x2) - eps <= lon <= max(x1, x2) + eps
+                and min(y1, y2) - eps <= lat <= max(y1, y2) + eps):
+            return True
+        if (y1 > lat) != (y2 > lat):
+            x_cross = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
+            if lon < x_cross:
+                inside = not inside
+    return inside
+
+
+def representative_cluster_index(xs, ys, lons, lats, ring=SOURCE_RING) -> int:
+    """Choose an observed cluster pixel nearest its projected centroid.
+
+    An arithmetic centroid of a non-convex cluster can lie outside both the
+    feature and its source AOI. Terrain slope/aspect must be sampled at an
+    actual in-AOI pixel, not at that invented location. The geometric centroid
+    remains available separately for visualization/reporting.
+    """
+    x = np.asarray(xs, dtype=float).ravel()
+    y = np.asarray(ys, dtype=float).ravel()
+    lon = np.asarray(lons, dtype=float).ravel()
+    lat = np.asarray(lats, dtype=float).ravel()
+    if x.size == 0 or any(arr.size != x.size for arr in (y, lon, lat)):
+        raise ValueError("cluster coordinate arrays must have the same non-zero length")
+    if not all(np.all(np.isfinite(arr)) for arr in (x, y, lon, lat)):
+        raise ValueError("cluster coordinates must all be finite")
+    cx, cy = float(np.mean(x)), float(np.mean(y))
+    order = np.argsort((x - cx) ** 2 + (y - cy) ** 2, kind="stable")
+    for index in order:
+        if point_in_ring(float(lon[index]), float(lat[index]), ring):
+            return int(index)
+    raise ValueError("cluster has no observed pixel centre inside the requested AOI polygon")
+
+
 def classify(clusters, d, pre, tf, limit=12):
     """
     Terrain reading for each cluster.
@@ -300,9 +388,17 @@ def classify(clusters, d, pre, tf, limit=12):
         xs, ys = xy(tf, rr, cc)
         lon, lat = warp_transform("EPSG:32645", "EPSG:4326",
                                   np.atleast_1d(xs), np.atleast_1d(ys))
-        la, lo = float(np.mean(lat)), float(np.mean(lon))
+        centroid_lat, centroid_lon = float(np.mean(lat)), float(np.mean(lon))
         try:
-            sl, asp, el = slope_aspect(la, lo)
+            sample_idx = representative_cluster_index(xs, ys, lon, lat)
+        except ValueError as exc:
+            logger.warning("cluster %d has no eligible terrain-sample pixel: %s", i, exc)
+            continue
+        sample_lat, sample_lon = float(lat[sample_idx]), float(lon[sample_idx])
+        # Classify the terrain at a real observed pixel. A cluster centroid may
+        # fall outside a concave AOI even when every contributing pixel is inside.
+        try:
+            sl, asp, el = slope_aspect(sample_lat, sample_lon)
         except Exception:
             continue
         off_n = min(abs(asp), abs(asp - 360))
@@ -315,9 +411,11 @@ def classify(clusters, d, pre, tf, limit=12):
         else:
             reading = "ambiguous"
         rows.append({"id": i, "n_px": len(cells), "area_km2": len(cells) * 400 / 1e6,
-                     "lat": la, "lon": lo, "elev_m": el, "slope_deg": sl,
-                     "aspect_deg": asp, "reading": reading,
-                     "d_ndsi_median": float(np.nanmedian(d[rr, cc]))})
+                     "lat": sample_lat, "lon": sample_lon,
+                     "centroid_lat": centroid_lat, "centroid_lon": centroid_lon,
+                     "terrain_sample_method": "nearest_in_AOI_pixel_to_projected_cluster_centroid",
+                     "elev_m": el, "slope_deg": sl, "aspect_deg": asp,
+                     "reading": reading, "d_ndsi_median": float(np.nanmedian(d[rr, cc]))})
     return rows
 
 
@@ -384,6 +482,11 @@ def probe(lat, lon, d, both, pre, tf, radius=5) -> dict:
     there, and if not, is that because it is hidden or because it is absent?
     Reporting the usable-pixel count separates those.
     """
+    if not point_in_ring(float(lon), float(lat), SOURCE_RING):
+        return {
+            "lat": float(lat), "lon": float(lon), "n_usable": 0,
+            "observed": False, "status": "TARGET_OUTSIDE_AOI",
+        }
     from rasterio.transform import rowcol
     from rasterio.warp import transform as warp_transform
     x, y = warp_transform("EPSG:4326", "EPSG:32645", [lon], [lat])
@@ -403,8 +506,11 @@ def probe(lat, lon, d, both, pre, tf, radius=5) -> dict:
             "scar_like_pct": float(100 * np.mean(dv < -0.35))}
 
 
-CANDIDATE_FIELDS = ["id", "n_px", "area_km2", "lat", "lon", "elev_m",
-                    "slope_deg", "aspect_deg", "reading", "d_ndsi_median"]
+CANDIDATE_FIELDS = [
+    "id", "n_px", "area_km2", "lat", "lon", "centroid_lat", "centroid_lon",
+    "terrain_sample_method", "elev_m", "slope_deg", "aspect_deg", "reading",
+    "d_ndsi_median",
+]
 
 
 def write_candidates(rows: list[dict], path: Path) -> None:
@@ -494,11 +600,15 @@ def main() -> int:
     logger.info("post-event composite from %d scenes", len(args.post))
     post, post_ok = composite([F[i] for i in args.post])
 
-    both = pre_ok & post_ok & np.isfinite(pre) & np.isfinite(post)
+    exact_aoi = source_aoi_mask()
+    both = pre_ok & post_ok & np.isfinite(pre) & np.isfinite(post) & exact_aoi
     d = np.where(both, post - pre, np.nan)
+    aoi_cells = int(exact_aoi.sum())
+    if aoi_cells == 0:
+        raise SystemExit("ERROR=SOURCE_AOI_HAS_NO_GRID_CELLS")
     print(f"\ncomparable in both epochs: {int(both.sum()):,} px "
-          f"({100*both.mean():.1f}% of the AOI)")
-    base = float(100 * np.mean(d[both] < -0.35))
+          f"({100*int(both.sum())/aoi_cells:.1f}% of exact polygon AOI)")
+    base = float(100 * np.mean(d[both] < -0.35)) if both.any() else float("nan")
     print(f"scar-like across the AOI:  {base:.2f}%  "
           f"(the rate an isolated patch has to beat)")
 
@@ -506,8 +616,12 @@ def main() -> int:
         r = probe(args.probe[0], args.probe[1], d, both, pre, tf)
         print(f"\nPROBE {r['lat']:.5f} N {r['lon']:.5f} E")
         if not r["observed"]:
-            print("  no usable pixels - cloud in one or both epochs, so this")
-            print("  location is untested rather than clear.")
+            if r.get("status") == "TARGET_OUTSIDE_AOI":
+                print("  target centre is OUTSIDE the exact source AOI polygon;")
+                print("  refusing to infer point status from nearby in-polygon pixels.")
+            else:
+                print("  no usable pixels - cloud in one or both epochs, so this")
+                print("  location is untested rather than clear.")
             return 0
         print(f"  usable pixels     {r['n_usable']}")
         print(f"  NDSI change       median {r['d_ndsi_median']:+.3f}, "

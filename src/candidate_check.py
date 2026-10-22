@@ -36,8 +36,9 @@ necessarily monsoon-driven: Blatten went on 28 May, before any monsoon, and the
 pore pressure. So dry-season quiescence is evidence AGAINST a snowpack delay,
 but dry-season motion is not evidence against creep.
 
-This test therefore only ever fires in one direction: it can reject a
-candidate, never confirm one.
+These are screening diagnostics, not standalone rejection tests. A seasonal
+pattern, a large phase rate, or a ratio closer to a delay hypothesis can flag
+a concern, but none alone proves or disproves ground deformation.
 
 Usage
 -----
@@ -55,6 +56,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import math
 import re
 import sys
 from pathlib import Path
@@ -64,35 +66,57 @@ logger = logging.getLogger("candidate")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import resolve  # noqa: E402
-
+from local_floor import infer_aoi_from_dir, aoi_tokens_from_dir, point_in_aoi  # noqa: E402
 from gunw_reader import NISAR_LAMBDA_M as WAVELENGTH_M  # noqa: E402
 MIN_PX = 20                    # below this a target window is not measured
 MONSOON = (6, 7, 8, 9)
 
 TARGET_LINE = re.compile(
-    r"(\d{4}-\d\d-\d\d) -> (\d{4}-\d\d-\d\d) :\s+([-+]?[\d.]+) mm\s+"
-    r"\((\d+) px, coh ([\d.]+)\)")
+    r"(?P<reference>\d{4}-\d\d-\d\d) -> (?P<secondary>\d{4}-\d\d-\d\d)"
+    r"(?: \[(?P<granule>NISAR_L2_[^\]\s]+\.h5)\])? :\s+"
+    r"(?P<value>[-+]?[\d.]+) mm\s+\((?P<pixels>\d+) px, coh (?P<coherence>[\d.]+)\)")
 
 
 def read_target(path: Path) -> dict:
-    """Per-pair measurements at the target, from a timeseries.py --target run."""
+    """Per-granule target measurements from a timeseries.py --target log.
+
+    Dates alone are not a unique interferogram identity: ascending/descending
+    tracks and different CRIDs can share a date pair. Old logs without the
+    basename are parsed for diagnostics but cannot safely join to an AOI row.
+    """
     out = {}
     for line in open(path, errors="ignore"):
         m = TARGET_LINE.search(line)
         if m:
-            key = (m.group(1).replace("-", ""), m.group(2).replace("-", ""))
-            out.setdefault(key, (float(m.group(3)), int(m.group(4)), float(m.group(5))))
+            key = (
+                m.group("reference").replace("-", ""),
+                m.group("secondary").replace("-", ""),
+                Path(m.group("granule")).name if m.group("granule") else None,
+            )
+            out.setdefault(key, (
+                float(m.group("value")), int(m.group("pixels")),
+                float(m.group("coherence")),
+            ))
     return out
 
 
 def read_aoi(path: Path) -> dict:
+    """AOI medians keyed by exact granule basename, not date pair alone."""
     out = {}
     for r in csv.DictReader(open(path, newline="")):
-        if "_UR_" in r["file"]:
+        filename = Path(r["file"]).name
+        if "_UR_" in filename:
             continue
-        g = re.search(r"_GUNW_\d+_(\d+)_([AD])_", r["file"])
+        g = re.search(r"_GUNW_\d+_(\d+)_([AD])_", filename)
         if g:
-            out[(r["reference"], r["secondary"])] = (float(r["median"]), g.group(2))
+            try:
+                median = float(r["median"])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(median):
+                continue
+            key = (r["reference"], r["secondary"], filename)
+            out[key] = (median, g.group(2))
     return out
 
 
@@ -101,6 +125,22 @@ def span_days(k) -> int:
     a = datetime.strptime(k[0], "%Y%m%d")
     b = datetime.strptime(k[1], "%Y%m%d")
     return (b - a).days
+
+
+def exceeds_single_fringe(local_displacement_mm: float,
+                          wavelength_m: float = WAVELENGTH_M) -> bool:
+    """Flag a per-pair differential displacement beyond lambda/4 for review.
+
+    This is an inspection trigger only. Phase unwrapping can recover integer
+    cycles, so crossing lambda/4 does not itself prove the product is wrong.
+    Never apply this displacement limit to an aggregated mm/day rate.
+    """
+    return (
+        math.isfinite(local_displacement_mm)
+        and math.isfinite(wavelength_m)
+        and wavelength_m > 0
+        and abs(local_displacement_mm) > wavelength_m * 1000.0 / 4.0
+    )
 
 
 MIN_SENS = 0.25            # below this a track is blind and the ratio is unstable
@@ -135,12 +175,29 @@ def classify_geometry(sens_asc: float, sens_desc: float,
     artefact "a real phase signal". The verdict there survived only because the
     seasonality test caught it afterwards.
 
-    Returns a dict rather than printing, so the decision can be tested without
-    a network round trip for terrain.
+    Returns a dict rather than printing, so the comparison can be tested without
+    a network round trip for terrain. The motion/delay label is descriptive:
+    without uncertainties/covariance for both track rates, the ratio distance
+    is not a statistical test and must never be called conclusive.
     """
     out = {"sens_asc": sens_asc, "sens_desc": sens_desc,
            "ratio_motion": None, "ratio_measured": None, "verdict": None,
-           "reason": None, "conclusive": False}
+           "reason": None, "conclusive": False,
+           "conclusiveness_limit": "Track-rate uncertainties/covariance are not supplied; ratio-distance classification is descriptive only."}
+
+    try:
+        finite_inputs = all(math.isfinite(float(value)) for value in
+                            (sens_asc, sens_desc, v_asc, v_desc))
+    except (TypeError, ValueError, OverflowError):
+        finite_inputs = False
+    if not finite_inputs:
+        out["verdict"] = "undetermined"
+        out["reason"] = "one or more sensitivities or measured rates are non-numeric or non-finite."
+        return out
+    if slope_deg is not None and not math.isfinite(float(slope_deg)):
+        out["verdict"] = "undetermined"
+        out["reason"] = "slope is non-finite, so terrain sensitivity cannot be interpreted."
+        return out
 
     # Sensitivity is a projection onto the downslope direction, and that
     # direction comes from the DEM aspect. On gentle ground the aspect is
@@ -167,6 +224,10 @@ def classify_geometry(sens_asc: float, sens_desc: float,
         return out
 
     ratio_motion = sens_desc / sens_asc
+    if not math.isfinite(ratio_motion):
+        out["verdict"] = "undetermined"
+        out["reason"] = "the geometry-predicted ratio is non-finite."
+        return out
     out["ratio_motion"] = ratio_motion
 
     # If the geometry happens to predict a motion ratio near +1, the two
@@ -186,6 +247,10 @@ def classify_geometry(sens_asc: float, sens_desc: float,
         return out
 
     ratio = v_desc / v_asc
+    if not math.isfinite(ratio):
+        out["verdict"] = "undetermined"
+        out["reason"] = "the measured rate ratio is non-finite."
+        return out
     out["ratio_measured"] = ratio
     d_motion = abs(ratio - ratio_motion)
     d_delay = abs(ratio - 1.0)
@@ -204,11 +269,14 @@ def classify_geometry(sens_asc: float, sens_desc: float,
                          f"geometry-independent path delay (distance {d_delay:.3f}) "
                          f"than to the downslope-motion prediction {ratio_motion:+.3f} "
                          f"(distance {d_motion:.3f}).")
-    out["conclusive"] = True
+    # Nearest-prediction classification is not a significance test. No
+    # measurement uncertainty/covariance enters this function, so it must not
+    # label either outcome conclusive even when one ratio is closer.
+    out["conclusive"] = False
     return out
 
 
-def geometry_test(lat, lon, dry: dict, problems: list) -> None:
+def geometry_test(lat, lon, dry: dict, flags: list) -> None:
     """
     Run classify_geometry on the dry-season rates and report it.
 
@@ -253,19 +321,20 @@ def geometry_test(lat, lon, dry: dict, problems: list) -> None:
         return
 
     if res["verdict"] == "motion":
-        print(f"\n  Consistent with DOWNSLOPE MOTION.")
+        flags.append("geometry_ratio_closer_to_motion")
+        print("\n  GEOMETRY RATIO IS CLOSER TO THE DOWNSLOPE-MOTION HYPOTHESIS.")
         print(f"  {res['reason']}")
-        print(f"  Implied downslope rate {res['implied_downslope_mm_day']:+.2f} mm/day.")
-        print("  This is necessary, not sufficient: it says the two geometries are")
-        print("  consistent with one moving surface, not that the surface moved.")
+        print(f"  Nominal implied downslope rate {res['implied_downslope_mm_day']:+.2f} mm/day.")
+        print("  This is descriptive, not conclusive: rate uncertainty/covariance is")
+        print("  not propagated, and a ratio match does not prove surface motion.")
     else:
-        problems.append("geometry")
-        print(f"\n  GEOMETRY SAYS PATH DELAY, NOT MOTION.")
+        flags.append("geometry_ratio_closer_to_delay")
+        print("\n  GEOMETRY RATIO IS CLOSER TO THE PATH-DELAY HYPOTHESIS.")
         print(f"  {res['reason']}")
-        print("  A path delay is not a vector. Atmosphere and snow add the same extra")
-        print("  path length whichever direction the radar looks from, so they arrive")
-        print("  with the same sign in both geometries. One downslope rate cannot,")
-        print("  where the sensitivities are opposed.")
+        print("  This comparison is not a statistically conclusive rejection: the")
+        print("  rate uncertainties/covariance are not supplied. Atmosphere and snow")
+        print("  can add geometry-independent path delay, but the ratio alone cannot")
+        print("  identify that cause uniquely.")
 
 
 def main() -> int:
@@ -273,15 +342,46 @@ def main() -> int:
     ap.add_argument("--target-log", required=True,
                     help="log from timeseries.py --target-lat/--target-lon")
     ap.add_argument("--aoi-csv", required=True, help="gunw_reader --csv for the same AOI")
-    ap.add_argument("--lat", type=float); ap.add_argument("--lon", type=float)
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default=None,
+                    help="AOI polygon used for eligibility; inferred from the AOI CSV basename only when unambiguous")
+    ap.add_argument("--allow-event-affected-aoi", action="store_true",
+                    help="explicitly allow LHENDE, an event-affected runout/impoundment corridor, for a non-control analysis")
+    ap.add_argument("--lat", type=float)
+    ap.add_argument("--lon", type=float)
     ap.add_argument("--min-px", type=int, default=MIN_PX)
     args = ap.parse_args()
+
+    if args.min_px < 1:
+        ap.error("--min-px must be at least 1.")
+    if args.lat is None or args.lon is None:
+        ap.error("--lat and --lon are required so geometry sensitivity is evaluated at the actual target.")
+    if not (math.isfinite(args.lat) and math.isfinite(args.lon)
+            and -90 <= args.lat <= 90 and -180 <= args.lon <= 180):
+        ap.error("target coordinates must be finite WGS84 latitude/longitude")
+    folder_aois = aoi_tokens_from_dir(args.aoi_csv)
+    if len(folder_aois) > 1:
+        ap.error(f"AOI CSV basename has conflicting AOI markers {sorted(folder_aois)}.")
+    inferred_aoi = next(iter(folder_aois)) if folder_aois else None
+    if args.aoi is None and inferred_aoi is None:
+        ap.error("could not infer AOI from --aoi-csv; pass --aoi source|langtang|lhende explicitly")
+    if args.aoi is not None and inferred_aoi is not None and args.aoi != inferred_aoi:
+        ap.error(f"--aoi {args.aoi!r} conflicts with --aoi-csv marker ({inferred_aoi!r}).")
+    aoi_name = args.aoi or inferred_aoi
+    if aoi_name == "lhende" and not args.allow_event_affected_aoi:
+        ap.error("LHENDE is event-affected and is not a stable-ground control; pass --allow-event-affected-aoi only for an explicitly justified analysis.")
+    if not point_in_aoi(args.lon, args.lat, aoi_name):
+        ap.error(f"target point ({args.lat:.6f}, {args.lon:.6f}) is outside the exact {aoi_name} AOI polygon.")
 
     tgt = read_target(resolve(args.target_log))
     aoi = read_aoi(resolve(args.aoi_csv))
     shared = sorted(set(tgt) & set(aoi))
     if not shared:
-        logger.error("No pairs common to the target log and the AOI CSV.")
+        logger.error(
+            "No exact granule identities common to the target log and AOI CSV. "
+            "Regenerate the target log with the current timeseries.py so each "
+            "measurement includes its [NISAR_L2_...h5] basename; legacy date-only "
+            "logs cannot safely distinguish tracks or CRIDs."
+        )
         return 1
 
     where = (f"{args.lat:.5f} N {args.lon:.5f} E"
@@ -295,10 +395,13 @@ def main() -> int:
     print("  " + "-" * 68)
 
     groups: dict[tuple, list] = {}
+    high_differential_pairs = []
     for k in sorted(shared, key=lambda k: (aoi[k][1], k[0])):
         med, geom = aoi[k]
         val, px, coh = tgt[k]
         local = val - med
+        if px >= args.min_px and exceeds_single_fringe(local):
+            high_differential_pairs.append((geom, k, local))
         season = "monsoon" if int(k[0][4:6]) in MONSOON else "dry"
         groups.setdefault((geom, season), []).append((k, local, px))
         flag = "" if px >= args.min_px else "  too few px"
@@ -321,15 +424,12 @@ def main() -> int:
 
     # ---- the four tests ---------------------------------------------------
     print(f"\n{'=' * 74}\nVERDICT\n{'=' * 74}")
-    ceiling = WAVELENGTH_M / 4 * 1000 / 12.0
-    fast = [f"{g} {s}" for (g, s), v in rates.items() if abs(v) > ceiling]
-
     dry = {g: v for (g, s), v in rates.items() if s == "dry"}
     mon = {g: v for (g, s), v in rates.items() if s == "monsoon"}
 
-    problems = []
+    flags = []
     if len(dry) >= 2:
-        geometry_test(args.lat, args.lon, dry, problems)
+        geometry_test(args.lat, args.lon, dry, flags)
 
     if dry and mon:
         d = max(abs(v) for v in dry.values())
@@ -337,28 +437,30 @@ def main() -> int:
         print(f"\n  dry season   up to {d:.2f} mm/day")
         print(f"  monsoon      up to {m:.2f} mm/day")
         if m < 0.4 * d:
-            problems.append("seasonality")
-            print("\n  SEASONALITY IS BACKWARDS. Himalayan slope creep is monsoon-driven -")
-            print("  pore pressure peaks June to September. A signal that runs through")
-            print("  the accumulation season and stops for the monsoon has the")
-            print("  seasonality of a snowpack, not a slope.")
-            print("\n  Dry snow is nearly transparent at L-band, so it preserves the")
-            print("  coherence that makes this look trustworthy while adding a path")
-            print("  delay that grows with accumulated water equivalent. The result is")
-            print("  steady, spatially coherent apparent motion that is not motion.")
+            flags.append("monsoon_rate_below_40pct_of_dry_rate")
+            print("\n  SEASONALITY FLAG: the monsoon local rate is below 40% of the dry-season rate.")
+            print("  This is compatible with a seasonal path-delay effect, but it can also")
+            print("  reflect seasonally varying real deformation. It does NOT by itself")
+            print("  prove snowpack delay or justify rejecting the candidate.")
+            print("  Check snow, precipitation, temperature, coherence, and independent")
+            print("  displacement evidence before interpreting the pattern.")
 
-    if fast:
-        problems.append("ceiling")
-        print(f"\n  ABOVE THE CEILING in {', '.join(fast)}: faster than lambda/4 per")
-        print(f"  12-day pair ({ceiling:.2f} mm/day), so the phase has wrapped and the")
-        print("  unwrapper has guessed. Not a measurement.")
+    if high_differential_pairs:
+        flags.append("high_differential_displacement_per_pair")
+        print("\n  HIGH DIFFERENTIAL DISPLACEMENT FLAG: these individual pair differences")
+        print(f"  exceed lambda/4 = {WAVELENGTH_M * 1000.0 / 4.0:.1f} mm and warrant review:")
+        for geom, key, local in high_differential_pairs:
+            print(f"    {geom} {key[0]}-{key[1]}: local target-minus-AOI = {local:+.1f} mm")
+        print("  This is not proof of failed unwrapping: spatial/temporal unwrapping can")
+        print("  recover cycles. Inspect per-pair phase, gradients, coherence and masks.")
 
-    if not problems:
-        print("\n  Survives every test available here. Still not a detection until an")
-        print("  independent measurement - field, GNSS, or a different sensor - agrees.")
+    if flags:
+        print(f"\n  SCREENING FLAGS (not automatic rejection): {', '.join(sorted(set(flags)))}")
     else:
-        print(f"\n  NOT GROUND MOTION on this evidence. Record the location and the")
-        print("  reason; do not carry it forward as a detection.")
+        print("\n  No screening flag fired.")
+    print("  This script does not establish or exclude ground motion. A candidate is")
+    print("  not a detection until independent measurement - field, GNSS, or another")
+    print("  sensor - supports the interpretation.")
     return 0
 
 

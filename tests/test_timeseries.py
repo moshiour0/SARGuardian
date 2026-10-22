@@ -117,11 +117,11 @@ def test_stats_csv_round_trips_through_the_network(tmp_path):
         [0, 10, 20], abs=1e-6)
 
 
-def test_duplicate_products_are_resolved_not_averaged(tmp_path):
+def test_conflicting_duplicate_products_require_explicit_processing_not_guess(tmp_path):
     """
-    PR and UR of the same acquisitions can differ by whole fringes. Averaging
-    them produces a number that is neither; the branch consistent with the rest
-    of the geometry must be kept and the other dropped.
+    PR and UR of the same acquisitions can differ by whole fringes. Without a
+    validated redundant-cycle solution, magnitude-only branch selection is not
+    defensible; require the caller to select a processing stream explicitly.
     """
     import csv
     import synth
@@ -142,11 +142,15 @@ def test_duplicate_products_are_resolved_not_averaged(tmp_path):
                                            "median", "mean_coherence", "valid_px"])
         w.writeheader(); w.writerows(rows)
 
-    pairs = pairs_from_stats(p)
-    assert len(pairs) == 2, "the duplicate was not resolved to one pair"
-    kept = [q for q in pairs if q.ref == date(2026, 8, 16)][0]
-    assert kept.value == pytest.approx(-14.66), (
-        "kept the fringe-offset branch, or averaged the two")
+    with pytest.raises(ValueError, match="magnitude-only guess"):
+        pairs_from_stats(p)
+
+    # Selecting an explicit processing branch is reproducible; the loader
+    # must not guess which whole-fringe branch is scientifically correct.
+    pairs = pairs_from_stats(p, processing="PR")
+    assert len(pairs) == 2
+    selected = [q for q in pairs if q.ref == date(2026, 8, 16)][0]
+    assert selected.value == pytest.approx(-14.66)
 
 
 # ---------------------------------------------------------------------------
@@ -201,3 +205,135 @@ def test_common_datum_is_not_set_on_the_moving_target():
     _run(pairs2, lat2, buffer_km=0.0)
     assert all(v == pytest.approx(40.0, abs=2.0) for v in good)
     assert all(p.value < 20.0 for p in pairs2)
+
+
+
+def _write_stats(path, rows, fields=None):
+    import csv
+    fields = fields or sorted({key for row in rows for key in row})
+    with open(path, "w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_stats_rows_with_zero_pixels_or_empty_values_are_skipped_not_crashing(tmp_path):
+    import synth
+
+    path = tmp_path / "zero-pixel-row.csv"
+    rows = [
+        {
+            "file": synth.granule_name(ref="20260629", sec="20260711"),
+            "median": "", "mean_coherence": "", "valid_px": 0,
+        },
+        {
+            "file": synth.granule_name(ref="20260711", sec="20260723"),
+            "median": 10.0, "mean_coherence": 0.6, "valid_px": 1000,
+        },
+    ]
+    _write_stats(path, rows)
+    pairs = pairs_from_stats(path)
+    assert len(pairs) == 1
+    assert pairs[0].ref == date(2026, 7, 11)
+    assert pairs[0].value == pytest.approx(10.0)
+
+
+def test_distinct_nisar_frames_for_the_same_dates_are_not_collapsed(tmp_path):
+    import synth
+
+    base = synth.granule_name(ref="20260629", sec="20260711")
+    other_frame = base.replace("_074_007_2000_SH_", "_075_007_2000_SH_")
+    path = tmp_path / "two-frames.csv"
+    rows = [
+        {"file": base, "median": 10.0, "mean_coherence": 0.6, "valid_px": 1000},
+        {"file": other_frame, "median": 100.0, "mean_coherence": 0.7, "valid_px": 900},
+    ]
+    _write_stats(path, rows)
+    pairs = pairs_from_stats(path)
+    assert len(pairs) == 2
+    assert {pair.frame for pair in pairs} == {74, 75}
+    assert len({pair.network_key() for pair in pairs}) == 2
+
+
+def test_same_footprint_interval_with_multiple_crids_requires_explicit_release(tmp_path):
+    import synth
+
+    beta = synth.granule_name(ref="20260629", sec="20260711")
+    provisional = beta.replace("X05010", "P05023")
+    path = tmp_path / "mixed-release-duplicate.csv"
+    rows = [
+        {"file": beta, "median": 10.0, "mean_coherence": 0.6, "valid_px": 1000},
+        {"file": provisional, "median": 10.5, "mean_coherence": 0.6, "valid_px": 1000},
+    ]
+    _write_stats(path, rows)
+    with pytest.raises(ValueError, match="multiple CRIDs"):
+        pairs_from_stats(path)
+    selected = pairs_from_stats(path, crid="X05010")
+    assert len(selected) == 1
+    assert selected[0].crid == "X05010"
+
+
+def test_conflicting_goff_pr_ur_values_are_not_resolved_with_phase_heuristic(tmp_path):
+    import synth
+
+    path = tmp_path / "goff-duplicates.csv"
+    common = {"valid_px": 1000, "mean_correlation": 0.6}
+    rows = [
+        {
+            "file": synth.granule_name(product="GOFF", proc="PR", ref="20260629", sec="20260711"),
+            "range_median_mm": 10.0, **common,
+        },
+        {
+            "file": synth.granule_name(product="GOFF", proc="UR", ref="20260629", sec="20260711"),
+            "range_median_mm": 200.0, **common,
+        },
+    ]
+    _write_stats(path, rows)
+    with pytest.raises(ValueError, match="Offsets are not phase-wrapped"):
+        pairs_from_stats(path, product="GOFF")
+
+
+def test_maturity_release_is_part_of_time_series_network_identity():
+    beta_name = "NISAR_L2_PR_GUNW_009_098_A_016_010_4000_SH_20260103T233921_20260103T233956_20260115T233922_20260115T233956_X05010_N_F_J_001.h5"
+    provisional_name = beta_name.replace("X05010", "P05023")
+    beta_meta = __import__("timeseries").granule_metadata(beta_name)
+    provisional_meta = __import__("timeseries").granule_metadata(provisional_name)
+    beta = Pair(path=98, direction="A", ref=date(2026, 1, 3),
+                sec=date(2026, 1, 15), source=beta_name, metadata=beta_meta)
+    provisional = Pair(path=98, direction="A", ref=date(2026, 1, 3),
+                       sec=date(2026, 1, 15), source=provisional_name,
+                       metadata=provisional_meta)
+    assert beta.crid == "X05010"
+    assert provisional.crid == "P05023"
+    assert beta.network_key() != provisional.network_key()
+
+
+def test_identical_gunw_pr_ur_stats_can_be_deduplicated_without_branch_guess(tmp_path):
+    import synth
+
+    path = tmp_path / "identical-gunw-duplicates.csv"
+    common = {"median": -12.5, "mean_coherence": 0.8, "valid_px": 1000}
+    rows = [
+        {"file": synth.granule_name(proc="PR", ref="20260629", sec="20260711"), **common},
+        {"file": synth.granule_name(proc="UR", ref="20260629", sec="20260711"), **common},
+    ]
+    _write_stats(path, rows)
+    pairs = pairs_from_stats(path)
+    assert len(pairs) == 1
+    assert pairs[0].processing == "PR"
+    assert pairs[0].value == pytest.approx(-12.5)
+
+
+def test_processing_filter_prevents_ambiguous_values_from_entering_inversion(tmp_path):
+    import synth
+
+    path = tmp_path / "processing-filter.csv"
+    rows = [
+        {"file": synth.granule_name(proc="PR", ref="20260629", sec="20260711"),
+         "median": 12.0, "mean_coherence": 0.7, "valid_px": 1000},
+        {"file": synth.granule_name(proc="UR", ref="20260629", sec="20260711"),
+         "median": 240.0, "mean_coherence": 0.7, "valid_px": 1000},
+    ]
+    _write_stats(path, rows)
+    assert [p.value for p in pairs_from_stats(path, processing="PR")] == [12.0]
+    assert [p.value for p in pairs_from_stats(path, processing="UR")] == [240.0]

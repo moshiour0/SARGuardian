@@ -61,10 +61,10 @@ changes is which pixels go in.
 
 Usage
 -----
-    python src/local_floor.py --dir outputs/export_goff_src --match layer2 \\
+    python src/local_floor.py --dir outputs/export_goff_src --aoi source --match layer2 \\
         --lat 28.28771 --lon 85.52809 --radius 6
 
-    python src/local_floor.py --dir outputs/export_goff_src --match layer2 \\
+    python src/local_floor.py --dir outputs/export_goff_src --aoi source --match layer2 \\
         --lat 28.28771 --lon 85.52809 --sweep 3 6 12 --csv outputs/local_floor.csv
 """
 
@@ -85,9 +85,89 @@ logger = logging.getLogger("local_floor")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import resolve  # noqa: E402
+from gunw_reader import AOIS  # noqa: E402
 
 MIN_PX = 6                # below this a MAD is not a measurement
 DATE = re.compile(r"(\d{8})_(\d{8})")
+NISAR_SOURCE_RE = re.compile(
+    r"NISAR_L2_(?P<processing>PR|UR)_(?P<product>GUNW|GOFF)_"
+    r"(?P<cycle>\d+)_(?P<path>\d+)_(?P<direction>[AD])_(?P<frame>\d+)_"
+    r"(?P<subswath>\d+)_(?P<bandwidth>\d+)_(?P<polarisation>[A-Z]{2})_",
+    re.IGNORECASE,
+)
+SOURCE_CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}(?:\.h5)?$", re.IGNORECASE)
+
+
+def normalize_series_id(value: str) -> str:
+    """Canonical form shared with timeseries.Pair.network_label()."""
+    text = str(value or "").strip().upper()
+    text = re.sub(r"\bASCENDING\b", "ASC", text)
+    text = re.sub(r"\bDESCENDING\b", "DESC", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def raster_source_identity(tags: dict[str, str]) -> dict[str, str]:
+    """Parse original granule identity from the GeoTIFF's source provenance tag."""
+    source = Path(str(tags.get("source", ""))).name
+    match = NISAR_SOURCE_RE.match(source)
+    crid_match = SOURCE_CRID_RE.search(source)
+    if not match or not crid_match:
+        return {
+            "source_product": source,
+            "series_id": "",
+            "series_identity_status": "MISSING_OR_UNPARSEABLE_SOURCE_IDENTITY",
+            "crid": "",
+            "maturity": str(tags.get("maturity", "")),
+            "product": "",
+            "track": "",
+            "frame": "",
+            "subswath": "",
+            "bandwidth": "",
+            "polarisation": "",
+            "processing": "",
+            "layer": str(tags.get("layer", "")),
+        }
+    meta = match.groupdict()
+    crid = crid_match.group(1).upper()
+    direction = "ASC" if meta["direction"].upper() == "A" else "DESC"
+    product = meta["product"].upper()
+    series_id = (
+        f"{direction} path {int(meta['path'])} frame {int(meta['frame'])} "
+        f"subswath {int(meta['subswath'])} bandwidth {int(meta['bandwidth'])} "
+        f"pol {meta['polarisation'].upper()} CRID {crid} {product}"
+    )
+    return {
+        "source_product": source,
+        "series_id": normalize_series_id(series_id),
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "crid": crid,
+        "maturity": str(tags.get("maturity", "")),
+        "product": product,
+        "track": f"{direction} path {int(meta['path'])}",
+        "frame": str(int(meta["frame"])),
+        "subswath": str(int(meta["subswath"])),
+        "bandwidth": str(int(meta["bandwidth"])),
+        "polarisation": meta["polarisation"].upper(),
+        "processing": meta["processing"].upper(),
+        "layer": str(tags.get("layer", "")),
+    }
+
+
+def raster_search_text(path: Path, cache: dict[Path, tuple[str, dict]]) -> tuple[str, dict]:
+    """Search a TIFF's basename AND embedded source granule tags.
+
+    Export filenames intentionally omit orbit/frame/CRID; source tags preserve
+    those identity fields. --include/--exclude must inspect the tags too, or a
+    track selector could silently be ignored while mixing geometries.
+    """
+    if path not in cache:
+        import rasterio
+        with rasterio.open(path) as src:
+            tags = src.tags()
+        identity = raster_source_identity(tags)
+        searchable = " ".join([path.name, *[str(v) for v in tags.values()], *identity.values()])
+        cache[path] = (searchable.casefold(), {**tags, **identity})
+    return cache[path]
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +187,15 @@ def detection_floor(values_mm: np.ndarray, span_days: float) -> float:
     purpose - the point of this module is that the AOI and the point give
     different answers to the SAME question, so the question must not change.
     """
-    if span_days <= 0:
+    if not np.isfinite(span_days) or span_days <= 0:
         return float("nan")
-    return 3.0 * robust_sigma(values_mm) / span_days
+    sigma = robust_sigma(values_mm)
+    # A zero MAD is not evidence of zero instrument noise. It can result from
+    # quantization, repeated fill/rounding values, or too little effective
+    # information; never publish it as a perfect detection floor.
+    if not np.isfinite(sigma) or sigma <= 0:
+        return float("nan")
+    return 3.0 * sigma / span_days
 
 
 def window(arr: np.ndarray, row: int, col: int, radius: int) -> np.ndarray:
@@ -149,7 +235,10 @@ def floor_ci(values_mm: np.ndarray, span_days: float, n_boot: int = 2000,
     """
     v = values_mm[np.isfinite(values_mm)]
     n = v.size
-    if n < MIN_PX or span_days <= 0:
+    if n < MIN_PX or not np.isfinite(span_days) or span_days <= 0:
+        return (float("nan"), float("nan"))
+    base_sigma = robust_sigma(v)
+    if not np.isfinite(base_sigma) or base_sigma <= 0:
         return (float("nan"), float("nan"))
     rng = np.random.default_rng(seed)
     idx = rng.integers(0, n, size=(n_boot, n))
@@ -199,7 +288,10 @@ def block_median_floor(field_mm: np.ndarray, size: int, span_days: float,
                 meds.append(float(np.median(v)))
     if len(meds) < MIN_PX:
         return (float("nan"), len(meds))
-    return (3.0 * robust_sigma(np.array(meds)) / span_days, len(meds))
+    sigma = robust_sigma(np.array(meds))
+    if not np.isfinite(sigma) or sigma <= 0:
+        return (float("nan"), len(meds))
+    return (3.0 * sigma / span_days, len(meds))
 
 
 def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
@@ -221,18 +313,28 @@ def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
            "local_floor_ci_lo": float("nan"),
            "local_floor_ci_hi": float("nan"),
            "block_median_floor_mm_day": float("nan"), "n_blocks": 0,
-           "ratio": float("nan"), "usable": False}
+           "ratio": float("nan"), "usable": False,
+           "status": "INSUFFICIENT_LOCAL_PIXELS"}
+    if not np.isfinite(span_days) or span_days <= 0:
+        out["status"] = "INVALID_DATE_SPAN"
+        return out
     if a.size < MIN_PX or w.size < MIN_PX:
         return out
+
     fa = detection_floor(a, span_days)
     fl = detection_floor(w, span_days)
+    if not np.isfinite(fl) or fl <= 0:
+        out.update(aoi_floor_mm_day=fa, status="DEGENERATE_LOCAL_MAD")
+        return out
     lo, hi = floor_ci(w, span_days)
     size = max(win_mm.shape) if win_mm.ndim == 2 else 0
     bm, nb = block_median_floor(aoi_mm, size, span_days)
+    ratio = fl / fa if np.isfinite(fa) and fa > 0 else float("nan")
+    status = "MEASURED" if np.isfinite(fa) and fa > 0 else "MEASURED_LOCAL_FLOOR_AOI_MAD_UNUSABLE"
     out.update(aoi_floor_mm_day=fa, local_floor_mm_day=fl,
                local_floor_ci_lo=lo, local_floor_ci_hi=hi,
                block_median_floor_mm_day=bm, n_blocks=nb,
-               ratio=(fl / fa) if fa > 0 else float("nan"), usable=True)
+               ratio=ratio, usable=True, status=status)
     return out
 
 
@@ -241,8 +343,127 @@ def span_from_name(name: str) -> float:
     m = DATE.search(name)
     if not m:
         return float("nan")
-    a, b = (dt.date(int(s[:4]), int(s[4:6]), int(s[6:8])) for s in m.groups())
+    try:
+        a, b = (dt.date(int(s[:4]), int(s[4:6]), int(s[6:8])) for s in m.groups())
+    except ValueError:
+        return float("nan")
     return float((b - a).days)
+
+
+
+def point_in_ring(lon: float, lat: float, ring) -> bool:
+    """Return whether a WGS84 lon/lat point is inside or on an AOI ring.
+
+    These AOIs cover a small Himalayan region, so a ray-casting test in
+    geographic coordinates is sufficient for candidate eligibility. Raster
+    georeferencing and metric distances still use the raster CRS / pyproj.
+    A point exactly on a segment is treated as inside.
+    """
+    inside = False
+    n = len(ring)
+    if n < 3:
+        return False
+    eps = 1e-10
+    for i in range(n):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        cross = (lon - x1) * (y2 - y1) - (lat - y1) * (x2 - x1)
+        if abs(cross) <= eps and min(x1, x2) - eps <= lon <= max(x1, x2) + eps and min(y1, y2) - eps <= lat <= max(y1, y2) + eps:
+            return True
+        if (y1 > lat) != (y2 > lat):
+            x_intersect = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
+            if lon < x_intersect:
+                inside = not inside
+    return inside
+
+
+def point_in_aoi(lon: float, lat: float, aoi_name: str) -> bool:
+    """Check target eligibility against the named polygon, not its bbox."""
+    if aoi_name not in AOIS:
+        raise ValueError(f"Unknown AOI {aoi_name!r}; choose from {sorted(AOIS)}")
+    return point_in_ring(lon, lat, AOIS[aoi_name])
+
+
+def aoi_tokens_from_dir(directory: str | Path) -> set[str]:
+    """Return exact AOI markers in a folder basename; never infer by substring."""
+    tokens = set(filter(None, re.split(r"[^a-z0-9]+", Path(directory).name.lower())))
+    found = set()
+    if "source" in tokens or "src" in tokens:
+        found.add("source")
+    if "langtang" in tokens:
+        found.add("langtang")
+    if "lhende" in tokens:
+        found.add("lhende")
+    return found
+
+
+def infer_aoi_from_dir(directory: str | Path) -> str | None:
+    """Infer AOI only when the directory names exactly one polygon."""
+    found = aoi_tokens_from_dir(directory)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def validate_export_provenance(files, aoi_name: str, *,
+                               allow_legacy_untagged: bool = False) -> None:
+    """Refuse mixed/mismatched AOIs and unreferenced CRS before measuring floors.
+
+    Legacy GeoTIFFs created before AOI provenance tags existed may be explicitly
+    inspected with --allow-legacy-untagged. A tagged file is never allowed to
+    claim a different AOI or say that the AOI mask was not applied.
+    """
+    import rasterio
+
+    for path in files:
+        with rasterio.open(path) as src:
+            epsg = src.crs.to_epsg() if src.crs else None
+            if epsg is None:
+                raise ValueError(f"{path.name}: CRS/EPSG metadata is missing or not resolvable.")
+            tags = src.tags()
+            file_aoi = tags.get("aoi_name")
+            mask_applied = tags.get("aoi_mask_applied")
+            if not file_aoi:
+                if allow_legacy_untagged:
+                    logger.warning(
+                        "%s has no AOI provenance tags; using caller-supplied AOI=%s as an explicit legacy assumption",
+                        path.name, aoi_name
+                    )
+                    continue
+                raise ValueError(
+                    f"{path.name}: missing aoi_name provenance tag; re-export with the current reader "
+                    "or pass --allow-legacy-untagged only after confirming the file's AOI."
+                )
+            if file_aoi != aoi_name:
+                raise ValueError(
+                    f"{path.name}: AOI tag is {file_aoi!r}, but --aoi is {aoi_name!r}; "
+                    "refusing a floor from a mismatched AOI."
+                )
+            if str(mask_applied).lower() != "true":
+                raise ValueError(
+                    f"{path.name}: aoi_mask_applied is {mask_applied!r}; refusing an unclipped/mislabelled raster."
+                )
+
+
+def flag_is_true(value, *, default: bool = False) -> bool:
+    """Parse boolean flags from in-memory results and CSV round-trips."""
+    if value is None:
+        return default
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def skipped_row(file: Path, target_id: str, lat: float, lon: float,
+                radius: int, aoi_name: str, status: str) -> dict:
+    """Machine-readable rejection row. A skipped point must never create a floor."""
+    span = span_from_name(file.name)
+    c = compare(np.array([], dtype=float), np.array([], dtype=float),
+                span if np.isfinite(span) else 0.0)
+    return {
+        "file": file.name, "radius_px": radius, "target_id": target_id,
+        "lat": lat, "lon": lon, "aoi_name": aoi_name,
+        "aoi_eligible": status != "TARGET_OUTSIDE_AOI",
+        **c, "status": status,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +475,10 @@ def main() -> int:
                     help="only files whose name contains this, e.g. layer2")
     ap.add_argument("--lat", type=float)
     ap.add_argument("--lon", type=float)
+    ap.add_argument("--aoi", choices=sorted(AOIS), default=None,
+                    help="AOI polygon used for candidate eligibility. Inferred "
+                         "only from an unambiguous export-directory suffix; "
+                         "otherwise required to prevent bbox-only eligibility.")
     ap.add_argument("--targets", metavar="CANDIDATES.csv",
                     help="measure at every row of a CSV with id, lat, lon "
                          "columns (scar_map.py --candidates-csv writes one), "
@@ -262,6 +487,10 @@ def main() -> int:
     ap.add_argument("--reading", default=None,
                     help="with --targets, keep only rows whose 'reading' "
                          "column equals this, e.g. DETACHMENT-like")
+    ap.add_argument("--allow-event-affected-aoi", action="store_true",
+                    help="explicitly allow noise-floor calculation inside the LHENDE runout/impoundment corridor; this is not a stable-ground control.")
+    ap.add_argument("--allow-legacy-untagged", action="store_true",
+                    help="allow old GeoTIFFs that lack AOI provenance tags, after independently confirming their AOI; tagged mismatches are always refused.")
     ap.add_argument("--band", type=int, default=1)
     ap.add_argument("--radius", type=int, default=6,
                     help="window half-width in pixels; 6 is about 1 km at 80 m")
@@ -269,19 +498,12 @@ def main() -> int:
                     help="report several radii, to show the answer is not an "
                          "artefact of one window size")
     ap.add_argument("--exclude", nargs="*", default=[],
-                    help="substrings to skip, e.g. a co-event pair")
+                    help="case-insensitive substrings searched in both TIFF filenames and their embedded source-granule tags")
     ap.add_argument("--include", nargs="*", default=[],
-                    help="keep only files matching one of these substrings. "
-                         "Export filenames carry no track field, so this is "
-                         "how you restrict a run to one geometry - and you "
-                         "should, because pooling tracks whose floors differ "
-                         "fivefold gives a median that describes neither")
+                    help="keep only files matching one of these substrings in either the TIFF filename or its source-granule tags (e.g. 098_A_016_010). Use this to isolate one geometry before comparing floors.")
     ap.add_argument("--csv", metavar="OUT.csv")
     ap.add_argument("--as-floors", metavar="OUT.csv",
-                    help="also write the local floors in the layout "
-                         "inverse_velocity.py --floors reads, so a series "
-                         "measured at a point is gated on the floor AT that "
-                         "point rather than the more lenient AOI floor")
+                    help="also write local floors with the parsed product/track/frame/subswath/CRID identity; inverse_velocity will apply them only to the matching time-series geometry")
     args = ap.parse_args()
 
     try:
@@ -292,11 +514,19 @@ def main() -> int:
         return 1
 
     files = sorted(Path(resolve(args.dir)).glob("*.tif"))
+    search_cache: dict[Path, tuple[str, dict]] = {}
+    def matches_tokens(path: Path, tokens: list[str]) -> bool:
+        searchable, _tags = raster_search_text(path, search_cache)
+        return any(str(token).casefold() in searchable for token in tokens)
+
     if args.match:
-        files = [f for f in files if args.match in f.name]
-    files = [f for f in files if not any(x in f.name for x in args.exclude)]
+        files = [f for f in files if matches_tokens(f, [args.match])]
+    if args.exclude:
+        files = [f for f in files if not matches_tokens(f, args.exclude)]
     if args.include:
-        files = [f for f in files if any(x in f.name for x in args.include)]
+        files = [f for f in files if matches_tokens(f, args.include)]
+    if args.as_floors and not args.match:
+        ap.error("--as-floors requires --match so the exported floor's measurement layer is explicit.")
     if not files:
         logger.error("No matching .tif under %s", args.dir)
         return 1
@@ -314,37 +544,85 @@ def main() -> int:
     else:
         ap.error("give --lat and --lon, or --targets")
 
-    radii = args.sweep or [args.radius]
-    rows = []
-    for tid, lat, lon in targets:
-        rows += measure_target(files, tid, lat, lon, radii, args.band)
+    target_ids = [str(t[0]) for t in targets]
+    if len(target_ids) != len(set(target_ids)):
+        ap.error("candidate IDs in --targets must be unique; duplicate IDs could mix floors across locations")
+    for target_id, lat, lon in targets:
+        if not (np.isfinite(lat) and np.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
+            ap.error(f"target {target_id or '(single)'} has invalid WGS84 coordinates ({lat}, {lon})")
 
-    if not rows:
-        print("  Nothing measured.")
+    folder_aois = aoi_tokens_from_dir(args.dir)
+    if len(folder_aois) > 1:
+        ap.error(f"--dir name contains conflicting AOI markers {sorted(folder_aois)}; use a dedicated export directory.")
+    inferred_aoi = next(iter(folder_aois)) if folder_aois else None
+    if args.aoi is None and inferred_aoi is None:
+        ap.error("could not infer AOI from --dir; pass --aoi source|langtang|lhende explicitly")
+    if args.aoi is not None and inferred_aoi is not None and args.aoi != inferred_aoi:
+        ap.error(f"--aoi {args.aoi!r} conflicts with the AOI marker in --dir ({inferred_aoi!r}); use matching exports.")
+    aoi_name = args.aoi or inferred_aoi
+    if aoi_name == "lhende" and not args.allow_event_affected_aoi:
+        ap.error("LHENDE is an event-affected runout/impoundment corridor, not a stable-ground control; pass --allow-event-affected-aoi only for an explicitly justified analysis.")
+    if aoi_name == "lhende":
+        logger.warning("LHENDE IS AN EVENT-AFFECTED RUNOUT/IMPOUNDMENT CORRIDOR; do not interpret its scatter as a stable-ground control.")
+
+    try:
+        validate_export_provenance(
+            files, aoi_name, allow_legacy_untagged=args.allow_legacy_untagged
+        )
+    except (ValueError, RuntimeError) as exc:
+        logger.error("Export provenance validation failed: %s", exc)
         return 1
 
-    r = np.array([x["ratio"] for x in rows])
-    if np.median(r) > 1.25:
+    radii = args.sweep or [args.radius]
+    if any(radius < 1 for radius in radii):
+        ap.error("--radius and every --sweep radius must be at least 1 pixel")
+    rows = []
+    for tid, lat, lon in targets:
+        if not point_in_aoi(lon, lat, aoi_name):
+            logger.error("TARGET_OUTSIDE_AOI id=%s lat=%.6f lon=%.6f AOI=%s; refusing to compute a local floor for this target",
+                         tid or "(single target)", lat, lon, aoi_name)
+            rows.extend(skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                    "TARGET_OUTSIDE_AOI")
+                        for f in files for radius in radii)
+            continue
+        target_rows = measure_target(files, tid, lat, lon, radii, args.band,
+                                     aoi_name=aoi_name, identity_cache=search_cache)
+        rows.extend(target_rows)
+
+    measured_rows = [
+        x for x in rows
+        if flag_is_true(x.get("aoi_eligible", True), default=True)
+        and flag_is_true(x.get("usable"))
+    ]
+    if args.csv:
+        p = Path(resolve(args.csv))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=sorted({k for x in rows for k in x}))
+            w.writeheader()
+            w.writerows(rows)
+        logger.info("Wrote %s", p)
+
+    if not measured_rows:
+        print("  No eligible target has enough valid pixels for a measured floor.")
+        return 1
+
+    r = np.array([x["ratio"] for x in measured_rows if np.isfinite(x["ratio"])])
+    if r.size == 0:
+        print("  Floors exist, but no finite AOI/local ratio could be formed.")
+    elif np.nanmedian(r) > 1.25:
         print("  The floor at the point is materially WORSE than the floor over")
         print("  the AOI. Any bound quoted at this location must use the local")
         print("  figure; the AOI figure overstates what the product could see.")
-    elif np.median(r) < 0.8:
+    elif r.size and np.nanmedian(r) < 0.8:
         print("  The point is quieter than the AOI. The AOI floor is")
         print("  conservative here, which is safe but not tight.")
     else:
         print("  The two agree. The AOI floor is representative at this point.")
 
-    if args.csv:
-        p = Path(resolve(args.csv))
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=sorted(rows[0]))
-            w.writeheader()
-            for x in rows:
-                w.writerow(x)
-        logger.info("Wrote %s", p)
     if args.as_floors:
-        write_as_floors(rows, Path(resolve(args.as_floors)), args.match or "")
+        write_as_floors(measured_rows, Path(resolve(args.as_floors)), args.match or "")
     return 0
 
 
@@ -355,23 +633,119 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     One target only: a floors file keyed by pair cannot say which point it
     describes, so mixing targets would gate one slope on another's noise.
     """
-    usable = [r for r in rows if r["usable"]]
-    if len({r.get("target_id", "") for r in usable}) > 1:
+    if not str(layer).strip():
+        raise ValueError("--as-floors requires an explicit, non-empty layer selector.")
+    usable = [
+        r for r in rows
+        if flag_is_true(r.get("usable"))
+        and flag_is_true(r.get("aoi_eligible", True), default=True)
+    ]
+    if not usable:
+        raise ValueError("--as-floors cannot write a file without any usable local floors.")
+    if any(
+        r.get("series_identity_status") != "PARSED_SOURCE_GRANULE"
+        or not str(r.get("source_product", "")).strip()
+        or not str(r.get("crid", "")).strip()
+        for r in usable
+    ):
+        raise ValueError(
+            "--as-floors requires a parseable source-granule tag with a known CRID; "
+            "legacy/unidentified GeoTIFFs may be analysed but cannot create geometry-scoped floors."
+        )
+    series_ids = {normalize_series_id(r.get("series_id", "")) for r in usable}
+    if "" in series_ids or len(series_ids) != 1:
+        raise ValueError(
+            "--as-floors requires one fully identified NISAR geometry/CRID series; "
+            "use --include to select by the embedded source-granule identity."
+        )
+    series_id = next(iter(series_ids))
+    layers = {str(r.get("layer", "")) for r in usable}
+    if len(layers) != 1 or not next(iter(layers)):
+        raise ValueError("--as-floors rows do not have one unambiguous embedded GeoTIFF layer tag.")
+    if not all(str(layer).casefold() in candidate.casefold() for candidate in layers):
+        raise ValueError(
+            f"--as-floors layer selector {layer!r} does not match embedded layer {sorted(layers)!r}."
+        )
+    if len({str(r.get("target_id", "")) for r in usable}) > 1:
         raise ValueError("--as-floors needs a single target")
+    coordinates = {
+        (round(float(r["lat"]), 8), round(float(r["lon"]), 8))
+        for r in usable if r.get("lat") is not None and r.get("lon") is not None
+    }
+    if len(coordinates) > 1:
+        raise ValueError("--as-floors rows contain one target ID at multiple coordinates")
+
+    validated = []
+    for row in usable:
+        try:
+            px = int(float(row.get("window_px", "nan")))
+            floor = float(row.get("local_floor_mm_day", "nan"))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("Refusing --as-floors row with invalid pixel count or floor.")
+        if px < MIN_PX or not np.isfinite(floor) or floor <= 0:
+            raise ValueError(
+                f"Refusing --as-floors row for {row.get('file', '(unknown file)')}: "
+                "a floor requires at least MIN_PX finite pixels and a finite positive value."
+            )
+        status = row.get("status")
+        if status not in (None, "MEASURED", "MEASURED_LOCAL_FLOOR_AOI_MAD_UNUSABLE"):
+            raise ValueError(f"Refusing --as-floors row with non-measurement status {status!r}.")
+        if not flag_is_true(row.get("aoi_eligible", True), default=True):
+            raise ValueError("Refusing --as-floors row whose target is outside the chosen AOI.")
+        try:
+            lat, lon = float(row["lat"]), float(row["lon"])
+            aoi_name = str(row["aoi_name"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ValueError("Refusing --as-floors row without target coordinates and an explicit AOI name.")
+        if not np.isfinite(lat) or not np.isfinite(lon) or not point_in_aoi(lon, lat, aoi_name):
+            raise ValueError("Refusing --as-floors row whose point is outside its named AOI.")
+        match = DATE.search(str(row.get("file", "")))
+        if not match:
+            raise ValueError(f"Refusing --as-floors row without a valid date pair: {row.get('file')!r}")
+        a, b = match.groups()
+        span = span_from_name(row["file"])
+        if not np.isfinite(span) or span <= 0:
+            raise ValueError(f"Refusing --as-floors row with invalid/non-positive temporal span: {row['file']}")
+        if normalize_series_id(row.get("series_id", "")) != series_id:
+            raise ValueError("Refusing to mix geometry identities in --as-floors output.")
+        if str(row.get("layer", "")) not in layers:
+            raise ValueError("Refusing to mix embedded measurement layers in --as-floors output.")
+        validated.append((a, b, floor, str(row.get("source_product", "")), str(row.get("crid", "")),
+                          str(row.get("maturity", ""))))
+
+    # Duplicate processing variants of the same pair share a time-series key;
+    # keep the largest floor for the pair so reprocessing cannot improve a bound.
+    by_pair: dict[tuple[str, str], tuple[float, str, str, str]] = {}
+    for a, b, floor, source_product, crid, maturity in validated:
+        key = (a, b)
+        current = by_pair.get(key)
+        if current is None or floor > current[0]:
+            by_pair[key] = (floor, source_product, crid, maturity)
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["reference", "secondary", "layer",
-                                           "detect_floor_mm_day"])
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=[
+            "reference", "secondary", "layer", "series_id", "source_product",
+            "crid", "maturity", "aoi_name", "target_id", "lat", "lon",
+            "detect_floor_mm_day",
+        ])
         w.writeheader()
-        for r in usable:
-            a, b = DATE.search(r["file"]).groups()
-            w.writerow({"reference": a, "secondary": b, "layer": layer,
-                        "detect_floor_mm_day": round(r["local_floor_mm_day"], 3)})
-    logger.info("Wrote %s (%d floors)", path, len(usable))
-    return len(usable)
+        for (a, b), (floor, source_product, crid, maturity) in sorted(by_pair.items()):
+            sample = next(r for r in usable if DATE.search(str(r.get("file", ""))).groups() == (a, b)
+                          and normalize_series_id(r.get("series_id", "")) == series_id)
+            w.writerow({
+                "reference": a, "secondary": b, "layer": layer,
+                "series_id": series_id, "source_product": source_product,
+                "crid": crid, "maturity": maturity, "aoi_name": sample["aoi_name"],
+                "target_id": sample.get("target_id", ""), "lat": sample["lat"],
+                "lon": sample["lon"], "detect_floor_mm_day": round(floor, 3),
+            })
+    logger.info("Wrote %s (%d unique pair floors, series=%s)", path, len(by_pair), series_id)
+    return len(by_pair)
 
 
-def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
+def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str,
+                   identity_cache: dict[Path, tuple[str, dict]] | None = None) -> list[dict]:
     """Every file, every radius, at one target. Rows carry the target."""
     import rasterio
     from pyproj import Transformer
@@ -396,27 +770,45 @@ def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
             span = span_from_name(f.name)
             if not np.isfinite(span) or span <= 0:
                 logger.warning("no date pair in %s, skipped", f.name)
+                rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                         "INVALID_DATE_SPAN"))
                 continue
             with rasterio.open(f) as s:
                 arr = s.read(band).astype(float)
                 if s.nodata is not None:
                     arr[arr == s.nodata] = np.nan
+                tags = s.tags()
                 tf = Transformer.from_crs(4326, s.crs.to_epsg(), always_xy=True)
                 row, col = s.index(*tf.transform(lon, lat))
+            identity = (identity_cache[f][1] if identity_cache and f in identity_cache
+                        else raster_source_identity(tags))
             # "too few valid pixels" and "the point is not in this raster" are
             # different failures and used to print the same line. A target
             # outside the footprint is a setup error the caller must fix; a
             # target inside a nodata hole is a measurement fact about the site.
             if not (0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]):
                 print(f"  {DATE.search(f.name).group(0):<24}{span:>5.0f}"
-                      f"   TARGET OUTSIDE RASTER - check --lat/--lon")
+                      f"   TARGET OUTSIDE RASTER - no floor")
+                skipped = skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                      "TARGET_OUTSIDE_RASTER")
+                skipped.update(identity)
+                rows.append(skipped)
                 continue
             win = window(arr, row, col, radius)
             c = compare(arr, win, span)
             name = DATE.search(f.name).group(0)
             if not c["usable"]:
-                print(f"  {name:<24}{span:>5.0f}   too few valid pixels "
-                      f"({c['window_px']}/{c['window_total_px']})")
+                if c["status"] == "DEGENERATE_LOCAL_MAD":
+                    message = "zero/non-finite local MAD; no measurable noise floor"
+                elif c["status"] == "INVALID_DATE_SPAN":
+                    message = "invalid date span; no floor"
+                else:
+                    message = (f"too few valid pixels ({c['window_px']}/"
+                               f"{c['window_total_px']})")
+                print(f"  {name:<24}{span:>5.0f}   {message}")
+                rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
+                             "lat": lat, "lon": lon, "aoi_name": aoi_name,
+                             "aoi_eligible": True, **identity, **c})
                 continue
             ci = (f"[{c['local_floor_ci_lo']:.0f}-{c['local_floor_ci_hi']:.0f}]"
                   if np.isfinite(c["local_floor_ci_lo"]) else "-")
@@ -426,7 +818,8 @@ def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
                   f"{c['ratio']:>7.2f}{c['window_px']:>7}/{c['window_total_px']}")
             block.append(c)
             rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
-                         "lat": lat, "lon": lon, **c})
+                         "lat": lat, "lon": lon, "aoi_name": aoi_name,
+                         "aoi_eligible": True, **identity, "status": "MEASURED", **c})
 
         if not block:
             print("  nothing usable at this radius\n")
