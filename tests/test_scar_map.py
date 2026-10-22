@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from scar_map import AOI, GRID, UNUSABLE, grid_transform, grow, measure, probe
+from scar_map import AOI, GRID, UNUSABLE, grid_transform, grow, measure, probe, source_aoi_mask
 
 
 def test_the_grid_transform_comes_from_the_aoi_not_a_band():
@@ -37,6 +37,26 @@ def test_the_grid_transform_comes_from_the_aoi_not_a_band():
     # and the grid must span the AOI, not a fraction of it
     width_m = tf.a * GRID[1]
     assert width_m == pytest.approx(9140, rel=0.02)
+
+
+def test_source_aoi_mask_excludes_target9_outside_the_bbox_polygon():
+    """Bounding-box I/O must not promote an outside target into a scar/floor."""
+    from pyproj import Transformer
+    from rasterio.transform import rowcol
+
+    tf = grid_transform()
+    to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32645", always_xy=True)
+    mask = source_aoi_mask()
+    assert mask.shape == GRID
+    assert 0 < int(mask.sum()) < mask.size
+
+    x4, y4 = to_utm.transform(85.52983, 28.27799)
+    r4, c4 = rowcol(tf, x4, y4)
+    x9, y9 = to_utm.transform(85.47591, 28.25460)
+    r9, c9 = rowcol(tf, x9, y9)
+
+    assert mask[r4, c4], "Target 4 is inside the confirmed source polygon"
+    assert not mask[r9, c9], "Target 9 is outside the source polygon despite being in its bbox"
 
 
 def test_snow_is_not_treated_as_unusable():
