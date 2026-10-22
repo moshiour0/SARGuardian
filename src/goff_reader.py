@@ -435,7 +435,7 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
             raise RuntimeError(f"{name}: cannot export GOFF layer without EPSG/CRS metadata.")
         if valid.ndim != 2 or any(
             value is not None and np.asarray(value).shape != valid.shape
-            for value in (L["rng"], L["azi"], L["corr"])
+            for value in (L.get("range_m"), L.get("azimuth_m"), L.get("correlation"))
         ):
             raise RuntimeError(f"{name}: GOFF export arrays do not share the validity-mask shape.")
 
