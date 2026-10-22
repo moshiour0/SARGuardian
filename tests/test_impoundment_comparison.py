@@ -132,8 +132,8 @@ def test_response_count_skips_partial_or_nonfinite_height_results():
 
 
 def test_nearest_neighbour_is_review_only_and_never_an_exact_site_match(tmp_path):
-    baseline = _write(tmp_path / "baseline.geojson", [_feature(85.5, 28.3)])
-    candidate = _write(tmp_path / "candidate.geojson", [_feature(85.5001, 28.3001)])
+    baseline = _write(tmp_path / "baseline.geojson", [_feature(85.5, 28.3, sill=3500)])
+    candidate = _write(tmp_path / "candidate.geojson", [_feature(85.5001, 28.3001, sill=3525)])
     summary, changes = compare_geojson(baseline, candidate)
 
     assert summary["exact_coordinate_matches"] == 0
@@ -145,6 +145,8 @@ def test_nearest_neighbour_is_review_only_and_never_an_exact_site_match(tmp_path
     missing = next(row for row in changes if row["status"] == "BASELINE_SITE_MISSING")
     assert missing["nearest_neighbour_is_identity_match"] is False
     assert missing["nearest_candidate_distance_m"] < 100
+    assert missing["nearest_candidate_sill_m"] == 3525
+    assert missing["nearest_candidate_sill_m_minus_source"] == 25
 
 
 def test_truncated_height_results_are_reported_separately_as_lower_bounds():
@@ -212,6 +214,8 @@ def test_cli_csv_keeps_nearest_neighbour_review_columns(tmp_path, monkeypatch):
         rows = list(csv.DictReader(stream))
         assert "nearest_candidate_distance_m" in rows[0]
         assert "nearest_baseline_distance_m" in rows[0]
+        assert "nearest_candidate_sill_m" in rows[0]
+        assert "nearest_candidate_sill_m_minus_source" in rows[0]
         assert "nearest_neighbour_is_identity_match" in rows[0]
     summary = json.loads(out_json.read_text(encoding="utf-8"))
     assert summary["status"] == "REVIEW_REQUIRED"
