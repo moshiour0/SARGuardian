@@ -145,3 +145,24 @@ def test_nearest_neighbour_is_review_only_and_never_an_exact_site_match(tmp_path
     missing = next(row for row in changes if row["status"] == "BASELINE_SITE_MISSING")
     assert missing["nearest_neighbour_is_identity_match"] is False
     assert missing["nearest_candidate_distance_m"] < 100
+
+
+def test_truncated_height_results_are_reported_separately_as_lower_bounds():
+    from tools.compare_impoundment_geojson import response_counts, truncated_response_counts
+
+    rows = [
+        {"properties": {"by_height": {"10.0": {
+            "volume_Mm3": 1.0, "area_km2": 0.1,
+            "backwater_km": 0.2, "truncated": True,
+        }}}},
+        {"properties": {"by_height": {"10.0": {
+            "volume_Mm3": 2.0, "area_km2": 0.2,
+            "backwater_km": 0.4, "truncated": False,
+        }}}},
+        {"properties": {"by_height": {"10.0": {
+            "volume_Mm3": 3.0, "area_km2": 0.3,
+            "backwater_km": 0.6, "truncated": "true",
+        }}}},
+    ]
+    assert response_counts(rows, [10]) == {"10": 3}
+    assert truncated_response_counts(rows, [10]) == {"10": 1}
