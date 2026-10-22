@@ -74,50 +74,64 @@ def _values_equal(a: Any, b: Any, tolerance: float) -> bool:
     return a == b
 
 
+def complete_height_result(row: dict[str, Any], height: float) -> dict[str, Any] | None:
+    """Return a complete finite by-height result, or None if it is not measured."""
+    by_height = row.get("properties", {}).get("by_height")
+    if not isinstance(by_height, dict):
+        return None
+    result = None
+    for raw_key, candidate in by_height.items():
+        try:
+            parsed_height = float(raw_key)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(parsed_height) and math.isclose(
+            parsed_height, height, rel_tol=0.0, abs_tol=1e-9
+        ):
+            result = candidate
+            break
+    if not isinstance(result, dict):
+        return None
+    for field in ("volume_Mm3", "area_km2", "backwater_km"):
+        try:
+            value = float(result[field])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+    return result
+
+
 def response_counts(rows: list[dict[str, Any]], heights: list[float]) -> dict[str, int]:
     """Count sites with a complete by_height result at each requested height.
 
-    The top-level threshold_height_m field is a current-output eligibility or
-    ranking property and is absent from historical GeoJSONs. It is not a stable
-    cross-version schema. Count a site only when its by_height map contains the
-    requested numeric key and finite volume, area and backwater values.
+    The top-level threshold_height_m field is a current-output ranking property
+    and is absent from historical GeoJSONs. It is not a stable cross-version
+    schema. A height counts only when its by_height entry contains finite,
+    non-negative volume, area and backwater values. This is a result-coverage
+    count, not proof that the DEM or the physical dam scenario is accurate.
     """
-    counts: dict[str, int] = {}
-    required_fields = ("volume_Mm3", "area_km2", "backwater_km")
-    for height in heights:
-        key = f"{height:g}"
-        count = 0
-        for row in rows:
-            by_height = row["properties"].get("by_height")
-            if not isinstance(by_height, dict):
-                continue
-            result = None
-            for raw_key, candidate in by_height.items():
-                try:
-                    parsed_height = float(raw_key)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if math.isfinite(parsed_height) and math.isclose(
-                    parsed_height, height, rel_tol=0.0, abs_tol=1e-9
-                ):
-                    result = candidate
-                    break
-            if not isinstance(result, dict):
-                continue
-            complete = True
-            for field in required_fields:
-                try:
-                    value = float(result[field])
-                except (KeyError, TypeError, ValueError, OverflowError):
-                    complete = False
-                    break
-                if not math.isfinite(value):
-                    complete = False
-                    break
-            if complete:
-                count += 1
-        counts[key] = count
-    return counts
+    return {
+        f"{height:g}": sum(complete_height_result(row, height) is not None for row in rows)
+        for height in heights
+    }
+
+
+def truncated_response_counts(rows: list[dict[str, Any]], heights: list[float]) -> dict[str, int]:
+    """Count complete height results whose modeled water surface hits the grid edge.
+
+    Such volumes are lower bounds. Keep their count separate from the number
+    of computed responses so a complete-looking value is not mistaken for a
+    closed-basin estimate.
+    """
+    return {
+        f"{height:g}": sum(
+            (result := complete_height_result(row, height)) is not None
+            and result.get("truncated") is True
+            for row in rows
+        )
+        for height in heights
+    }
 
 
 def distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -249,11 +263,17 @@ def compare_geojson(baseline_path: Path, candidate_path: Path, *,
             "baseline": response_counts(baseline, heights),
             "candidate": response_counts(candidate, heights),
         },
+        "truncated_response_counts_by_threshold_height_m": {
+            "baseline": truncated_response_counts(baseline, heights),
+            "candidate": truncated_response_counts(candidate, heights),
+        },
         "response_count_definition": (
             "Count a site only when by_height contains the requested numeric height "
-            "and a complete finite volume_Mm3/area_km2/backwater_km result. The "
-            "top-level threshold_height_m property is not used because it is not "
-            "present in historical GeoJSONs."
+            "and a complete finite non-negative volume_Mm3/area_km2/backwater_km "
+            "result. This is computed-result coverage, not independent hydrologic "
+            "validation. Truncated counts are reported separately because their "
+            "volumes are lower bounds. The top-level threshold_height_m property "
+            "is not used because it is absent from historical GeoJSONs."
         ),
         "comparison_tolerance": tolerance,
         "identity_rule": "Only exact WGS84 coordinate pairs are treated as the same site; nearest neighbours are never paired as if identical.",
