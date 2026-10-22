@@ -64,7 +64,8 @@ def test_bucket_and_filed_path_classification_are_explicit(tmp_path):
     assert bucket(row) == "2026-07_summer"
     dest = tmp_path / "data" / "nisar_l2"
     correct = _put(dest / "GUNW" / "2026-07_summer", PROVISIONAL)
-    co_event = _put(dest / "GOFF" / "co_event", BETA.replace("GUNW", "GOFF"))
+    late_pair = PROVISIONAL.replace("20260702", "20260826").replace("20260714", "20260907")
+    co_event = _put(dest / "GOFF" / "co_event", late_pair.replace("GUNW", "GOFF"))
     incoming = _put(dest / "_incoming", PROVISIONAL)
     wrong_depth = _put(dest / "misc" / "GUNW", PROVISIONAL)
     wrong_bucket = _put(dest / "GUNW" / "misc", PROVISIONAL)
