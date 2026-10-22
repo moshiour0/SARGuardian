@@ -394,7 +394,8 @@ def test_summary_reports_against_the_pairs_own_floor(tmp_path, capsys):
 
     out = sp.run([sys.executable, str(ROOT / "src" / "inverse_velocity.py"),
                   "--ts", str(ts), "--floors", str(floors),
-                  "--floors-layer", "layer2", "--noise-floor", "18.6"],
+                  "--floors-layer", "layer2", "--noise-floor", "18.6",
+                  "--allow-legacy-global-floors"],
                  capture_output=True, text=True, check=True).stdout
 
     assert "SUMMARY" in out
@@ -491,3 +492,55 @@ def test_a_non_finite_floor_is_rejected_not_parsed(tmp_path):
     floors = load_floors(p, "layer2")
     assert len(floors) == 1
     assert all(np.isfinite(v) and v > 0 for v in floors.values())
+
+
+def test_track_floor_catalogue_matches_timeseries_resolution_and_uses_max(tmp_path):
+    from inverse_velocity import load_track_floor_catalogue, normalize_track_id
+
+    p = tmp_path / "stats.csv"
+    with open(p, "w", newline="") as fh:
+        w = _csv.DictWriter(fh, fieldnames=[
+            "track", "reference", "secondary", "layer", "processing",
+            "crid", "file", "detect_floor_mm_day",
+        ])
+        w.writeheader()
+        # Same source track and acquisition pair appears in multiple CRIDs,
+        # frames and swaths. Since ts_goff_source.csv retains only track/path,
+        # the conservative maximum must be used.
+        w.writerow({"track": "ASC 098", "reference": "20260702", "secondary": "20260714",
+                    "layer": "HH/layer2", "processing": "PR", "crid": "P05023",
+                    "file": "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_"
+                            "20260702T233920_20260702T233955_20260714T233920_20260714T233954_"
+                            "P05023_F_F_J_001.h5", "detect_floor_mm_day": "18.6"})
+        w.writerow({"track": "ASC 098", "reference": "20260702", "secondary": "20260714",
+                    "layer": "HH/layer2", "processing": "PR", "crid": "X05010",
+                    "file": "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_"
+                            "20260702T233920_20260702T233955_20260714T233920_20260714T233954_"
+                            "X05010_N_F_J_001.h5", "detect_floor_mm_day": "25.2"})
+        w.writerow({"track": "DESC 048", "reference": "20260702", "secondary": "20260714",
+                    "layer": "HH/layer2", "processing": "PR", "crid": "P05023",
+                    "file": "NISAR_L2_PR_GOFF_024_048_D_074_025_2000_SH_"
+                            "20260702T125814_20260702T125849_20260714T125814_20260714T125848_"
+                            "P05023_N_F_J_001.h5", "detect_floor_mm_day": "110.0"})
+        w.writerow({"track": "ASC 098", "reference": "20260702", "secondary": "20260714",
+                    "layer": "HH/layer2", "processing": "UR", "crid": "P05023",
+                    "file": "NISAR_L2_UR_GOFF_024_098_A_016_025_4000_SH_"
+                            "20260702T233920_20260702T233955_20260714T233920_20260714T233954_"
+                            "P05023_F_F_J_001.h5", "detect_floor_mm_day": "999.0"})
+        w.writerow({"track": "ASC 098", "reference": "20260702", "secondary": "20260714",
+                    "layer": "HH/layer1", "processing": "PR", "crid": "P05023",
+                    "file": "other.h5", "detect_floor_mm_day": "888.0"})
+
+    floors = load_track_floor_catalogue(p, layer="layer2", processing="PR")
+    pair = (_date(2026, 7, 2), _date(2026, 7, 14))
+    assert normalize_track_id("ASC path 98") == "ASC 98"
+    assert normalize_track_id("ASC 098") == "ASC 98"
+    assert normalize_track_id("DESC path 48") == "DESC 48"
+    assert floors["ASC 98"][pair] == 25.2
+    assert floors["DESC 48"][pair] == 110.0
+
+
+def test_track_floor_catalogue_rejects_unidentified_geometry(tmp_path):
+    from inverse_velocity import normalize_track_id
+    with pytest.raises(ValueError):
+        normalize_track_id("unidentified stack")
