@@ -977,6 +977,11 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         logger.error("No coordinates - cannot export.")
         return {}
 
+    aoi_name = result.get("aoi_name")
+    if aoi_name not in AOIS:
+        raise RuntimeError(f"Refusing AOI export: missing or unknown AOI identity {aoi_name!r}.")
+    export_ring = AOIS[aoi_name]
+
     valid = result["valid"]
     if valid.shape != result["displacement_mm"].shape:
         raise RuntimeError("GUNW validity mask and displacement array shapes do not match.")
@@ -987,7 +992,7 @@ def export_clipped(result: dict, outdir: Path) -> dict:
     full_coh = (np.where(valid, result["coherence"], np.nan)
                 if result["coherence"] is not None else None)
 
-    grid = aoi_grid(xs, ys, globals()["AOI_RING"], result["epsg"])
+    grid = aoi_grid(xs, ys, export_ring, result["epsg"])
     if grid is not None:
         # Fixed AOI grid: every export over this AOI at this posting comes out
         # the same size, on the same lattice, and can be differenced directly.
@@ -999,7 +1004,7 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         # explicit per-product AOI window. Bound this window by AOI cells, not
         # valid signal pixels: an all-invalid product must still be represented
         # as a no-data raster when its grid covers the AOI.
-        aoi_mask = build_aoi_mask(xs, ys, globals()["AOI_RING"], result["epsg"])
+        aoi_mask = build_aoi_mask(xs, ys, export_ring, result["epsg"])
         if not aoi_mask.any():
             logger.warning("%s has no source-grid cells inside AOI; no GeoTIFF can represent that AOI.",
                            result["file"][:44])
