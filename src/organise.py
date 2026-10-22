@@ -129,7 +129,7 @@ def _identity_for_path(path: Path) -> dict | None:
     fields = match.groupdict()
     if fields["proc"] not in {"PR", "UR"} or fields["product"] not in {"GUNW", "GOFF"}:
         return None
-    stamps = re.findall(r"_(\\d{8})T\\d{6}", path.name)
+    stamps = re.findall(r"_(\d{8})T\d{6}", path.name)
     if len(stamps) < 4:
         return None
     try:
