@@ -237,7 +237,7 @@ def read_goff(
                     f"{L['group']}: coordinate lengths {(len(L['ys']), len(L['xs']))} "
                     f"do not match offset raster shape {valid.shape}."
                 )
-            aoi_mask = build_aoi_mask(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
+            aoi_mask = build_aoi_mask(L["xs"], L["ys"], export_ring, L["epsg"])
             if aoi_mask.shape != valid.shape:
                 raise RuntimeError(
                     f"{L['group']}: AOI mask shape {aoi_mask.shape} does not match offset raster shape {valid.shape}."
@@ -418,6 +418,10 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
 
     if not res.get("aoi_mask_applied", False):
         raise RuntimeError("Refusing AOI-clipped GeoTIFF export: the source reader did not apply the AOI mask.")
+    aoi_name = res.get("aoi_name")
+    if aoi_name not in _g.AOIS:
+        raise RuntimeError(f"Refusing GOFF export: missing or unknown AOI identity {aoi_name!r}.")
+    export_ring = _g.AOIS[aoi_name]
     out = []
     proc = re.search(r"NISAR_L2_([A-Z]{2})_", Path(res["file"]).name)
     tag = f"_{proc.group(1)}" if proc else ""
@@ -437,7 +441,9 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
 
         # Fixed AOI grid, so two layers or two pairs over the same ground come
         # out the same size and can be differenced. See gunw_reader.aoi_grid.
-        grid = _g.aoi_grid(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
+        if L.get("aoi_name") != aoi_name or not L.get("aoi_mask_applied", False):
+            raise RuntimeError(f"{name}: layer AOI provenance conflicts with the parent GOFF result.")
+        grid = _g.aoi_grid(L["xs"], L["ys"], export_ring, L["epsg"])
         aoi_mask = None
         if grid is None:
             # A non-lattice product must still be represented if it covers the
