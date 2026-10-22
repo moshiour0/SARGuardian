@@ -580,6 +580,8 @@ def main() -> int:
                          "you want whenever per-pair floors vary")
     ap.add_argument("--floors-layer", default=None,
                     help="restrict --floors to one layer, e.g. layer2")
+    ap.add_argument("--allow-legacy-global-floors", action="store_true",
+                    help="explicitly permit identity-free date-pair floors to gate every geometry; prefer source-identified floors.")
     ap.add_argument("--sig-multiple", type=float, default=1.0,
                     help="velocity must exceed this many times the floor")
     ap.add_argument("--window", type=int, default=3)
@@ -598,38 +600,94 @@ def main() -> int:
     ap.add_argument("--plot", metavar="OUT.png")
     args = ap.parse_args()
 
-    ev = datetime.strptime(args.event_date, "%Y-%m-%d").date() if args.event_date else None
-    cutoff = (datetime.strptime(args.forecast_cutoff, "%Y-%m-%d").date()
-              if args.forecast_cutoff else ev)
+    try:
+        ev = datetime.strptime(args.event_date, "%Y-%m-%d").date() if args.event_date else None
+        cutoff = (datetime.strptime(args.forecast_cutoff, "%Y-%m-%d").date()
+                  if args.forecast_cutoff else ev)
+    except ValueError:
+        ap.error("--event-date and --forecast-cutoff must use valid YYYY-MM-DD calendar dates.")
+    if args.noise_floor is not None and (
+        not math.isfinite(args.noise_floor) or args.noise_floor <= 0
+    ):
+        ap.error("--noise-floor must be finite and positive.")
+    if not math.isfinite(args.sig_multiple) or args.sig_multiple <= 0:
+        ap.error("--sig-multiple must be finite and positive.")
+    if args.window < 3:
+        ap.error("--window must be at least 3 velocities; two points can force a perfect fit.")
+    if not math.isfinite(args.r2_min) or not 0 <= args.r2_min <= 1:
+        ap.error("--r2-min must be finite and between 0 and 1.")
+    if not math.isfinite(args.horizon) or args.horizon <= 0:
+        ap.error("--horizon must be finite and positive.")
     if args.allow_post_event:
         cutoff = None
     series = load_series(resolve(args.ts))
     if not series:
         logger.error("No rows in %s", args.ts); return 1
 
-    floors: dict = {}
+    global_floors: dict[tuple[date, date], float] = {}
+    floors_by_series: dict[str, dict[tuple[date, date], float]] = {}
     if args.floors:
-        floors = load_floors(resolve(args.floors), args.floors_layer)
-        logger.info("Loaded %d per-pair floors from %s", len(floors), args.floors)
+        try:
+            global_floors, floors_by_series = load_floor_catalogue(
+                resolve(args.floors), args.floors_layer
+            )
+        except (OSError, ValueError) as exc:
+            logger.error("Cannot use floor file safely: %s", exc)
+            return 2
+        if floors_by_series:
+            input_series = {normalize_series_id(geom) for geom, _comp in series}
+            missing_series = sorted(input_series - set(floors_by_series))
+            if missing_series:
+                logger.error(
+                    "Geometry-scoped floor CSV lacks exact identities for one or more "
+                    "timeseries geometries; refusing to apply another track/frame/CRID's "
+                    "floor. Missing=%s available=%s",
+                    missing_series, sorted(floors_by_series),
+                )
+                return 2
+            logger.info(
+                "Loaded %d pair floors for %d exact geometry/CRID identities from %s",
+                sum(len(v) for v in floors_by_series.values()),
+                len(floors_by_series), args.floors,
+            )
+        elif global_floors and not args.allow_legacy_global_floors:
+            logger.error(
+                "Floor CSV has no source geometry/CRID identity. Refusing to apply "
+                "date-pair floors globally; regenerate a source-identified floor CSV "
+                "or explicitly pass --allow-legacy-global-floors after verifying it."
+            )
+            return 2
+        elif global_floors:
+            logger.warning(
+                "LEGACY GLOBAL FLOORS EXPLICITLY ENABLED: identity-free date-pair floors "
+                "will be applied to all %d time-series geometry/CRID series.",
+                len({geom for geom, _comp in series}),
+            )
 
-    # --noise-floor is only needed for intervals that have no per-pair floor.
-    # When it is omitted and floors were supplied, fall back to the LARGEST of
-    # them: a pair whose own floor is unknown must not be gated more leniently
-    # than the noisiest pair that is known, or a missing measurement would
-    # improve the bound.
+    all_floor_values = list(global_floors.values()) + [
+        value for per_series in floors_by_series.values() for value in per_series.values()
+    ]
+    # --noise-floor is only needed for intervals with no matched per-pair floor.
+    # Use the largest available floor as fallback so missing observations never
+    # make a bound more permissive.
     if args.noise_floor is None:
-        if not floors:
+        if not all_floor_values:
             logger.error("Give --noise-floor, or --floors to supply per-pair floors")
             return 2
-        args.noise_floor = max(floors.values())
-        logger.info("No --noise-floor given; falling back to the largest "
-                    "per-pair floor, %.1f mm/day", args.noise_floor)
+        args.noise_floor = max(all_floor_values)
+        logger.info("No --noise-floor given; fallback for missing pair floors is %.1f mm/day",
+                    args.noise_floor)
 
     print(f"\n{len(series)} independent block(s) from {args.ts}")
-    if floors:
-        print(f"Per-pair floors from {args.floors}"
+    if floors_by_series:
+        print(f"Geometry/CRID-scoped per-pair floors from {args.floors}"
               + (f" (layer {args.floors_layer})" if args.floors_layer else "")
               + f", significance gate {args.sig_multiple:g}x")
+        print(f"Each series receives only its own matched floors; missing pairs fall back to {args.noise_floor:g} mm/day")
+    elif global_floors:
+        print(f"LEGACY GLOBAL per-pair floors from {args.floors}"
+              + (f" (layer {args.floors_layer})" if args.floors_layer else "")
+              + f", explicit global-floor override enabled, significance gate {args.sig_multiple:g}x")
         print(f"Fallback floor {args.noise_floor:g} mm/day where a pair has none")
     else:
         print(f"Noise floor {args.noise_floor:g} mm/day, "
@@ -637,9 +695,11 @@ def main() -> int:
 
     results = []
     for (geom, comp), rows in sorted(series.items()):
+        series_floors = (floors_by_series[normalize_series_id(geom)]
+                         if floors_by_series else global_floors)
         results.append(analyse_block(geom, comp, rows, args.noise_floor,
                                      args.window, args.r2_min, args.horizon,
-                                     args.sig_multiple, ev, floors, cutoff))
+                                     args.sig_multiple, ev, series_floors, cutoff))
 
     print(f"\n{'='*74}\nSUMMARY\n{'='*74}")
     fired = [r for r in results if r.get("alarm")]
