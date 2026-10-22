@@ -198,9 +198,13 @@ def test_local_floors_round_trip_into_the_detector(tmp_path):
     from inverse_velocity import load_floors
     from local_floor import write_as_floors
     rows = [{"file": "GOFF_20260702_20260714_PR_HH-layer2.tif", "usable": True,
-             "target_id": "4", "local_floor_mm_day": 32.01},
+             "target_id": "4", "lat": 28.27799, "lon": 85.52983,
+             "aoi_name": "source", "aoi_eligible": True, "status": "MEASURED",
+             "window_px": 169, "local_floor_mm_day": 32.01},
             {"file": "GOFF_20260629_20260711_PR_HH-layer2.tif", "usable": True,
-             "target_id": "4", "local_floor_mm_day": 255.3}]
+             "target_id": "4", "lat": 28.27799, "lon": 85.52983,
+             "aoi_name": "source", "aoi_eligible": True, "status": "MEASURED",
+             "window_px": 169, "local_floor_mm_day": 255.3}]
     out = tmp_path / "f.csv"
     assert write_as_floors(rows, out, "layer2") == 2
     f = load_floors(out, "layer2")
@@ -337,3 +341,39 @@ def test_zero_aoi_mad_does_not_turn_a_valid_local_floor_into_zero():
     assert np.isnan(result["aoi_floor_mm_day"])
     assert np.isnan(result["ratio"])
     assert result["status"] == "MEASURED_LOCAL_FLOOR_AOI_MAD_UNUSABLE"
+
+
+def test_inverse_velocity_floor_export_refuses_a_stale_usable_flag(tmp_path):
+    import pytest
+    from local_floor import write_as_floors
+
+    common = {
+        "file": "GOFF_20260702_20260714_PR_HH-layer2.tif",
+        "usable": True, "target_id": "4",
+        "lat": 28.27799, "lon": 85.52983, "aoi_name": "source",
+        "aoi_eligible": True, "status": "MEASURED",
+        "window_px": 169,
+    }
+    for bad_floor in (0.0, -1.0, float("nan"), float("inf")):
+        row = {**common, "local_floor_mm_day": bad_floor}
+        with pytest.raises(ValueError, match="finite positive value"):
+            write_as_floors([row], tmp_path / f"bad-{bad_floor}.csv", "layer2")
+
+    too_few = {**common, "local_floor_mm_day": 1.0, "window_px": 3}
+    with pytest.raises(ValueError, match="at least MIN_PX"):
+        write_as_floors([too_few], tmp_path / "too-few.csv", "layer2")
+
+
+def test_inverse_velocity_floor_export_refuses_a_target_outside_the_aoi(tmp_path):
+    import pytest
+    from local_floor import write_as_floors
+
+    row = {
+        "file": "GOFF_20260702_20260714_PR_HH-layer2.tif",
+        "usable": True, "target_id": "9",
+        "lat": 28.25460, "lon": 85.47591, "aoi_name": "source",
+        "aoi_eligible": True, "status": "MEASURED",
+        "window_px": 169, "local_floor_mm_day": 12.0,
+    }
+    with pytest.raises(ValueError, match="outside its named AOI"):
+        write_as_floors([row], tmp_path / "outside.csv", "layer2")
