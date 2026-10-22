@@ -481,3 +481,26 @@ def test_elevation_grid_rejects_infinite_samples_but_keeps_nan_nodata():
     z[0, 0] = np.inf
     with pytest.raises(ValueError, match="infinite elevations"):
         _validate_elevation_grid(z, lats, lons, (85.1, 28.0, 85.2, 28.1))
+
+
+
+def test_analyse_runs_end_to_end_with_a_valid_rectangular_dem(capsys):
+    """A live DEM must pass grid validation, logging, routing, and ranking."""
+    import impoundment
+
+    rows, cols = np.mgrid[0:7, 0:8]
+    z = (rows * 3.0 + cols * 2.0).astype(float)
+    lats = np.linspace(28.30, 28.24, z.shape[0])
+    lons = np.linspace(85.48, 85.55, z.shape[1])
+    result = impoundment.analyse(
+        z, lats, lons, heights=[10, 25], min_accum_cells=1, top_n=3,
+        min_separation_km=0.0, rank_by="efficiency",
+    )
+    captured = capsys.readouterr()
+    assert "Grid 7 x 8" in captured.out or "Grid 7 x 8" in captured.err
+    assert isinstance(result, list)
+    assert result, "the sloping fixture should produce at least one candidate pool"
+    for site in result:
+        assert np.isfinite(site["lat"]) and np.isfinite(site["lon"])
+        assert site["threshold_height_m"] in {10.0, 25.0}
+        assert np.isfinite(site["max_volume_Mm3"])
