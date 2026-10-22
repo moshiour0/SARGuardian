@@ -301,6 +301,7 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
             "mask_dtype":str(mask_ds.dtype) if mask_ds is not None else None,
             "mask_dataset_metadata":_dataset_metadata(h5, mask),
             "mask_numeric_layout_sampled_rows":_mask_numeric_layout(mask_ds[::CHUNK_ROWS, :] if mask_ds is not None else np.array([], dtype=np.uint8)),
+            "mask_numeric_layout_exact":_mask_numeric_layout_from_hist(mhist, mask_ds.dtype) if mask_ds is not None else None,
             "phase_dataset_metadata":_dataset_metadata(h5, pphase),
             "coherence_dataset_metadata":_dataset_metadata(h5, coh),
             "components_dataset_metadata":_dataset_metadata(h5, comp),
