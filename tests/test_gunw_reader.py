@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import synth
-from gunw_reader import check_consistency, decode_gunw_mask, read_gunw, verify_products
+from gunw_reader import (SOURCE_RING, aoi_grid, build_aoi_mask, check_consistency,\n                         decode_gunw_mask, read_gunw, verify_products)
 
 TOL_MM = 1.5
 
@@ -337,3 +337,17 @@ def test_uint32_mask_decodes_low_byte_separately_from_iono_bit_and_anomaly_flags
     assert uncorrected["usable_mask_for_policy"].tolist() == [[
         True, True, False, True, False, False, False, False, False, False
     ]]
+
+
+def test_aoi_mask_refuses_to_guess_a_missing_source_crs():
+    xs = np.linspace(500_000, 501_000, 11)
+    ys = np.linspace(3_200_000, 3_199_000, 11)
+    with pytest.raises(ValueError, match="no EPSG/CRS metadata"):
+        build_aoi_mask(xs, ys, SOURCE_RING, None)
+
+
+def test_fixed_aoi_grid_refuses_to_guess_a_missing_source_crs():
+    xs = np.linspace(500_000, 501_000, 11)
+    ys = np.linspace(3_200_000, 3_199_000, 11)
+    with pytest.raises(ValueError, match="without source EPSG/CRS"):
+        aoi_grid(xs, ys, SOURCE_RING, None)
