@@ -642,6 +642,16 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     ]
     if not usable:
         raise ValueError("--as-floors cannot write a file without any usable local floors.")
+    if any(
+        r.get("series_identity_status") != "PARSED_SOURCE_GRANULE"
+        or not str(r.get("source_product", "")).strip()
+        or not str(r.get("crid", "")).strip()
+        for r in usable
+    ):
+        raise ValueError(
+            "--as-floors requires a parseable source-granule tag with a known CRID; "
+            "legacy/unidentified GeoTIFFs may be analysed but cannot create geometry-scoped floors."
+        )
     series_ids = {normalize_series_id(r.get("series_id", "")) for r in usable}
     if "" in series_ids or len(series_ids) != 1:
         raise ValueError(
@@ -652,6 +662,10 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     layers = {str(r.get("layer", "")) for r in usable}
     if len(layers) != 1 or not next(iter(layers)):
         raise ValueError("--as-floors rows do not have one unambiguous embedded GeoTIFF layer tag.")
+    if not all(str(layer).casefold() in candidate.casefold() for candidate in layers):
+        raise ValueError(
+            f"--as-floors layer selector {layer!r} does not match embedded layer {sorted(layers)!r}."
+        )
     if len({str(r.get("target_id", "")) for r in usable}) > 1:
         raise ValueError("--as-floors needs a single target")
     coordinates = {
@@ -766,7 +780,8 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str,
                 tags = s.tags()
                 tf = Transformer.from_crs(4326, s.crs.to_epsg(), always_xy=True)
                 row, col = s.index(*tf.transform(lon, lat))
-            identity = raster_source_identity(tags)
+            identity = (identity_cache[f][1] if identity_cache and f in identity_cache
+                        else raster_source_identity(tags))
             # "too few valid pixels" and "the point is not in this raster" are
             # different failures and used to print the same line. A target
             # outside the footprint is a setup error the caller must fix; a
@@ -774,8 +789,10 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str,
             if not (0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]):
                 print(f"  {DATE.search(f.name).group(0):<24}{span:>5.0f}"
                       f"   TARGET OUTSIDE RASTER - no floor")
-                rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
-                                         "TARGET_OUTSIDE_RASTER"))
+                skipped = skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                      "TARGET_OUTSIDE_RASTER")
+                skipped.update(identity)
+                rows.append(skipped)
                 continue
             win = window(arr, row, col, radius)
             c = compare(arr, win, span)
