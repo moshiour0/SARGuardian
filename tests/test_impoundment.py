@@ -574,6 +574,6 @@ def test_ponding_refuses_invalid_site_or_nonfinite_water_level():
     children = {0: [1]}
     with pytest.raises(ValueError, match="outside the elevation grid"):
         connected_flooded_upstream(2, elevation, children, 110.0)
-    with pytest.raises(ValueError, match="water level must be finite"):
+    with pytest.raises(ValueError, match="Water level must be finite"):
         connected_flooded_upstream(0, elevation, children, float("nan"))
     assert connected_flooded_upstream(0, elevation, children, 100.0).size == 0
