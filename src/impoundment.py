@@ -18,14 +18,26 @@ a site that is both dammable and moving.
 
 Method
 ======
-1. Fill depressions (priority-flood) for routing purposes only.
-2. D8 flow directions and flow accumulation.
-3. Channel = cells whose upstream contributing area exceeds a threshold.
-4. For each channel cell, treat it as a dam site. For a range of dam heights,
-   flood the *upstream contributing area* to that water level and integrate
-   the depth.
-5. Rank by impounded volume; flag sites whose pool touches the AOI edge
-   (truncated, so the volume is a lower bound).
+1. Validate the DEM grid and preserve an identity hash of the actual samples,
+   coordinate axes, request bbox and sample count.
+2. Priority-flood fill depressions for routing only; do not replace the original
+   DEM elevations used for pool depth.
+3. Route D8 using steepest downhill neighbours and deterministic equal-height
+   routing toward a downhill cell or raster outlet. Compute contributing area
+   in graph-topological order and refuse cycles/invalid receiver edges.
+4. Treat channel cells above a configurable contributing-cell threshold as
+   candidate blockage sites. For a proposed water level (sill + imposed height),
+   traverse the candidate's upstream receiver tree only through cells whose
+   original elevation is below that level. This is a tree-constrained connected
+   ponding approximation, not a two-dimensional hydraulic/spillway solver.
+5. Integrate depth over the modelled pool, record pool area and bounding-box
+   backwater extent, and flag pools touching the grid edge. Edge-truncated pool
+   volume is a lower bound on that modelled pool; unmodelled lateral spill over
+   divides can instead make a closed-basin interpretation an overestimate.
+6. Rank and spatially suppress candidates using explicit parameters. The full
+   analysis is bound to the input DEM hash, implementation hash, model version,
+   runtime and parameter sidecar. A successful run does not establish physical
+   accuracy against a real impoundment.
 
 DEM sources
 ===========
@@ -357,12 +369,33 @@ def file_sha256(path: Path) -> str:
 def dem_provenance(z, lats, lons, *, bbox, source: str,
                    target_cells: int, source_file: Path | None = None,
                    cache_path: Path | None = None) -> dict:
-    """Machine-readable provenance for the exact elevation grid used."""
+    """Machine-readable provenance for DEM samples AND the hydrology implementation.
+
+    The input-grid SHA identifies terrain values and sample positions; the code
+    SHA and explicit model labels make intentional algorithm changes visible
+    instead of attributing new candidate locations to changing elevation data.
+    """
     _validate_elevation_grid(z, lats, lons, bbox)
+    implementation = Path(__file__).resolve()
     data = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": source,
         "endpoint": API_ENDPOINT if source == "OpenTopoData SRTM 30m" else None,
+        "hydrology_model": {
+            "algorithm_id": "priority-flood-d8-flat-routing-tree-connected-ponding-v2",
+            "depression_filling": "priority-flood-for-routing-only",
+            "flow_routing": "steepest-downhill-plus-acyclic-equal-height-routing",
+            "flow_accumulation": "Kahn-graph-topological-order-cycle-checked",
+            "ponding": "upstream-receiver-tree-connected-below-proposed-waterline",
+            "lateral_spill_solver": None,
+            "backwater_extent": "axis-aligned-grid-bounds-diagonal",
+        },
+        "implementation_file": implementation.name,
+        "implementation_sha256": file_sha256(implementation),
+        "runtime": {
+            "python_version": sys.version.split()[0],
+            "numpy_version": np.__version__,
+        },
         "bbox_wgs84": [float(v) for v in bbox],
         "shape_rows_cols": list(np.asarray(z).shape),
         "latitude_north_south": [float(np.max(lats)), float(np.min(lats))],
