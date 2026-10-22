@@ -46,6 +46,7 @@ import argparse
 import csv
 import logging
 import math
+import os
 import re
 import sys
 from datetime import datetime
@@ -194,6 +195,17 @@ SOURCE_RING = [
 ]
 
 AOIS = {"source": SOURCE_RING, "langtang": LANGTANG_RING, "lhende": LHENDE_RING}
+
+# A dynamic WGS84 polygon can be supplied to isolated E2E runs. It is installed
+# before any CLI choices or product masks are built, so every reader uses the
+# exact same geometry. The normal named-AOI behavior is unchanged when unset.
+CUSTOM_AOI_WKT = os.environ.get("SARGUARDIAN_AOI_WKT", "").strip()
+if CUSTOM_AOI_WKT:
+    try:
+        from aoi_wkt import parse_polygon_wkt
+        AOIS["custom"] = parse_polygon_wkt(CUSTOM_AOI_WKT)
+    except Exception as exc:
+        raise ValueError(f"Invalid SARGUARDIAN_AOI_WKT: {type(exc).__name__}: {exc}") from exc
 
 AOI_NAME = "langtang"
 AOI_RING = LANGTANG_RING          # module default; set_aoi() overrides
@@ -1363,7 +1375,7 @@ def main() -> int:
     ap.add_argument("--ref-radius", type=int, default=5, help="reference window half-width in pixels")
     ap.add_argument("--no-clip", action="store_true", help="do not clip to the AOI ring")
     ap.add_argument("--flip-sign", action="store_true", help="invert the LOS sign convention")
-    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
+    ap.add_argument("--aoi", choices=tuple(sorted(AOIS)), default="source",
                     help="which box to clip to. 'source' is the confirmed detachment zone and the default; 'lhende' is the runout corridor the avalanche dammed, not a control")
     ap.add_argument("--auto-ref", action="store_true",
                     help="pick the highest-coherence fully-valid block outside the AOI "
