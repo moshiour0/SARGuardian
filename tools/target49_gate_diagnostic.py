@@ -286,10 +286,18 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
                 # coordinate can lie inside the rectangular axes but in an
                 # all-nodata swath/window, as happened for Target 4 in frame
                 # 074_026. Never infer valid signal from inside_grid_extent.
+                # The cumulative counts above describe the raster window, not
+                # necessarily the point itself. Target 9 can have a valid pixel
+                # elsewhere in its square window even though its centre is
+                # outside SOURCE_RING. Keep window evidence separate from
+                # target-point eligibility so no consumer can mistake nearby
+                # AOI pixels for an observation at the requested coordinate.
                 "has_finite_nonzero_phase_support":stages.get("finite_nonzero_phase",0)>0,
                 "has_connected_component_support":stages.get("after_connected_components_gt_0",0)>0,
                 "has_current_reader_mask_support":stages.get("after_current_reader_mask_gate",0)>0,
-                "has_aoi_gated_support":stages.get("after_aoi",0)>0,
+                "has_nearby_aoi_gated_support":stages.get("after_aoi",0)>0,
+                "has_aoi_gated_support":bool(t["inside_requested_aoi_polygon"]) and stages.get("after_aoi",0)>0,
+                "has_target_point_support":bool(t["inside_requested_aoi_polygon"]) and stages.get("after_aoi",0)>0,
                 "point_eligible_for_requested_aoi":bool(t["inside_requested_aoi_polygon"]),
             }
         attrs={}
