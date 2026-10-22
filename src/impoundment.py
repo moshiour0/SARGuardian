@@ -176,6 +176,8 @@ def _load_api_cache(path: Path, bbox, target_cells: int) -> tuple[np.ndarray, np
     if metadata.get("target_cells") != int(target_cells):
         raise ValueError(f"DEM cache target-cell request does not match --cells in {path}.")
     ny, nx, _ = api_grid_shape(bbox, target_cells)
+    if metadata.get("shape") != [ny, nx]:
+        raise ValueError(f"DEM cache metadata shape mismatch in {path}.")
     if z.shape != (ny, nx):
         raise ValueError(f"DEM cache shape mismatch: expected {(ny, nx)}, got {z.shape}.")
     _validate_elevation_grid(z, lats, lons, bbox)
@@ -409,7 +411,10 @@ def d8_receivers(filled: np.ndarray, dx: float, dy: float) -> np.ndarray:
                 ni, nj = i + di, j + dj
                 if not (0 <= ni < ny and 0 <= nj < nx) or not np.isfinite(filled[ni, nj]):
                     continue
-                length = dist * (dx if dj else dy) if di == 0 or dj == 0 else dist * (dx + dy) / 2
+                # Exact map-plane distance for rectangular geographic postings.
+                # sqrt(2) * mean(dx, dy) is only exact for square cells and can
+                # reverse the steepest-neighbour choice when dx != dy.
+                length = math.hypot(dj * dx, di * dy)
                 slope = (filled[i, j] - filled[ni, nj]) / length
                 if slope > best:
                     best, best_idx = slope, ni * nx + nj
