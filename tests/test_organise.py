@@ -123,3 +123,24 @@ def test_rerun_on_already_organised_folder_refreshes_full_manifest(tmp_path, mon
     rows = list(csv.DictReader((dest / "MANIFEST.csv").open(newline="", encoding="utf-8")))
     assert len(rows) == 1
     assert rows[0]["relative_path"] == f"GUNW/2026-01_winter/{BETA}"
+
+
+
+def test_parse_rejects_unknown_processing_code_instead_of_calling_it_routine(tmp_path):
+    invalid = BETA.replace("NISAR_L2_PR_GUNW_", "NISAR_L2_XX_GUNW_", 1)
+    assert parse(_put(tmp_path, invalid)) is None
+
+
+def test_incremental_filing_rejects_wrong_product_or_wrong_season_bucket(tmp_path):
+    dest = tmp_path / "data" / "nisar_l2"
+    # The basename is valid GUNW for January 2026, so only
+    # GUNW/2026-01_winter is an already-filed location.
+    correct = dest / "GUNW" / "2026-01_winter" / BETA
+    wrong_product = dest / "GOFF" / "2026-01_winter" / BETA
+    wrong_season = dest / "GUNW" / "2026-07_summer" / BETA
+    for path in (correct, wrong_product, wrong_season):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic granule")
+    assert is_already_filed(correct, dest)
+    assert not is_already_filed(wrong_product, dest)
+    assert not is_already_filed(wrong_season, dest)
