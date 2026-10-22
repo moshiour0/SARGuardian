@@ -416,3 +416,31 @@ def test_api_geojson_cli_requires_an_explicit_reusable_dem_cache(
         impoundment.main()
     assert exc.value.code == 2
     assert "--api-cache" in capsys.readouterr().err
+
+
+def test_d8_receiver_rejects_invalid_postings_and_degenerate_grids():
+    with pytest.raises(ValueError, match="finite positive metre distances"):
+        d8_receivers(np.ones((3, 3)), dx=0.0, dy=1.0)
+    with pytest.raises(ValueError, match="at least two rows and columns"):
+        d8_receivers(np.ones((1, 3)), dx=1.0, dy=1.0)
+
+
+def test_impoundment_analysis_rejects_mismatched_axes_and_duplicate_heights():
+    z = np.arange(12, dtype=float).reshape(3, 4)
+    lats = np.array([28.3, 28.2, 28.1])
+    lons = np.array([85.4, 85.5, 85.6, 85.7])
+    with pytest.raises(ValueError, match="does not match"):
+        impoundment.analyse(z, lats[:-1], lons, [10, 25], 1, 2)
+    with pytest.raises(ValueError, match="unique, finite, positive"):
+        impoundment.analyse(z, lats, lons, [10, 10], 1, 2)
+
+
+def test_rank_sites_rejects_invalid_parameters_and_nonfinite_coordinates():
+    sample = site(28.30, 85.50, {10: 0.2, 25: 0.7}, "fixture")
+    with pytest.raises(ValueError, match="top_n"):
+        rank_sites([sample], "volume", 0, 1.5)
+    with pytest.raises(ValueError, match="min_separation"):
+        rank_sites([sample], "volume", 1, -1.0)
+    sample["lat"] = float("nan")
+    with pytest.raises(ValueError, match="Invalid WGS84"):
+        rank_sites([sample], "volume", 1, 1.5)
