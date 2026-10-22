@@ -577,10 +577,13 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
             raise ValueError(f"Refusing --as-floors row with non-measurement status {status!r}.")
         if not flag_is_true(row.get("aoi_eligible", True), default=True):
             raise ValueError("Refusing --as-floors row whose target is outside the chosen AOI.")
-        if row.get("lat") is not None and row.get("lon") is not None:
-            aoi_name = row.get("aoi_name")
-            if not aoi_name or not point_in_aoi(float(row["lon"]), float(row["lat"]), str(aoi_name)):
-                raise ValueError("Refusing --as-floors row whose point is outside its named AOI.")
+        try:
+            lat, lon = float(row["lat"]), float(row["lon"])
+            aoi_name = str(row["aoi_name"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ValueError("Refusing --as-floors row without target coordinates and an explicit AOI name.")
+        if not np.isfinite(lat) or not np.isfinite(lon) or not point_in_aoi(lon, lat, aoi_name):
+            raise ValueError("Refusing --as-floors row whose point is outside its named AOI.")
         match = DATE.search(str(row.get("file", "")))
         if not match:
             raise ValueError(f"Refusing --as-floors row without a valid date pair: {row.get('file')!r}")
