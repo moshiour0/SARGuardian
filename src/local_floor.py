@@ -61,10 +61,10 @@ changes is which pixels go in.
 
 Usage
 -----
-    python src/local_floor.py --dir outputs/export_goff_src --match layer2 \\
+    python src/local_floor.py --dir outputs/export_goff_src --aoi source --match layer2 \\
         --lat 28.28771 --lon 85.52809 --radius 6
 
-    python src/local_floor.py --dir outputs/export_goff_src --match layer2 \\
+    python src/local_floor.py --dir outputs/export_goff_src --aoi source --match layer2 \\
         --lat 28.28771 --lon 85.52809 --sweep 3 6 12 --csv outputs/local_floor.csv
 """
 
