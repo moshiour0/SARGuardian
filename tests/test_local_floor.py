@@ -23,9 +23,11 @@ too few valid pixels is refused rather than given a MAD of two numbers.
 from __future__ import annotations
 
 import numpy as np
+from pathlib import Path
 
 from local_floor import (MIN_PX, compare, detection_floor, robust_sigma,
-                         span_from_name, window)
+                         span_from_name, window, point_in_aoi,
+                         infer_aoi_from_dir, skipped_row)
 
 
 def test_floor_is_three_sigma_over_the_span():
@@ -214,3 +216,31 @@ def test_floors_from_two_targets_are_refused(tmp_path):
              "target_id": t, "local_floor_mm_day": 1.0} for t in ("1", "4")]
     with pytest.raises(ValueError):
         write_as_floors(rows, tmp_path / "f.csv", "layer2")
+
+
+def test_target9_is_rejected_by_source_polygon_but_eligible_in_langtang():
+    # This is the candidate whose point sits ~670 m outside SOURCE_RING but
+    # ~183 m inside LANGTANG_RING. A clipped 0/1-cell window is not a floor.
+    assert not point_in_aoi(85.47591, 28.25460, "source")
+    assert point_in_aoi(85.47591, 28.25460, "langtang")
+    assert point_in_aoi(85.52983, 28.27799, "source")
+
+
+def test_export_aoi_inference_requires_an_unambiguous_folder_name():
+    assert infer_aoi_from_dir("outputs/export_goff_src") == "source"
+    assert infer_aoi_from_dir("outputs/export_phase_langtang") == "langtang"
+    assert infer_aoi_from_dir("outputs/export_goff_lhende") == "lhende"
+    assert infer_aoi_from_dir("outputs/some_custom_folder") is None
+
+
+def test_out_of_aoi_target_produces_explicit_nonmeasurement_row():
+    row = skipped_row(
+        Path("GOFF_20260702_20260714_PR_HH-layer2.tif"),
+        target_id="9", lat=28.25460, lon=85.47591, radius=6,
+        aoi_name="source", status="TARGET_OUTSIDE_AOI",
+    )
+    assert row["status"] == "TARGET_OUTSIDE_AOI"
+    assert row["aoi_eligible"] is False
+    assert row["usable"] is False
+    assert row["window_px"] == 0
+    assert np.isnan(row["local_floor_mm_day"])
