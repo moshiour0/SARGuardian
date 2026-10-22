@@ -157,17 +157,40 @@ def main() -> int:
 
     # ---------------------------------------------------------------- 0:19
     s.rule("3.  DID ANYTHING MOVE?   (the detector, on the real series)")
-    from inverse_velocity import analyse_block, load_floors, load_series
+    from inverse_velocity import (
+        analyse_block, load_floor_catalogue, load_series, normalize_series_id,
+    )
     series = load_series(ROOT / "outputs" / "ts_goff_source.csv")
-    floors = load_floors(ROOT / "outputs" / "goff_stats_source.csv", "layer2")
+    global_floors, scoped_floors = load_floor_catalogue(
+        ROOT / "outputs" / "goff_stats_source.csv", "layer2"
+    )
+    if global_floors and scoped_floors:
+        raise RuntimeError("GOFF floor inventory mixes identified and identity-free measurements.")
+    all_floors = list(global_floors.values()) + [
+        value for mapping in scoped_floors.values() for value in mapping.values()
+    ]
+    if not all_floors:
+        raise RuntimeError("No finite, positive layer-2 GOFF floors were available.")
+    fallback_floor = max(all_floors)
+    input_series = {normalize_series_id(geom) for geom, _comp in series}
+    if scoped_floors:
+        missing = sorted(input_series - set(scoped_floors))
+        if missing:
+            raise RuntimeError(
+                "Cannot run demo with a geometry-scoped floor catalogue missing exact "
+                f"series identities: {missing}; available={sorted(scoped_floors)}"
+            )
     import contextlib, io
     fired, checked = [], 0
     for (geom, comp), rows in sorted(series.items()):
+        matched_floors = (
+            scoped_floors[normalize_series_id(geom)] if scoped_floors else global_floors
+        )
         with contextlib.redirect_stdout(io.StringIO()):
-            r = analyse_block(geom, comp, rows, noise_floor=max(floors.values()),
+            r = analyse_block(geom, comp, rows, noise_floor=fallback_floor,
                               window=3, r2_min=0.7, horizon_days=60,
                               sig_multiple=1.0, event_date=EVENT,
-                              floors=floors, cutoff=EVENT)
+                              floors=matched_floors, cutoff=EVENT)
         checked += 1
         if r.get("alarm"):
             fired.append(r)
