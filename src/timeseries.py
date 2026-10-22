@@ -367,54 +367,29 @@ def pairs_from_stats(
                 f"Duplicate {actual_product} rows for {ref_date}->{sec_date} have the same "
                 f"processing code ({processing_values}); verify CSV uniqueness before inversion."
             )
-        if not wrapped:
-            values = [pair.value for _, pair in candidates]
-            same_value = all(
-                math.isclose(values[0], value, rel_tol=1e-9, abs_tol=1e-6)
-                for value in values[1:]
+        values = [pair.value for _, pair in candidates]
+        same_value = all(
+            math.isclose(values[0], value, rel_tol=1e-9, abs_tol=1e-6)
+            for value in values[1:]
+        )
+        if same_value:
+            # No scientific branch choice is required when values agree.
+            best = next((candidate for candidate in candidates if candidate[0] == "PR"),
+                        candidates[0])
+        elif not wrapped:
+            raise ValueError(
+                f"Conflicting GOFF PR/UR offsets for {ref_date}->{sec_date}, "
+                f"frame={geometry[4]} subswath={geometry[5]} CRID={pair_crid}. "
+                "Offsets are not phase-wrapped; choose --processing PR or --processing UR explicitly."
             )
-            if same_value:
-                best = next((candidate for candidate in candidates if candidate[0] == "PR"),
-                            candidates[0])
-            else:
-                raise ValueError(
-                    f"Conflicting GOFF PR/UR offsets for {ref_date}->{sec_date}, "
-                    f"frame={geometry[4]} subswath={geometry[5]} CRID={pair_crid}. "
-                    "Offsets are not phase-wrapped; choose --processing PR or --processing UR explicitly."
-                )
         else:
-            # Only intervals from the exact same footprint/release can establish
-            # the expected unwrapping branch; never borrow another frame's median.
-            others = [
-                pair.value for other_key, other_candidates in groups.items()
-                if other_key[0] == geometry and other_key[3] == pair_crid
-                and (other_key[1], other_key[2]) != (ref_date, sec_date)
-                for _, pair in other_candidates
-            ]
-            values = [pair.value for _, pair in candidates]
-            identical = all(
-                math.isclose(values[0], value, rel_tol=1e-9, abs_tol=1e-6)
-                for value in values[1:]
+            raise ValueError(
+                f"Conflicting GUNW PR/UR phase values for {ref_date}->{sec_date}, "
+                f"frame={geometry[4]} subswath={geometry[5]} CRID={pair_crid}. "
+                "A magnitude-only guess is not an adequate phase-ambiguity resolution; "
+                "choose --processing PR or --processing UR explicitly, or resolve the ambiguity "
+                "with a validated redundant-network closure analysis."
             )
-            if not others and not identical:
-                raise ValueError(
-                    f"Conflicting GUNW PR/UR values for {ref_date}->{sec_date}, "
-                    f"frame={geometry[4]} subswath={geometry[5]} CRID={pair_crid}, "
-                    "with no neighbouring pair from the same footprint to resolve a fringe branch. "
-                    "Choose --processing PR or --processing UR explicitly."
-                )
-            if identical:
-                best = next((candidate for candidate in candidates if candidate[0] == "PR"),
-                            candidates[0])
-            else:
-                expected_abs_magnitude = float(np.median(np.abs(others)))
-                best = min(
-                    candidates,
-                    key=lambda candidate: (
-                        abs(abs(candidate[1].value) - expected_abs_magnitude),
-                        0 if candidate[0] == "PR" else 1,
-                    ),
-                )
 
         for proc, pair in candidates:
             if pair is best[1]:
