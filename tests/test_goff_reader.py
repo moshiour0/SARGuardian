@@ -6,6 +6,7 @@ import h5py
 import numpy as np
 import pytest
 
+import goff_reader as goff
 from goff_reader import layer_groups, mad_inlier_mask, read_goff, robust_sigma
 
 
@@ -97,6 +98,33 @@ def _write_minimal_goff(path, *, missing_snr=False):
         projection.attrs["epsg_code"] = 32645
     return path
 
+
+def test_read_goff_uses_active_aoi_ring_for_measurement_mask(tmp_path, monkeypatch):
+    shape = (11, 11)
+    base = "science/LSAR/GOFF/grids/frequencyA/pixelOffsets/HH/layer2"
+    path = tmp_path / "complete_geographic_goff.h5"
+    with h5py.File(path, "w") as h5:
+        h5.create_dataset(f"{base}/slantRangeOffset", data=np.zeros(shape))
+        h5.create_dataset(f"{base}/alongTrackOffset", data=np.zeros(shape))
+        h5.create_dataset(f"{base}/correlationSurfacePeak", data=np.ones(shape))
+        h5.create_dataset(f"{base}/snr", data=np.ones(shape) * 5.0)
+        h5.create_dataset(f"{base}/xCoordinates", data=np.linspace(84.8, 85.3, shape[1]))
+        h5.create_dataset(f"{base}/yCoordinates", data=np.linspace(28.1, 28.6, shape[0]))
+        projection = h5.create_dataset(f"{base}/projection", data=np.array([4326]))
+        projection.attrs["epsg_code"] = 4326
+
+    ring = [(84.9, 28.2), (85.2, 28.2), (85.2, 28.5), (84.9, 28.5)]
+    monkeypatch.setitem(goff._g.AOIS, "regression", ring)
+    monkeypatch.setattr(goff._g, "AOI_NAME", "regression")
+    monkeypatch.setattr(goff._g, "AOI_RING", ring)
+
+    result = read_goff(path, layer="layer2", clip_aoi=True, auto_ref=False, deramp=False)
+    layer = result["layers"]["HH/layer2"]
+
+    assert result["aoi_name"] == "regression"
+    assert layer["aoi_mask_applied"] is True
+    assert layer["aoi_px"] > 0
+    assert int(layer["valid"].sum()) > 0
 
 def test_read_goff_refuses_to_silently_skip_a_missing_quality_gate(tmp_path):
     path = _write_minimal_goff(tmp_path / "missing_snr.h5", missing_snr=True)
