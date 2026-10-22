@@ -701,7 +701,7 @@ def main() -> int:
                    help="folder of GOFF products (default: data/nisar_l2/GOFF)")
     m.add_argument("--noise-floor", metavar="DIR",
                    help="measure the detection floor on pairs you believe are stable")
-    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
+    ap.add_argument("--aoi", choices=tuple(sorted(_g.AOIS)), default="source",
                     help="which box to clip to. 'source' is the confirmed detachment zone and the default; 'lhende' is the runout corridor the avalanche dammed, not a control")
     ap.add_argument("--layer", default="best", help="layer1, layer2, or best (both)")
     ap.add_argument("--correlation", type=float, default=DEFAULT_CORRELATION)
