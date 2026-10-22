@@ -784,8 +784,12 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
         p.n_px = n
         p.coherence = (float(r["coherence"][valid].mean())
                        if r["coherence"] is not None else None)
-        logger.info("%s -> %s : %+8.2f mm  (%d px, coh %.2f)",
-                    p.ref, p.sec, p.value, n,
+        # Include the exact granule basename. Candidate diagnostics must join
+        # the target-window measurement to the AOI median from the same product;
+        # dates alone collide across ascending/descending tracks and CRIDs.
+        granule_identity = Path(p.source).name if p.source else "UNKNOWN"
+        logger.info("%s -> %s [%s] : %+8.2f mm  (%d px, coh %.2f)",
+                    p.ref, p.sec, granule_identity, p.value, n,
                     p.coherence if p.coherence is not None else float("nan"))
 
     if common_ref:
