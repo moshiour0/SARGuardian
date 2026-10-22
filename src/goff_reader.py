@@ -374,6 +374,11 @@ def read_goff(
             # something. See gunw_reader.report for what quoting the frame
             # fraction instead cost this project.
             "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
+            "aoi_name": _g.AOI_NAME,
+            "aoi_mask_applied": bool(clip_aoi and aoi_mask is not None),
+            "correlation_min": correlation_min,
+            "snr_min": snr_min,
+            "cull_sigma": cull_sigma,
             "gates": gates,
             "ramp_rms_mm": ramp_rms,
             "ref_range_m": ref_rng,
@@ -382,7 +387,9 @@ def read_goff(
 
     ref, sec = read_pair_dates(path)
     return {"file": path.name, "reference_date": ref, "secondary_date": sec,
-            "layers": out}
+            "aoi_name": _g.AOI_NAME, "aoi_mask_applied": bool(clip_aoi),
+            "correlation_min": correlation_min, "snr_min": snr_min,
+            "cull_sigma": cull_sigma, "layers": out}
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +416,8 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         logger.error("rasterio required for --export:  pip install rasterio")
         return []
 
+    if not res.get("aoi_mask_applied", False):
+        raise RuntimeError("Refusing AOI-clipped GeoTIFF export: the source reader did not apply the AOI mask.")
     out = []
     proc = re.search(r"NISAR_L2_([A-Z]{2})_", Path(res["file"]).name)
     tag = f"_{proc.group(1)}" if proc else ""
@@ -466,7 +475,14 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                 dst.set_band_description(k, desc)
             dst.update_tags(reference=res["reference_date"],
                             secondary=res["secondary_date"],
-                            layer=name, source=res["file"])
+                            layer=name, source=res["file"],
+                            aoi_name=str(res["aoi_name"]),
+                            aoi_mask_applied="true",
+                            correlation_min=str(res["correlation_min"]),
+                            snr_min=str(res["snr_min"]),
+                            cull_sigma=str(res["cull_sigma"]),
+                            crid=_g.crid_of(res["file"]),
+                            maturity=_g.product_maturity(res["file"]))
         mb = target.stat().st_size / 1024 / 1024
         logger.info("Exported %s  %dx%d  %.2f MB", target.name,
                     bands[0][0].shape[0], bands[0][0].shape[1], mb)
@@ -668,6 +684,8 @@ def main() -> int:
     ap.add_argument("--csv", metavar="OUT.csv")
     args = ap.parse_args()
 
+    if args.no_clip and args.export:
+        ap.error("--export requires AOI clipping; remove --no-clip or omit --export.")
     set_aoi(args.aoi)
 
     kw = dict(layer=args.layer, correlation_min=args.correlation, snr_min=args.snr,
