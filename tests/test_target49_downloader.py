@@ -51,7 +51,7 @@ def test_direct_product_url_selects_the_exact_maturity_collection():
         "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/"
         "NISAR_L2_GUNW_BETA_V1/" + beta[:-3] + "/" + beta
     )
-    assert direct_product_url(provisional, "GUNW", "PROVISIONAL").split("/")[5] == "NISAR_L2_GUNW_PROVISIONAL_V1"
+    assert direct_product_url(provisional, "GUNW", "PROVISIONAL").split("/")[4] == "NISAR_L2_GUNW_PROVISIONAL_V1"
 
 
 def test_direct_download_streams_and_hashes_without_storing_url(tmp_path):
