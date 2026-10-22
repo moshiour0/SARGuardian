@@ -132,13 +132,16 @@ jobs:
                         f"- Aggregate status: {aggregate}",
                         "- No generated output is automatically accepted or committed.",
                         "- Each AOI was regenerated twice from the same saved DEM grid and parameters; the per-AOI log records byte-identical GeoJSON and provenance checks.",
-                        "- Algorithm and source-file SHA-256 are recorded in each result provenance sidecar.", "",
-                        "| AOI | Baseline/candidate sites | Exact coord matches | Rounding-tolerant pairs | Unmatched baseline/candidate | H=10 result baseline/candidate | H=10 truncated baseline/candidate | Nearest remaining baseline→candidate median/max (m) | Status |",
+                        "- Algorithm and source-file SHA-256 are recorded in each result provenance sidecar.",
+                        "- H=10 and other height counts describe complete modeled scenarios among the returned top-N, spatially suppressed GeoJSON features only. They are selection-dependent—not an AOI-wide count/fraction of all possible channel sites—and cannot be compared as population prevalence across changed ranking policies.",
+                        "- A complete scenario record means the code produced a finite modeled volume/area/backwater for an imposed height; it does not demonstrate that a real landslide can construct that blockage or that the modeled pool is hydraulically valid.",
+                        "",
+                        "| AOI | Baseline/candidate output features | Exact coord matches | Rounding-tolerant pairs | Unmatched baseline/candidate | H=10 selected-scenario coverage baseline/candidate | H=10 selected-scenario truncated baseline/candidate | Nearest unmatched baseline→candidate median/max (m) | Status |",
                         "|---|---:|---:|---:|---:|---:|---:|---:|---|"]
               for item in values:
                   aoi = Path(item["candidate_path"]).stem.removeprefix("dam_sites_")
-                  h10 = item["response_counts_by_threshold_height_m"]
-                  t10 = item["truncated_response_counts_by_threshold_height_m"]
+                  h10 = item["scenario_coverage_counts_by_height_m"]
+                  t10 = item["truncated_scenario_coverage_counts_by_height_m"]
                   nearest = item["nearest_neighbour_review_only"]["baseline_unmatched_to_candidate"]
                   lines.append(
                       f"| {aoi} | {item['baseline_site_count']}/{item['candidate_site_count']} | "
