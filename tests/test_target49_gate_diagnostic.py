@@ -6,6 +6,7 @@ import numpy as np
 
 ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
+from gunw_reader import decode_gunw_mask
 from tools.target49_gate_diagnostic import audit_gunw, decode_wrs_mask
 
 def test_documented_decimal_wrs_mask_digits_are_audited_separately():
