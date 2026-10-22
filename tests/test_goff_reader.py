@@ -6,8 +6,21 @@ import h5py
 import numpy as np
 import pytest
 
-from goff_reader import mad_inlier_mask, read_goff, robust_sigma
+from goff_reader import layer_groups, mad_inlier_mask, read_goff, robust_sigma
 
+
+def test_layer_groups_ignore_processing_metadata_parameter_nodes():
+    datasets = {
+        "science/LSAR/GOFF/grids/frequencyA/pixelOffsets/HH/layer2/slantRangeOffset": (
+            (11, 11), np.dtype("float32")
+        ),
+        "science/LSAR/GOFF/metadata/processingInformation/parameters/"
+        "pixelOffsets/frequencyA/layer2/algorithmVersion": ((), np.dtype("int32")),
+    }
+
+    assert layer_groups(datasets) == [
+        "science/LSAR/GOFF/grids/frequencyA/pixelOffsets/HH/layer2"
+    ]
 
 def test_azimuth_only_outlier_is_rejected_without_borrowing_range_statistics():
     rng = np.random.default_rng(20261022)
