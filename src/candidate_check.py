@@ -36,8 +36,9 @@ necessarily monsoon-driven: Blatten went on 28 May, before any monsoon, and the
 pore pressure. So dry-season quiescence is evidence AGAINST a snowpack delay,
 but dry-season motion is not evidence against creep.
 
-This test therefore only ever fires in one direction: it can reject a
-candidate, never confirm one.
+These are screening diagnostics, not standalone rejection tests. A seasonal
+pattern, a large phase rate, or a ratio closer to a delay hypothesis can flag
+a concern, but none alone proves or disproves ground deformation.
 
 Usage
 -----
@@ -215,7 +216,7 @@ def classify_geometry(sens_asc: float, sens_desc: float,
     return out
 
 
-def geometry_test(lat, lon, dry: dict, problems: list) -> None:
+def geometry_test(lat, lon, dry: dict, flags: list) -> None:
     """
     Run classify_geometry on the dry-season rates and report it.
 
@@ -260,12 +261,14 @@ def geometry_test(lat, lon, dry: dict, problems: list) -> None:
         return
 
     if res["verdict"] == "motion":
+        flags.append("geometry_ratio_closer_to_motion")
         print("\n  GEOMETRY RATIO IS CLOSER TO THE DOWNSLOPE-MOTION HYPOTHESIS.")
         print(f"  {res['reason']}")
         print(f"  Nominal implied downslope rate {res['implied_downslope_mm_day']:+.2f} mm/day.")
         print("  This is descriptive, not conclusive: rate uncertainty/covariance is")
         print("  not propagated, and a ratio match does not prove surface motion.")
     else:
+        flags.append("geometry_ratio_closer_to_delay")
         print("\n  GEOMETRY RATIO IS CLOSER TO THE PATH-DELAY HYPOTHESIS.")
         print(f"  {res['reason']}")
         print("  This comparison is not a statistically conclusive rejection: the")
@@ -357,9 +360,9 @@ def main() -> int:
     dry = {g: v for (g, s), v in rates.items() if s == "dry"}
     mon = {g: v for (g, s), v in rates.items() if s == "monsoon"}
 
-    problems = []
+    flags = []
     if len(dry) >= 2:
-        geometry_test(args.lat, args.lon, dry, problems)
+        geometry_test(args.lat, args.lon, dry, flags)
 
     if dry and mon:
         d = max(abs(v) for v in dry.values())
@@ -367,30 +370,28 @@ def main() -> int:
         print(f"\n  dry season   up to {d:.2f} mm/day")
         print(f"  monsoon      up to {m:.2f} mm/day")
         if m < 0.4 * d:
-            problems.append("seasonality")
-            print("\n  SEASONALITY IS BACKWARDS. Himalayan slope creep is monsoon-driven -")
-            print("  pore pressure peaks June to September. A signal that runs through")
-            print("  the accumulation season and stops for the monsoon has the")
-            print("  seasonality of a snowpack, not a slope.")
-            print("\n  Dry snow is nearly transparent at L-band, so it preserves the")
-            print("  coherence that makes this look trustworthy while adding a path")
-            print("  delay that grows with accumulated water equivalent. The result is")
-            print("  steady, spatially coherent apparent motion that is not motion.")
+            flags.append("monsoon_rate_below_40pct_of_dry_rate")
+            print("\n  SEASONALITY FLAG: the monsoon local rate is below 40% of the dry-season rate.")
+            print("  This is compatible with a seasonal path-delay effect, but it can also")
+            print("  reflect seasonally varying real deformation. It does NOT by itself")
+            print("  prove snowpack delay or justify rejecting the candidate.")
+            print("  Check snow, precipitation, temperature, coherence, and independent")
+            print("  displacement evidence before interpreting the pattern.")
 
     if fast:
-        problems.append("ceiling")
-        print(f"\n  ABOVE THE CEILING in {', '.join(fast)}: faster than lambda/4 per")
-        print(f"  12-day pair ({ceiling:.2f} mm/day), so the phase has wrapped and the")
-        print("  unwrapper has guessed. Not a measurement.")
+        flags.append("phase_aliasing_risk")
+        print(f"\n  PHASE-ALIASING RISK in {', '.join(fast)}: the nominal rate exceeds lambda/4")
+        print(f"  per 12-day pair ({ceiling:.2f} mm/day). This warrants inspection of")
+        print("  unwrapping quality and spatial/temporal continuity; it does not prove")
+        print("  the unwrapped estimate is wrong by itself.")
 
-    if not problems:
-        print("\n  No hard rejection criterion fired. This is not a detection, and the")
-        print("  descriptive geometry ratio cannot confirm or reject motion by itself.")
-        print("  An independent measurement - field, GNSS, or a different sensor -")
-        print("  is still required.")
+    if flags:
+        print(f"\n  SCREENING FLAGS (not automatic rejection): {', '.join(sorted(set(flags)))}")
     else:
-        print(f"\n  REJECTED BY THE EXPLICIT TEST(S): {', '.join(problems)}.")
-        print("  Record the location and evidence; do not carry it forward as a detection.")
+        print("\n  No screening flag fired.")
+    print("  This script does not establish or exclude ground motion. A candidate is")
+    print("  not a detection until independent measurement - field, GNSS, or another")
+    print("  sensor - supports the interpretation.")
     return 0
 
 
