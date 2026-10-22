@@ -58,12 +58,12 @@ def test_common_reference_refuses_duplicate_acquisition_pairs_from_multiple_pola
 
 
 def test_common_reference_refuses_same_shape_rasters_with_different_transforms(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, caplog
 ):
     from rasterio.transform import from_origin
 
     out = tmp_path / "export_goff_src"
-    t1 = from_origin(535000, 3155000, 80, 80)
+    t1 = from_origin(344000, 3141000, 80, 80)
     t2 = from_origin(344080, 3141000, 80, 80)
     _write_tif(out / "GOFF_20260702_20260714_PR_HH-layer2.tif", transform=t1)
     _write_tif(out / "GOFF_20260714_20260726_PR_HH-layer2.tif", transform=t2)
@@ -83,7 +83,7 @@ def test_common_reference_excludes_out_of_aoi_candidate_and_uses_exact_polygon(
     from rasterio.transform import from_origin
 
     out = tmp_path / "export_goff_src"
-    transform = from_origin(535000, 3155000, 80, 80)
+    transform = from_origin(344000, 3141000, 80, 80)
     rng = np.random.default_rng(4)
     # Full rectangular windows intentionally contain finite cells outside the
     # AOI. The common-reference algorithm must explicitly clip to SOURCE_RING.
