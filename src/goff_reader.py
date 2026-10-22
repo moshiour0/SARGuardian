@@ -141,6 +141,10 @@ def read_goff(
             "GOFF deramping requires an AOI mask so the fit can exclude the signal AOI; "
             "use clip_aoi=True or explicitly disable deramp."
         )
+    # Use the active AOI chosen by set_aoi(); this is the same polygon used for exports.
+    aoi_ring = _g.AOIS.get(_g.AOI_NAME)
+    if clip_aoi and not aoi_ring:
+        raise RuntimeError(f"GOFF AOI clipping requested, but active AOI {_g.AOI_NAME!r} has no polygon.")
     with h5py.File(path, "r") as f:
         datasets = walk(f)
         groups = layer_groups(datasets)
@@ -243,7 +247,7 @@ def read_goff(
                     f"{L['group']}: coordinate lengths {(len(L['ys']), len(L['xs']))} "
                     f"do not match offset raster shape {valid.shape}."
                 )
-            aoi_mask = build_aoi_mask(L["xs"], L["ys"], export_ring, L["epsg"])
+            aoi_mask = build_aoi_mask(L["xs"], L["ys"], aoi_ring, L["epsg"])
             if aoi_mask.shape != valid.shape:
                 raise RuntimeError(
                     f"{L['group']}: AOI mask shape {aoi_mask.shape} does not match offset raster shape {valid.shape}."
