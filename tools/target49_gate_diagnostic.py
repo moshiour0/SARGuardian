@@ -34,8 +34,11 @@ def sha256(path):
 def decode_wrs_mask(raw, *, apply_iono=True):
     """Decode packed GUNW mask fields without converting the whole word to decimal."""
     raw = np.asarray(raw)
-    if not np.issubdtype(raw.dtype, np.integer):
-        raise TypeError(f"GUNW mask must have integer dtype; got {raw.dtype}")
+    if raw.dtype not in (np.dtype("uint8"), np.dtype("uint32")):
+        raise TypeError(
+            "Unsupported GUNW mask dtype "
+            f"{raw.dtype}; validated schemas are uint8 and uint32."
+        )
     m = raw.astype(np.uint64, copy=False)
     low = m & np.uint64(0xFF)
     fill = m == 255
