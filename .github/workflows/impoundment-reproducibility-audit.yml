@@ -102,7 +102,7 @@ jobs:
                         f"- Exact semantic matches: {match}",
                         f"- AOIs requiring review: {review}",
                         f"- Status: {'ALL_MATCH' if len(values) == 4 and review == 0 else 'REVIEW_REQUIRED'}", "",
-                        "| AOI | Baseline sites | New sites | Exact coordinate matches | H10 baseline | H10 candidate | Status |",
+                        "| AOI | Baseline sites | New sites | Exact coordinate matches | Sites with H=10 result: baseline | Sites with H=10 result: candidate | Status |",
                         "|---|---:|---:|---:|---:|---:|---|"]
               for item in values:
                   aoi = Path(item["candidate_path"]).stem.removeprefix("dam_sites_")
