@@ -192,3 +192,14 @@ def test_phase_aliasing_screen_uses_per_pair_mm_not_aggregated_mm_per_day():
     assert not exceeds_single_fringe(limit_mm)
     assert not exceeds_single_fringe(float("nan"))
     assert not exceeds_single_fringe(float("inf"))
+
+
+def test_nonfinite_geometry_inputs_and_ratios_fail_closed():
+    for args in (
+        dict(sens_asc=float("nan"), sens_desc=0.4, v_asc=1.0, v_desc=2.0),
+        dict(sens_asc=-0.8, sens_desc=0.4, v_asc=float("inf"), v_desc=2.0),
+        dict(sens_asc=-0.8, sens_desc=0.4, v_asc=1e-320, v_desc=1.0),
+    ):
+        result = classify_geometry(**args)
+        assert result["verdict"] == "undetermined"
+        assert not result["conclusive"]
