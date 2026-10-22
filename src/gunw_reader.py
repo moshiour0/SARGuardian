@@ -839,11 +839,18 @@ def write_geotiff(result: dict, out: Path) -> None:
         data = np.flipud(data)
     with rasterio.open(
         out, "w", driver="GTiff", height=data.shape[0], width=data.shape[1],
-        count=1, dtype="float32", crs=f"EPSG:{result['epsg'] or 4326}",
+        count=1, dtype="float32", crs=f"EPSG:{result['epsg']}",
         transform=transform, nodata=np.nan, compress="deflate",
     ) as dst:
         dst.write(data, 1)
-        dst.update_tags(units="mm", pair=f"{result['reference_date']}_{result['secondary_date']}")
+        dst.update_tags(
+            units="mm", pair=f"{result['reference_date']}_{result['secondary_date']}",
+            source=result["file"], aoi_name=str(result.get("aoi_name", AOI_NAME)),
+            aoi_mask_applied=str(bool(result.get("aoi_mask_applied", False))).lower(),
+            crid=crid_of(result["file"]), maturity=product_maturity(result["file"]),
+            ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable",
+            export_scope="full_product_grid",
+        )
     logger.info("Wrote %s", out)
 
 
