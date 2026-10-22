@@ -448,7 +448,7 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         if grid is None:
             # A non-lattice product must still be represented if it covers the
             # AOI, even if no offset pixel passes quality gates.
-            aoi_mask = build_aoi_mask(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
+            aoi_mask = build_aoi_mask(L["xs"], L["ys"], export_ring, L["epsg"])
             if not aoi_mask.any():
                 logger.warning("%s has no AOI grid cells; no clipped raster can represent this AOI.", name)
                 out.append({"layer": name, "export_file": "", "export_status": "NO_AOI_GRID_COVERAGE",
@@ -474,6 +474,8 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         if not bands:
             continue
 
+        if grid is not None:
+            transform = grid["transform"]
         else:
             xs, ys = L["xs"][c0:c1], L["ys"][r0:r1]
             resx = abs(float(L["xs"][1] - L["xs"][0]))
