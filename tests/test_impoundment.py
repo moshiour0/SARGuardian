@@ -379,7 +379,16 @@ def test_dem_provenance_identifies_local_input_without_claiming_api_source(tmp_p
                                 target_cells=z.size)
     assert provenance["endpoint"] is None
     assert provenance["source"] == "local GeoTIFF"
+    assert provenance["schema_version"] == 2
     assert len(provenance["grid_sha256"]) == 64
+    assert len(provenance["implementation_sha256"]) == 64
+    assert provenance["implementation_file"] == "impoundment.py"
+    assert provenance["hydrology_model"]["algorithm_id"] == (
+        "priority-flood-d8-flat-routing-tree-connected-ponding-v2"
+    )
+    assert provenance["hydrology_model"]["lateral_spill_solver"] is None
+    assert provenance["runtime"]["numpy_version"] == np.__version__
+    assert provenance["runtime"]["python_version"]
 
 
 def test_geojson_output_and_provenance_sidecar_are_atomic_and_bound_to_the_grid(tmp_path):
@@ -404,6 +413,8 @@ def test_geojson_output_and_provenance_sidecar_are_atomic_and_bound_to_the_grid(
     )
     saved = json.loads(sidecar.read_text(encoding="utf-8"))
     assert saved["grid_sha256"] == provenance["grid_sha256"]
+    assert saved["implementation_sha256"] == provenance["implementation_sha256"]
+    assert saved["hydrology_model"] == provenance["hydrology_model"]
     assert saved["geojson_sha256"] == file_sha256(output)
     assert len(saved["result_rows_sha256"]) == 64
     assert saved["result_features"] == 1
