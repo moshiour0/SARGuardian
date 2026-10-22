@@ -299,6 +299,46 @@ def infer_aoi_from_dir(directory: str | Path) -> str | None:
     return next(iter(found)) if len(found) == 1 else None
 
 
+def validate_export_provenance(files, aoi_name: str, *,
+                               allow_legacy_untagged: bool = False) -> None:
+    """Refuse mixed/mismatched AOIs and unreferenced CRS before measuring floors.
+
+    Legacy GeoTIFFs created before AOI provenance tags existed may be explicitly
+    inspected with --allow-legacy-untagged. A tagged file is never allowed to
+    claim a different AOI or say that the AOI mask was not applied.
+    """
+    import rasterio
+
+    for path in files:
+        with rasterio.open(path) as src:
+            epsg = src.crs.to_epsg() if src.crs else None
+            if epsg is None:
+                raise ValueError(f"{path.name}: CRS/EPSG metadata is missing or not resolvable.")
+            tags = src.tags()
+            file_aoi = tags.get("aoi_name")
+            mask_applied = tags.get("aoi_mask_applied")
+            if not file_aoi:
+                if allow_legacy_untagged:
+                    logger.warning(
+                        "%s has no AOI provenance tags; using caller-supplied AOI=%s as an explicit legacy assumption",
+                        path.name, aoi_name
+                    )
+                    continue
+                raise ValueError(
+                    f"{path.name}: missing aoi_name provenance tag; re-export with the current reader "
+                    "or pass --allow-legacy-untagged only after confirming the file's AOI."
+                )
+            if file_aoi != aoi_name:
+                raise ValueError(
+                    f"{path.name}: AOI tag is {file_aoi!r}, but --aoi is {aoi_name!r}; "
+                    "refusing a floor from a mismatched AOI."
+                )
+            if str(mask_applied).lower() != "true":
+                raise ValueError(
+                    f"{path.name}: aoi_mask_applied is {mask_applied!r}; refusing an unclipped/mislabelled raster."
+                )
+
+
 def skipped_row(file: Path, target_id: str, lat: float, lon: float,
                 radius: int, aoi_name: str, status: str) -> dict:
     """Machine-readable rejection row. A skipped point must never create a floor."""
@@ -336,6 +376,8 @@ def main() -> int:
                          "column equals this, e.g. DETACHMENT-like")
     ap.add_argument("--allow-event-affected-aoi", action="store_true",
                     help="explicitly allow noise-floor calculation inside the LHENDE runout/impoundment corridor; this is not a stable-ground control.")
+    ap.add_argument("--allow-legacy-untagged", action="store_true",
+                    help="allow old GeoTIFFs that lack AOI provenance tags, after independently confirming their AOI; tagged mismatches are always refused.")
     ap.add_argument("--band", type=int, default=1)
     ap.add_argument("--radius", type=int, default=6,
                     help="window half-width in pixels; 6 is about 1 km at 80 m")
@@ -409,6 +451,14 @@ def main() -> int:
         ap.error("LHENDE is an event-affected runout/impoundment corridor, not a stable-ground control; pass --allow-event-affected-aoi only for an explicitly justified analysis.")
     if aoi_name == "lhende":
         logger.warning("LHENDE IS AN EVENT-AFFECTED RUNOUT/IMPOUNDMENT CORRIDOR; do not interpret its scatter as a stable-ground control.")
+
+    try:
+        validate_export_provenance(
+            files, aoi_name, allow_legacy_untagged=args.allow_legacy_untagged
+        )
+    except (ValueError, RuntimeError) as exc:
+        logger.error("Export provenance validation failed: %s", exc)
+        return 1
 
     radii = args.sweep or [args.radius]
     if any(radius < 1 for radius in radii):
