@@ -204,6 +204,7 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
         counts, mhist = Counter(), Counter()
         tcounts = {t:Counter() for t in targets}
         tmaskhist = {t:Counter() for t in targets}
+        center_status = {t:{} for t in targets}
         aoi_cells = 0
         phase_ds, coh_ds = h5[pphase], (h5[coh] if coh else None)
         comp_ds, mask_ds = (h5[comp] if comp else None), (h5[mask] if mask else None)
@@ -243,6 +244,15 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
             am = make_aoi_mask(xs,ys[rs],aoi,epsg)
             counts["after_aoi"] += int((valid & am).sum())
             aoi_cells += int(am.sum())
+            for tid,t in targets.items():
+                row, col = t["row"], t["col"]
+                if y0 <= row < y1 and 0 <= col < shape[1]:
+                    rr = row - y0
+                    center_status[tid] = {
+                        "nearest_grid_cell_finite_nonzero_phase": bool(stage[rr, col]),
+                        "nearest_grid_cell_after_quality_gates": bool(valid[rr, col]),
+                        "nearest_grid_cell_after_aoi": bool(valid[rr, col] and am[rr, col]),
+                    }
             for tid,t in targets.items():
                 if not t["inside_grid_extent"]: continue
                 rr = window_slice(t["row"],radius,shape[0]); cc=window_slice(t["col"],radius,shape[1])
@@ -295,9 +305,10 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
                 "has_finite_nonzero_phase_support":stages.get("finite_nonzero_phase",0)>0,
                 "has_connected_component_support":stages.get("after_connected_components_gt_0",0)>0,
                 "has_current_reader_mask_support":stages.get("after_current_reader_mask_gate",0)>0,
+                "nearest_grid_cell_support":center_status[tid],
                 "has_nearby_aoi_gated_support":stages.get("after_aoi",0)>0,
-                "has_aoi_gated_support":bool(t["inside_requested_aoi_polygon"]) and stages.get("after_aoi",0)>0,
-                "has_target_point_support":bool(t["inside_requested_aoi_polygon"]) and stages.get("after_aoi",0)>0,
+                "has_aoi_gated_support":bool(t["inside_requested_aoi_polygon"]) and bool(center_status[tid].get("nearest_grid_cell_after_aoi",False)),
+                "has_target_point_support":bool(t["inside_requested_aoi_polygon"]) and bool(center_status[tid].get("nearest_grid_cell_after_aoi",False)),
                 "point_eligible_for_requested_aoi":bool(t["inside_requested_aoi_polygon"]),
             }
         attrs={}
@@ -342,7 +353,7 @@ def audit_goff(path, aoi, radius, corr_min, snr_min):
             if not rngp or not xp or not yp: continue
             shape=d[rngp][0]; xs=np.asarray(h5[xp][()],float).ravel(); ys=np.asarray(h5[yp][()],float).ravel()
             epsg=epsg_from(h5,d,group,group.rsplit("/",1)[0])
-            targets=projected_targets(xs,ys,epsg,aoi,radius); c=Counter(); tc={k:Counter() for k in targets}; aoicells=0
+            targets=projected_targets(xs,ys,epsg,aoi,radius); c=Counter(); tc={k:Counter() for k in targets}; center_status={k:{} for k in targets}; aoicells=0
             for y0 in range(0,shape[0],CHUNK_ROWS):
                 y1=min(shape[0],y0+CHUNK_ROWS); rs=slice(y0,y1)
                 rng=np.asarray(h5[rngp][rs,:],float); valid=np.isfinite(rng)
@@ -360,6 +371,15 @@ def audit_goff(path, aoi, radius, corr_min, snr_min):
                     valid &= snr>=snr_min; c[f"after_snr_ge_{snr_min:g}"]+=int(valid.sum())
                 else: c["snr_dataset_missing"]+=1
                 am=make_aoi_mask(xs,ys[rs],aoi,epsg); c["after_aoi"]+=int((valid&am).sum()); aoicells+=int(am.sum())
+                for tid,t in targets.items():
+                    row, col = t["row"], t["col"]
+                    if y0 <= row < y1 and 0 <= col < shape[1]:
+                        rr = row - y0
+                        center_status[tid] = {
+                            "nearest_grid_cell_finite_range_offset": bool(np.isfinite(rng[rr, col])),
+                            "nearest_grid_cell_after_quality_gates": bool(valid[rr, col]),
+                            "nearest_grid_cell_after_aoi": bool(valid[rr, col] and am[rr, col]),
+                        }
                 for tid,t in targets.items():
                     if not t["inside_grid_extent"]: continue
                     rr=window_slice(t["row"],radius,shape[0]); cc=window_slice(t["col"],radius,shape[1])
@@ -384,7 +404,10 @@ def audit_goff(path, aoi, radius, corr_min, snr_min):
                     "cumulative_stage_counts":stages,
                     "has_finite_offset_support":finite_support,
                     "has_correlation_snr_support":quality_support,
-                    "has_aoi_gated_support":stages.get("after_aoi",0)>0,
+                    "nearest_grid_cell_support":center_status[k],
+                    "has_nearby_aoi_gated_support":stages.get("after_aoi",0)>0,
+                    "has_aoi_gated_support":bool(v["inside_requested_aoi_polygon"]) and bool(center_status[k].get("nearest_grid_cell_after_aoi",False)),
+                    "has_target_point_support":bool(v["inside_requested_aoi_polygon"]) and bool(center_status[k].get("nearest_grid_cell_after_aoi",False)),
                     "point_eligible_for_requested_aoi":bool(v["inside_requested_aoi_polygon"]),
                 }
             layers.append({"group":group,"range_dataset":rngp,"azimuth_dataset":azip,"correlation_dataset":corrp,"snr_dataset":snrp,
