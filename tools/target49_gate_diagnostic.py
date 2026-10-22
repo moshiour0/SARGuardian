@@ -273,9 +273,22 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
                 pv &= aoi_sl; tc["after_aoi"] += int(pv.sum())
         target_obj={}
         for tid,t in targets.items():
-            target_obj[tid]={**t,"window_cell_count":int(tcounts[tid]["window_cells"]),
-                "cumulative_stage_counts":{k:int(v) for k,v in tcounts[tid].items() if k!="window_cells"},
-                "raw_mask_value_histogram":dict(tmaskhist[tid])}
+            stages={k:int(v) for k,v in tcounts[tid].items() if k!="window_cells"}
+            target_obj[tid]={
+                **t,
+                "window_cell_count":int(tcounts[tid]["window_cells"]),
+                "cumulative_stage_counts":stages,
+                "raw_mask_value_histogram":dict(tmaskhist[tid]),
+                # Grid bounds and data support are deliberately separate. A
+                # coordinate can lie inside the rectangular axes but in an
+                # all-nodata swath/window, as happened for Target 4 in frame
+                # 074_026. Never infer valid signal from inside_grid_extent.
+                "has_finite_nonzero_phase_support":stages.get("finite_nonzero_phase",0)>0,
+                "has_connected_component_support":stages.get("after_connected_components_gt_0",0)>0,
+                "has_current_reader_mask_support":stages.get("after_current_reader_mask_gate",0)>0,
+                "has_aoi_gated_support":stages.get("after_aoi",0)>0,
+                "point_eligible_for_requested_aoi":bool(t["inside_requested_aoi_polygon"]),
+            }
         attrs={}
         for key in ("identification/granuleName","identification/productVersion","identification/productLevel"):
             if key in h5:
@@ -287,7 +300,7 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
             "phase_dataset":pphase,"coherence_dataset":coh,"components_dataset":comp,"mask_dataset":mask,
             "mask_dtype":str(mask_ds.dtype) if mask_ds is not None else None,
             "mask_dataset_metadata":_dataset_metadata(h5, mask),
-            "           mask_numeric_layout_sampled_rows":_mask_numeric_layout(mask_ds[::CHUNK_ROWS, :] if mask_ds is not None else np.array([], dtype=np.uint8)),
+            "mask_numeric_layout_sampled_rows":_mask_numeric_layout(mask_ds[::CHUNK_ROWS, :] if mask_ds is not None else np.array([], dtype=np.uint8)),
             "phase_dataset_metadata":_dataset_metadata(h5, pphase),
             "coherence_dataset_metadata":_dataset_metadata(h5, coh),
             "components_dataset_metadata":_dataset_metadata(h5, comp),
@@ -346,10 +359,26 @@ def audit_goff(path, aoi, radius, corr_min, snr_min):
                     if corr is not None: vv &= corr[win]>=corr_min; tc[tid][f"after_correlation_ge_{corr_min:g}"]+=int(vv.sum())
                     if snr is not None: vv &= snr[win]>=snr_min; tc[tid][f"after_snr_ge_{snr_min:g}"]+=int(vv.sum())
                     vv &= am[sl,cc]; tc[tid]["after_aoi"]+=int(vv.sum())
+            target_rows={}
+            for k,v in targets.items():
+                stages={s:int(n) for s,n in tc[k].items() if s!="window_cells"}
+                finite_support=stages.get("after_finite_azimuth",stages.get("finite_range_offset",0))>0
+                quality_support=(
+                    corrp is not None and snrp is not None
+                    and stages.get(f"after_snr_ge_{snr_min:g}",0)>0
+                )
+                target_rows[k]={
+                    **v,"window_cell_count":int(tc[k]["window_cells"]),
+                    "cumulative_stage_counts":stages,
+                    "has_finite_offset_support":finite_support,
+                    "has_correlation_snr_support":quality_support,
+                    "has_aoi_gated_support":stages.get("after_aoi",0)>0,
+                    "point_eligible_for_requested_aoi":bool(v["inside_requested_aoi_polygon"]),
+                }
             layers.append({"group":group,"range_dataset":rngp,"azimuth_dataset":azip,"correlation_dataset":corrp,"snr_dataset":snrp,
+                "correlation_layer_present":corrp is not None,"snr_layer_present":snrp is not None,
                 "shape":list(shape),"epsg":epsg,"global_stage_counts":dict(c),"global_aoi_grid_cells":aoicells,
-                "targets":{k:{**v,"window_cell_count":int(tc[k]["window_cells"]),
-                    "cumulative_stage_counts":{s:int(n) for s,n in tc[k].items() if s!="window_cells"}} for k,v in targets.items()},
+                "targets":target_rows,
                 "warning":"GOFF is distributed unculled; finite/correlation/SNR gates do not prove physical correctness."})
         if not layers: raise ValueError("No GOFF layer with offsets and coordinate vectors was audited")
         return {"file":path.name,"type":"GOFF","sha256":sha256(path),"bytes":path.stat().st_size,"layers":layers,
