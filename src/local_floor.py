@@ -361,6 +361,15 @@ def validate_export_provenance(files, aoi_name: str, *,
                 )
 
 
+def flag_is_true(value, *, default: bool = False) -> bool:
+    """Parse boolean flags from in-memory results and CSV round-trips."""
+    if value is None:
+        return default
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
 def skipped_row(file: Path, target_id: str, lat: float, lon: float,
                 radius: int, aoi_name: str, status: str) -> dict:
     """Machine-readable rejection row. A skipped point must never create a floor."""
@@ -498,7 +507,11 @@ def main() -> int:
                                      aoi_name=aoi_name)
         rows.extend(target_rows)
 
-    measured_rows = [x for x in rows if x.get("aoi_eligible", True) and x.get("usable")]
+    measured_rows = [
+        x for x in rows
+        if flag_is_true(x.get("aoi_eligible", True), default=True)
+        and flag_is_true(x.get("usable"))
+    ]
     if args.csv:
         p = Path(resolve(args.csv))
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -546,17 +559,46 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     }
     if len(coordinates) > 1:
         raise ValueError("--as-floors rows contain one target ID at multiple coordinates")
+
+    validated = []
+    for row in usable:
+        try:
+            px = int(float(row.get("window_px", "nan")))
+            floor = float(row.get("local_floor_mm_day", "nan"))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("Refusing --as-floors row with invalid pixel count or floor.")
+        if px < MIN_PX or not np.isfinite(floor) or floor <= 0:
+            raise ValueError(
+                f"Refusing --as-floors row for {row.get('file', '(unknown file)')}: "
+                "a floor requires at least MIN_PX finite pixels and a finite positive value."
+            )
+        status = row.get("status")
+        if status not in (None, "MEASURED", "MEASURED_LOCAL_FLOOR_AOI_MAD_UNUSABLE"):
+            raise ValueError(f"Refusing --as-floors row with non-measurement status {status!r}.")
+        if not flag_is_true(row.get("aoi_eligible", True), default=True):
+            raise ValueError("Refusing --as-floors row whose target is outside the chosen AOI.")
+        if row.get("lat") is not None and row.get("lon") is not None:
+            aoi_name = row.get("aoi_name")
+            if not aoi_name or not point_in_aoi(float(row["lon"]), float(row["lat"]), str(aoi_name)):
+                raise ValueError("Refusing --as-floors row whose point is outside its named AOI.")
+        match = DATE.search(str(row.get("file", "")))
+        if not match:
+            raise ValueError(f"Refusing --as-floors row without a valid date pair: {row.get('file')!r}")
+        a, b = match.groups()
+        if span_from_name(row["file"]) <= 0:
+            raise ValueError(f"Refusing --as-floors row with non-positive temporal span: {row['file']}")
+        validated.append((a, b, floor))
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["reference", "secondary", "layer",
                                            "detect_floor_mm_day"])
         w.writeheader()
-        for r in usable:
-            a, b = DATE.search(r["file"]).groups()
+        for a, b, floor in validated:
             w.writerow({"reference": a, "secondary": b, "layer": layer,
-                        "detect_floor_mm_day": round(r["local_floor_mm_day"], 3)})
-    logger.info("Wrote %s (%d floors)", path, len(usable))
-    return len(usable)
+                        "detect_floor_mm_day": round(floor, 3)})
+    logger.info("Wrote %s (%d floors)", path, len(validated))
+    return len(validated)
 
 
 def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[dict]:
