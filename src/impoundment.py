@@ -241,7 +241,12 @@ def dem_from_api(bbox, target_cells: int = 12000, cache_path: Path | None = None
         for attempt in range(4):
             try:
                 response = urllib.request.urlopen(url, timeout=120)
-                payload = json.loads(response.read().decode("utf-8"))
+                try:
+                    payload = json.loads(response.read().decode("utf-8"))
+                finally:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
                 results = payload.get("results")
                 if not isinstance(results, list) or len(results) != len(chunk):
                     raise ValueError(f"OpenTopoData returned {len(results) if isinstance(results, list) else 'no'} results for {len(chunk)} requested cells.")
@@ -344,7 +349,7 @@ def dem_provenance(z, lats, lons, *, bbox, source: str,
         ),
     }
     if source_file is not None:
-        data["source_file"] = str(source_file)
+        data["source_file"] = Path(source_file).name
         data["source_file_sha256"] = file_sha256(source_file)
     if cache_path is not None:
         data["api_cache_file"] = str(cache_path)
@@ -400,6 +405,11 @@ def fill_depressions(z: np.ndarray) -> np.ndarray:
 
 def d8_receivers(filled: np.ndarray, dx: float, dy: float) -> np.ndarray:
     """Index of the steepest-descent neighbour for each cell (-1 if none)."""
+    filled = np.asarray(filled, dtype=float)
+    if filled.ndim != 2 or min(filled.shape) < 2:
+        raise ValueError("Filled DEM must be a 2-D grid with at least two rows and columns.")
+    if not (math.isfinite(dx) and math.isfinite(dy) and dx > 0 and dy > 0):
+        raise ValueError("DEM x/y postings must be finite positive metre distances.")
     ny, nx = filled.shape
     recv = np.full(ny * nx, -1, dtype=np.int64)
     for i in range(ny):
@@ -448,7 +458,26 @@ def upstream_of(idx: int, recv: np.ndarray, children: dict[int, list[int]]) -> n
 # ---------------------------------------------------------------------------
 def analyse(z, lats, lons, heights, min_accum_cells, top_n,
             min_separation_km=1.5, rank_by="volume"):
-    ny, nx = z.shape
+    z = np.asarray(z, dtype=float)
+    lats = np.asarray(lats, dtype=float)
+    lons = np.asarray(lons, dtype=float)
+    if z.ndim != 2 or z.shape != (lats.size, lons.size) or min(z.shape) < 2:
+        raise ValueError(f"DEM grid shape {z.shape} does not match the latitude/longitude axes.")
+    if not (np.isfinite(z).any() and np.all(np.isfinite(lats)) and np.all(np.isfinite(lons))
+            and np.all(np.diff(lats) < 0) and np.all(np.diff(lons) > 0)):
+        raise ValueError("DEM must have finite north-to-south latitude and west-to-east longitude axes and finite elevation samples.")
+    heights = list(heights)
+    if (not heights or any(not math.isfinite(float(h)) or float(h) <= 0 for h in heights)
+            or len(set(float(h) for h in heights)) != len(heights)):
+        raise ValueError("Blockage heights must be unique, finite and positive.")
+    if not isinstance(min_accum_cells, (int, np.integer)) or min_accum_cells < 1:
+        raise ValueError("Minimum channel accumulation must be a positive integer.")
+    if not isinstance(top_n, (int, np.integer)) or top_n < 1:
+        raise ValueError("top_n must be a positive integer.")
+    if not math.isfinite(min_separation_km) or min_separation_km < 0:
+        raise ValueError("Minimum site separation must be finite and non-negative.")
+    if rank_by not in {"volume", "efficiency"}:
+        raise ValueError("rank_by must be 'volume' or 'efficiency'.")
     midlat = float(np.mean(lats))
     dy = abs(float(lats[1] - lats[0])) * 110570.0
     dx = abs(float(lons[1] - lons[0])) * 111320.0 * math.cos(math.radians(midlat))
@@ -547,6 +576,22 @@ def rank_sites(sites: list[dict], rank_by: str, top_n: int,
     of this module that makes a claim - "favours sites a small landslide could
     dam" - so it has to be checkable without several thousand DEM queries.
     """
+    if rank_by not in {"volume", "efficiency"}:
+        raise ValueError("rank_by must be 'volume' or 'efficiency'.")
+    if not isinstance(top_n, (int, np.integer)) or top_n < 1:
+        raise ValueError("top_n must be a positive integer.")
+    if not math.isfinite(min_separation_km) or min_separation_km < 0:
+        raise ValueError("min_separation_km must be finite and non-negative.")
+    for row in sites:
+        try:
+            lat, lon = float(row["lat"]), float(row["lon"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Every impoundment site must have numeric latitude/longitude.") from exc
+        if not (math.isfinite(lat) and math.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError(f"Invalid WGS84 impoundment site coordinates: {lat}, {lon}.")
+    if not sites:
+        return []
     if rank_by == "efficiency":
         # Threshold height FIRST, then volume per metre within it.
         #
