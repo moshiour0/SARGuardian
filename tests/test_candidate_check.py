@@ -33,7 +33,8 @@ def test_same_signed_rates_are_a_path_delay_where_sensitivities_oppose():
     """The historical fault. Both rates negative, sensitivities opposed."""
     r = classify_geometry(v_asc=-3.49, v_desc=-1.47, **LANGTANG)
     assert r["verdict"] == "delay"
-    assert r["conclusive"]
+    assert not r["conclusive"]
+    assert "uncertainties/covariance" in r["conclusiveness_limit"]
     # and it must be decided on the ratio, not on the signs alone
     assert r["ratio_motion"] < 0 < r["ratio_measured"]
 
@@ -44,6 +45,7 @@ def test_opposite_signed_rates_matching_the_geometry_are_motion():
     r = classify_geometry(v_asc=LANGTANG["sens_asc"] * d,
                           v_desc=LANGTANG["sens_desc"] * d, **LANGTANG)
     assert r["verdict"] == "motion"
+    assert not r["conclusive"]
     assert abs(r["implied_downslope_mm_day"] - d) < 1e-6
 
 
@@ -98,3 +100,14 @@ def test_gentle_terrain_yields_no_verdict():
     r2 = classify_geometry(sens_asc=-0.642, sens_desc=+0.495,
                            v_asc=-3.49, v_desc=-1.47, slope_deg=38.0)
     assert r2["verdict"] == "delay"
+
+
+def test_ratio_nearest_prediction_is_never_called_conclusive_without_uncertainties():
+    # Exact synthetic ratios do not make a real measurement uncertainty-free.
+    r = classify_geometry(
+        sens_asc=-0.8, sens_desc=0.4,
+        v_asc=-1.6, v_desc=0.8,
+    )
+    assert r["verdict"] == "motion"
+    assert r["conclusive"] is False
+    assert "not supplied" in r["conclusiveness_limit"]
