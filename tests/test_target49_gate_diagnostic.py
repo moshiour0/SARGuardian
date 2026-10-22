@@ -161,3 +161,9 @@ def test_raw_diagnostic_mask_gate_matches_the_production_reader_for_fill_and_pac
                     f"diagnostic={diagnostic[diagnostic_key]}, "
                     f"production={production[production_key]}"
                 )
+
+
+def test_raw_gunw_diagnostic_rejects_unvalidated_mask_dtypes():
+    import pytest
+    with pytest.raises(TypeError, match="Unsupported GUNW mask dtype"):
+        decode_wrs_mask(np.array([[12]], dtype=np.uint16))
