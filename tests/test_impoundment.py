@@ -217,6 +217,7 @@ def test_api_dem_cache_reuses_exact_grid_without_a_second_network_call(
     import impoundment
 
     calls = []
+    requested_points = []
 
     class Response:
         def __init__(self, payload):
@@ -229,6 +230,10 @@ def test_api_dem_cache_reuses_exact_grid_without_a_second_network_call(
         query = urllib.parse.urlsplit(url).query
         locations = urllib.parse.parse_qs(query)["locations"][0]
         points = urllib.parse.unquote(locations).split("|")
+        requested_points.extend(
+            (float(point.split(",")[0]), float(point.split(",")[1]))
+            for point in points
+        )
         payload = json.dumps({
             "results": [{"elevation": 100.0 + i} for i in range(len(points))]
         }).encode("utf-8")
@@ -245,6 +250,15 @@ def test_api_dem_cache_reuses_exact_grid_without_a_second_network_call(
     )
     assert cache.is_file()
     assert len(calls) == 1
+    expected_points = [
+        (float(lat), float(lon))
+        for lat in first_lats for lon in first_lons
+    ]
+    assert requested_points == expected_points, (
+        "Cached axes must identify the exact coordinates sent to the API, not the unrounded linspace."
+    )
+    assert all(bbox[1] <= lat <= bbox[3] and bbox[0] <= lon <= bbox[2]
+               for lat, lon in requested_points)
 
     def no_network(*args, **kwargs):
         raise AssertionError("a valid existing cache must not trigger a network request")
@@ -445,3 +459,25 @@ def test_rank_sites_rejects_invalid_parameters_and_nonfinite_coordinates():
     sample["lat"] = float("nan")
     with pytest.raises(ValueError, match="Invalid WGS84"):
         rank_sites([sample], "volume", 1, 1.5)
+
+
+def test_api_coordinate_grid_refuses_resolution_finer_than_request_precision():
+    from impoundment import _api_coordinate_axes
+
+    # Four-by-four cells inside a single 0.00001-degree interval would collapse
+    # onto duplicated coordinate requests after five-decimal serialization.
+    with pytest.raises(ValueError, match="finer than the API"):
+        _api_coordinate_axes((85.0, 28.0, 85.00001, 28.00001), 4, 4)
+
+
+def test_elevation_grid_rejects_infinite_samples_but_keeps_nan_nodata():
+    from impoundment import _validate_elevation_grid
+
+    z = np.array([[100.0, np.nan], [101.0, 102.0]])
+    lats = np.array([28.1, 28.0])
+    lons = np.array([85.1, 85.2])
+    _validate_elevation_grid(z, lats, lons, (85.1, 28.0, 85.2, 28.1))
+
+    z[0, 0] = np.inf
+    with pytest.raises(ValueError, match="infinite elevations"):
+        _validate_elevation_grid(z, lats, lons, (85.1, 28.0, 85.2, 28.1))
