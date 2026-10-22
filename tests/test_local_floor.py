@@ -207,9 +207,12 @@ def test_local_floors_round_trip_into_the_detector(tmp_path):
              "window_px": 169, "local_floor_mm_day": 255.3}]
     out = tmp_path / "f.csv"
     assert write_as_floors(rows, out, "layer2") == 2
-    f = load_floors(out, "layer2")
+    f = load_floors(out, "layer2", series_id=rows[0]["series_id"])
     assert f[(date(2026, 7, 2), date(2026, 7, 14))] == 32.01
     assert f[(date(2026, 6, 29), date(2026, 7, 11))] == 255.3
+    out_rows = list(__import__("csv").DictReader(out.open(newline="")))
+    assert {row["series_id"] for row in out_rows} == {rows[0]["series_id"]}
+    assert {row["crid"] for row in out_rows} == {"P05023"}
 
 
 def test_floors_from_two_targets_are_refused(tmp_path):
