@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import logging
 import re
 import shutil
@@ -45,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import ROOT, NISAR, find_products, resolve, describe_layout  # noqa: E402
+from gunw_reader import crid_of, product_maturity  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("organise")
@@ -63,26 +65,105 @@ def parse(path: Path) -> dict | None:
     m = NAME.match(path.name)
     if not m:
         return None
+    d = m.groupdict()
+    if d["product"] not in {"GUNW", "GOFF"}:
+        return None
     stamps = re.findall(r"_(\d{8})T\d{6}", path.name)
     if len(stamps) < 4:
         return None
-    ref = datetime.strptime(stamps[0], "%Y%m%d").date()
-    sec = datetime.strptime(stamps[2], "%Y%m%d").date()
-    d = m.groupdict()
+    try:
+        ref = datetime.strptime(stamps[0], "%Y%m%d").date()
+        sec = datetime.strptime(stamps[2], "%Y%m%d").date()
+    except ValueError:
+        # Malformed dates should be reported as unparsed, not crash inventory.
+        return None
+    if sec <= ref:
+        return None
+    crid = crid_of(path.name)
+    size_bytes = path.stat().st_size
     return {
         "file": path.name,
         "product": d["product"],
         "processing": "urgent" if d["proc"] == "UR" else "routine",
+        "cycle": int(d["cycle"]),
         "path": int(d["path"]),
         "direction": d["direction"],
+        "frame": int(d["frame"]),
+        "subswath": int(d["sub"]),
+        "bandwidth": int(d["bw"]),
         "polarisation": d["pol"],
         "reference": ref,
         "secondary": sec,
         "span_days": (sec - ref).days,
         "days_before_event": (EVENT_DATE - sec).days,
-        "size_mb": round(path.stat().st_size / 1024 / 1024),
+        "release_crid": crid or "UNKNOWN",
+        "maturity": product_maturity(path.name),
+        "size_bytes": size_bytes,
+        "size_mb": round(size_bytes / 1024 / 1024),
         "source": path,
     }
+
+
+def sha256_file(path: Path) -> str:
+    """Hash a same-name collision using bounded-memory streaming."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def is_already_filed(path: Path, destination: Path) -> bool:
+    """Only treat products under a recognised product/season bucket as filed."""
+    try:
+        relative = path.resolve().relative_to(destination.resolve())
+    except ValueError:
+        return False
+    parts = relative.parts
+    if len(parts) < 3 or parts[0] not in {"GUNW", "GOFF"}:
+        return False
+    return parts[1] == "co_event" or re.fullmatch(r"\d{4}-\d{2}_(?:winter|summer)", parts[1]) is not None
+
+
+def write_full_manifest(destination: Path) -> Path:
+    """Atomically rebuild MANIFEST.csv from every valid product at destination."""
+    destination.mkdir(parents=True, exist_ok=True)
+    records = []
+    for path in sorted(destination.rglob("*.h5")):
+        record = parse(path)
+        if record is None:
+            continue
+        relative = path.resolve().relative_to(destination.resolve()).as_posix()
+        parts = Path(relative).parts
+        storage_bucket = (parts[1] if len(parts) >= 3 and parts[0] in {"GUNW", "GOFF"}
+                          else "incoming" if parts and parts[0] == "_incoming"
+                          else "unclassified")
+        records.append({
+            **record, "bucket": bucket(record), "storage_bucket": storage_bucket,
+            "relative_path": relative, "reference": str(record["reference"]),
+            "secondary": str(record["secondary"]),
+        })
+    records.sort(key=lambda r: (
+        r["product"], r["reference"], r["secondary"], r["direction"],
+        r["path"], r["frame"], r["subswath"], r["polarisation"],
+        r["release_crid"], r["processing"], r["file"],
+    ))
+    keys = [
+        "product", "processing", "cycle", "direction", "path", "frame",
+        "subswath", "bandwidth", "polarisation", "reference", "secondary",
+        "span_days", "days_before_event", "release_crid", "maturity",
+        "size_bytes", "size_mb", "bucket", "storage_bucket", "file", "relative_path",
+    ]
+    manifest = destination / "MANIFEST.csv"
+    temp = manifest.with_suffix(".csv.tmp")
+    with temp.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=keys, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(records)
+    temp.replace(manifest)
+    logger.info("Manifest rebuilt from %d valid product(s): %s", len(records), manifest)
+    return manifest
+
 
 
 def bucket(rec: dict) -> str:
@@ -134,19 +215,11 @@ def main() -> int:
         src = None
         logger.info("Found %d file(s)", len(files))
 
-    # Skip only what is ALREADY filed in a product/season bucket. The staging
-    # folder data/nisar_l2/_incoming/ lives under dest too, and excluding
-    # everything below dest silently threw away every fresh download - which is
-    # precisely where downloads land.
-    dest_resolved = dest.resolve()
-    incoming_resolved = (dest / "_incoming").resolve()
+    # Files in recognised product/season buckets are done. Files in _incoming
+    # or unclassified folders remain eligible for organisation.
+    n_filed = sum(1 for f in files if is_already_filed(f, dest))
+    files = [f for f in files if not is_already_filed(f)]
 
-    def already_filed(f: Path) -> bool:
-        parents = f.resolve().parents
-        return dest_resolved in parents and incoming_resolved not in parents
-
-    n_filed = sum(1 for f in files if already_filed(f))
-    files = [f for f in files if not already_filed(f)]
 
     recs, skipped = [], []
     for fp in files:
@@ -161,6 +234,8 @@ def main() -> int:
             # Everything is already in a product/season bucket. Normal state,
             # not a failure - re-running organise.py must always be safe.
             logger.info("Nothing to do: all %d product(s) are already filed.", n_filed)
+            if args.apply:
+                write_full_manifest(dest)
             return 0
         logger.error("Found %d .h5 file(s) but none are NISAR L2 granules.", len(files))
         print()
@@ -172,6 +247,21 @@ def main() -> int:
         return 1
 
     recs.sort(key=lambda r: (r["product"], r["reference"], r["path"]))
+    # Preflight destination collisions before modifying any files. A basename
+    # alone is not identity: matching names must also have byte-identical content.
+    for record in recs:
+        source = Path(record["source"])
+        target = dest / record["product"] / bucket(record) / record["file"]
+        if not target.exists() or target.resolve() == source.resolve():
+            continue
+        if target.stat().st_size != source.stat().st_size:
+            logger.error("Destination collision has a different size: source=%s target=%s", source, target)
+            return 1
+        if sha256_file(source) != sha256_file(target):
+            logger.error("Destination collision has different SHA-256; refusing to overwrite: source=%s target=%s", source, target)
+            return 1
+        logger.info("Byte-identical product already exists at destination: %s", target)
+
     total_gb = sum(r["size_mb"] for r in recs) / 1024
 
     print(f"\n{len(recs)} products, {total_gb:.1f} GB\n")
@@ -207,7 +297,11 @@ def main() -> int:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / r["file"]
         if target.exists():
-            logger.info("Already there: %s", r["file"][:60])
+            # Preflight proved this target is byte-identical. In move mode,
+            # consume only the verified duplicate source; copy mode preserves it.
+            logger.info("Byte-identical destination already exists: %s", r["file"][:60])
+            if not args.copy and Path(r["source"]).resolve() != target.resolve():
+                Path(r["source"]).unlink()
             continue
         if args.copy:
             shutil.copy2(r["source"], target)
@@ -216,17 +310,8 @@ def main() -> int:
         moved += 1
         logger.info("%s -> %s", r["file"][:52], target_dir)
 
-    manifest = dest / "MANIFEST.csv"
-    keys = ["product", "processing", "direction", "path", "polarisation",
-            "reference", "secondary", "span_days", "days_before_event",
-            "size_mb", "bucket", "file"]
-    with open(manifest, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")
-        w.writeheader()
-        for r in recs:
-            w.writerow({**r, "bucket": bucket(r),
-                        "reference": str(r["reference"]), "secondary": str(r["secondary"])})
-    logger.info("Moved %d files. Manifest: %s", moved, manifest)
+    manifest = write_full_manifest(dest)
+    logger.info("Moved/copied %d new files; manifest rebuilt from the full destination inventory: %s", moved, manifest)
 
     if src is not None and src.exists() and src.is_dir():
         leftovers = [f for f in src.rglob("*") if f.is_file()]
