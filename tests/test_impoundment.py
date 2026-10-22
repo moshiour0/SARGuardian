@@ -265,7 +265,7 @@ def test_api_dem_cache_fails_closed_when_grid_bytes_change(tmp_path, monkeypatch
 
     class Response:
         def read(self):
-            return json.dumps({"results": [{"elevation": 100.0 + i for i in range(12)]}).encode()
+            return json.dumps({"results": [{"elevation": 100.0 + i} for i in range(12)]}).encode("utf-8")
 
     monkeypatch.setattr(impoundment.urllib.request, "urlopen", lambda *a, **k: Response())
     monkeypatch.setattr(impoundment.time, "sleep", lambda *_: None)
@@ -290,7 +290,7 @@ def test_api_dem_cache_refuses_a_different_bbox(tmp_path, monkeypatch):
 
     class Response:
         def read(self):
-            return json.dumps({"results": [{"elevation": 100.0 + i for i in range(12)]}).encode()
+            return json.dumps({"results": [{"elevation": 100.0 + i} for i in range(12)]}).encode("utf-8")
 
     monkeypatch.setattr(impoundment.urllib.request, "urlopen", lambda *a, **k: Response())
     monkeypatch.setattr(impoundment.time, "sleep", lambda *_: None)
