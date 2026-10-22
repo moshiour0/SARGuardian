@@ -192,27 +192,49 @@ def test_compare_reports_the_interval_alongside_the_floor():
 def test_local_floors_round_trip_into_the_detector(tmp_path):
     """
     A series measured at a point must be gated on the floor AT the point.
-    --as-floors writes exactly what inverse_velocity.load_floors reads.
+    Detector-floor rows preserve exact footprint/CRID and never rely on TIFF
+    filenames for information those filenames do not encode.
     """
     from datetime import date
     from inverse_velocity import load_floors
     from local_floor import write_as_floors
-    rows = [{"file": "GOFF_20260702_20260714_PR_HH-layer2.tif", "usable": True,
-             "target_id": "4", "lat": 28.27799, "lon": 85.52983,
-             "aoi_name": "source", "aoi_eligible": True, "status": "MEASURED",
-             "window_px": 169, "local_floor_mm_day": 32.01},
-            {"file": "GOFF_20260629_20260711_PR_HH-layer2.tif", "usable": True,
-             "target_id": "4", "lat": 28.27799, "lon": 85.52983,
-             "aoi_name": "source", "aoi_eligible": True, "status": "MEASURED",
-             "window_px": 169, "local_floor_mm_day": 255.3}]
+
+    sid = "ASC PATH 98 FRAME 16 SUBSWATH 25 BANDWIDTH 4000 POL SH CRID P05023 GOFF"
+    source1 = (
+        "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_"
+        "20260702T233920_20260702T233955_20260714T233920_20260714T233954_"
+        "P05023_F_F_J_001.h5"
+    )
+    source2 = (
+        "NISAR_L2_PR_GOFF_023_098_A_016_025_4000_SH_"
+        "20260629T233921_20260629T233956_20260711T233921_20260711T233956_"
+        "P05023_N_F_J_001.h5"
+    )
+    common = {
+        "usable": True, "target_id": "4", "lat": 28.27799, "lon": 85.52983,
+        "aoi_name": "source", "aoi_eligible": True, "status": "MEASURED",
+        "window_px": 169, "series_id": sid,
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "crid": "P05023", "maturity": "PROVISIONAL", "product": "GOFF",
+        "track": "ASC path 98", "frame": "16", "subswath": "25",
+        "bandwidth": "4000", "polarisation": "SH", "processing": "PR",
+        "layer": "HH-layer2",
+    }
+    rows = [
+        {**common, "file": "GOFF_20260702_20260714_PR_HH-layer2.tif",
+         "source_product": source1, "local_floor_mm_day": 32.01},
+        {**common, "file": "GOFF_20260629_20260711_PR_HH-layer2.tif",
+         "source_product": source2, "local_floor_mm_day": 255.3},
+    ]
     out = tmp_path / "f.csv"
     assert write_as_floors(rows, out, "layer2") == 2
-    f = load_floors(out, "layer2", series_id=rows[0]["series_id"])
+    f = load_floors(out, "layer2", series_id=sid)
     assert f[(date(2026, 7, 2), date(2026, 7, 14))] == 32.01
     assert f[(date(2026, 6, 29), date(2026, 7, 11))] == 255.3
     out_rows = list(__import__("csv").DictReader(out.open(newline="")))
-    assert {row["series_id"] for row in out_rows} == {rows[0]["series_id"]}
+    assert {row["series_id"] for row in out_rows} == {sid}
     assert {row["crid"] for row in out_rows} == {"P05023"}
+    assert {row["maturity"] for row in out_rows} == {"PROVISIONAL"}
 
 
 def test_floors_from_two_targets_are_refused(tmp_path):
