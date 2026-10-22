@@ -137,11 +137,26 @@ def main() -> int:
             historical, z.copy(), lats.copy(), lons.copy(), "historical_same_dem", args.out_dir, aoi
         )
         current_rows, current_path, current_summary = one_model_summary(
-            current, z.copy(), lats.copy(), lons.copy(), "current_same_dem", args.out_dir, aoi
+            current, z.copy(), lats.copy(), lons.copy(), "current_threshold_first_ranking", args.out_dir, aoi
         )
+        # Isolate the current version's ranking-policy change without changing
+        # current hydrology. The historical rank_sites sorts by volume-per-metre
+        # alone; current rank_sites prioritizes minimum tested height first.
+        original_rank_sites = current.rank_sites
+        try:
+            current.rank_sites = historical.rank_sites
+            legacy_rank_rows, legacy_rank_path, legacy_rank_summary = one_model_summary(
+                current, z.copy(), lats.copy(), lons.copy(),
+                "current_hydrology_historical_efficiency_ranking", args.out_dir, aoi
+            )
+        finally:
+            current.rank_sites = original_rank_sites
+
         hist_vs_baseline, hist_changes = compare_geojson(baseline_path, hist_path)
+        curr_legacy_vs_baseline, curr_legacy_changes = compare_geojson(baseline_path, legacy_rank_path)
         curr_vs_baseline, curr_changes = compare_geojson(baseline_path, current_path)
         hist_vs_current, cross_changes = compare_geojson(hist_path, current_path)
+        legacy_vs_current, legacy_cross_changes = compare_geojson(legacy_rank_path, current_path)
 
         report["aois"][aoi] = {
             "dem": {
@@ -153,22 +168,29 @@ def main() -> int:
             },
             "baseline_path": str(baseline_path),
             "historical_model": hist_summary,
-            "current_model": current_summary,
+            "current_hydrology_historical_ranking": legacy_rank_summary,
+            "current_model_threshold_first_ranking": current_summary,
             "comparisons": {
                 "historical_vs_committed_baseline": hist_vs_baseline,
-                "current_vs_committed_baseline": curr_vs_baseline,
-                "historical_vs_current_same_dem": hist_vs_current,
+                "current_hydrology_historical_ranking_vs_committed_baseline": curr_legacy_vs_baseline,
+                "current_threshold_first_ranking_vs_committed_baseline": curr_vs_baseline,
+                "historical_vs_current_threshold_first_same_dem": hist_vs_current,
+                "current_hydrology_historical_ranking_vs_current_threshold_first_same_dem": legacy_vs_current,
             },
             "change_csvs": {
                 "historical_vs_baseline": f"{aoi}__historical_vs_baseline.csv",
-                "current_vs_baseline": f"{aoi}__current_vs_baseline.csv",
+                "current_historical_ranking_vs_baseline": f"{aoi}__current_historical_ranking_vs_baseline.csv",
+                "current_threshold_first_vs_baseline": f"{aoi}__current_threshold_first_vs_baseline.csv",
                 "historical_vs_current": f"{aoi}__historical_vs_current.csv",
+                "current_historical_ranking_vs_threshold_first": f"{aoi}__current_historical_ranking_vs_threshold_first.csv",
             },
         }
         for name, rows in (
             (f"{aoi}__historical_vs_baseline.csv", hist_changes),
-            (f"{aoi}__current_vs_baseline.csv", curr_changes),
+            (f"{aoi}__current_historical_ranking_vs_baseline.csv", curr_legacy_changes),
+            (f"{aoi}__current_threshold_first_vs_baseline.csv", curr_changes),
             (f"{aoi}__historical_vs_current.csv", cross_changes),
+            (f"{aoi}__current_historical_ranking_vs_threshold_first.csv", legacy_cross_changes),
         ):
             import csv
             keys = sorted({key for row in rows for key in row})
@@ -181,31 +203,47 @@ def main() -> int:
     # to baseline on the same grid in every AOI; otherwise DEM/grid provenance
     # remains a confounder and this experiment remains REVIEW_REQUIRED.
     closer_count = 0
+    ranking_effect_count = 0
     per_aoi_assessment = {}
     for aoi, data in report["aois"].items():
         hist = data["comparisons"]["historical_vs_committed_baseline"]
-        curr = data["comparisons"]["current_vs_committed_baseline"]
+        curr_legacy = data["comparisons"]["current_hydrology_historical_ranking_vs_committed_baseline"]
+        curr = data["comparisons"]["current_threshold_first_ranking_vs_committed_baseline"]
         hist_unmatched = hist["baseline_sites_unmatched_after_coordinate_tolerance"] + hist["candidate_sites_unmatched_after_coordinate_tolerance"]
+        legacy_unmatched = curr_legacy["baseline_sites_unmatched_after_coordinate_tolerance"] + curr_legacy["candidate_sites_unmatched_after_coordinate_tolerance"]
         curr_unmatched = curr["baseline_sites_unmatched_after_coordinate_tolerance"] + curr["candidate_sites_unmatched_after_coordinate_tolerance"]
         hist_round = hist["coordinate_rounding_matches"]
+        legacy_round = curr_legacy["coordinate_rounding_matches"]
         curr_round = curr["coordinate_rounding_matches"]
-        is_closer = hist_unmatched < curr_unmatched or (
+        historical_closer = hist_unmatched < curr_unmatched or (
             hist_unmatched == curr_unmatched and hist_round > curr_round
         )
-        if is_closer:
+        legacy_rank_closer = legacy_unmatched < curr_unmatched or (
+            legacy_unmatched == curr_unmatched and legacy_round > curr_round
+        )
+        if historical_closer:
             closer_count += 1
+        if legacy_rank_closer:
+            ranking_effect_count += 1
         per_aoi_assessment[aoi] = {
             "historical_unmatched_site_total": hist_unmatched,
-            "current_unmatched_site_total": curr_unmatched,
+            "current_legacy_ranking_unmatched_site_total": legacy_unmatched,
+            "current_threshold_first_ranking_unmatched_site_total": curr_unmatched,
             "historical_rounding_matches": hist_round,
-            "current_rounding_matches": curr_round,
-            "historical_model_closer_to_baseline": is_closer,
-            "site_count_or_coordinate_match_only": True,
+            "current_legacy_ranking_rounding_matches": legacy_round,
+            "current_threshold_first_ranking_rounding_matches": curr_round,
+            "historical_model_closer_to_baseline": historical_closer,
+            "current_hydrology_with_historical_ranking_closer_to_baseline": legacy_rank_closer,
+            "ranking_policy_effect_is_material_for_site_identity": legacy_rank_closer,
+            "comparison_basis": "unmatched site identities and coordinate-rounding matches only; no nearest-neighbour identity assumptions",
         }
     report["historical_model_closer_to_baseline_aois"] = closer_count
+    report["current_hydrology_historical_ranking_closer_to_baseline_aois"] = ranking_effect_count
     report["historical_model_closeness_by_aoi"] = per_aoi_assessment
-    if closer_count == len(AOIS):
-        report["attribution_result"] = "MODEL_CHANGE_IS_PRIMARY_EXPLANATION_ON_THE_TESTED_GRIDS"
+    if closer_count == len(AOIS) and ranking_effect_count == len(AOIS):
+        report["attribution_result"] = "BOTH_HYDROLOGY_AND_RANKING_POLICY_CHANGES_AFFECT_SITE_CATALOGUE"
+    elif closer_count == len(AOIS):
+        report["attribution_result"] = "MODEL_CHANGE_IS_PRIMARY_EXPLANATION_ON_THE_TESTED_GRIDS; RANKING_EFFECT_QUANTIFIED_SEPARATELY"
     elif closer_count == 0:
         report["attribution_result"] = "DEM_GRID_OR_OTHER_FACTOR_REMAINS_A_MAJOR_CONFOUNDER"
     else:
