@@ -56,9 +56,9 @@ Still not proved:
 ## Next experiments
 
 1. Investigate the P05023 ionosphere screen's spatial interpolation and uncertainty/residuals; compare corrected/default and uncorrected diagnostic models without treating them as interchangeable measurements.
-2. Keep `MIN_PX=6`; do not report a GUNW floor where 0–3 valid samples remain. Add candidate-centre AOI membership as a hard precondition before any local-floor calculation.
+2. Keep `MIN_PX=6`; do not report a GUNW floor where 0–3 valid samples remain. Implemented on this branch: `local_floor.py --aoi` now checks exact polygon membership before measurement and records `TARGET_OUTSIDE_AOI` rows without producing a floor. `scar_map.py` now applies the exact `SOURCE_RING` pixel mask to NDSI, coverage denominators and candidate clusters rather than treating the STAC bbox as the polygon.
 3. For Target 9, use a scientifically justified candidate AOI rather than the source polygon. Document whether that ground is stable or event-affected before using it as a control.
-4. For GOFF, independently test range and azimuth outlier handling, layer selection, offset sign/units, temporal reference behavior, and noise calibration.
+4. For GOFF, independently test range and azimuth outlier handling, layer selection, offset sign/units, temporal reference behavior, and noise calibration. The newly added AOI guards do not address these offset-accuracy questions.
 5. Extend the sample to matched overlapping frames for maturity comparisons. Do not attribute global differences to CRID alone if the footprints differ.
 6. Do not change published science outputs or merge this branch until these checks are complete.
 
