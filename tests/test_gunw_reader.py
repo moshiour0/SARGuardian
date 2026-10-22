@@ -352,3 +352,11 @@ def test_fixed_aoi_grid_refuses_to_guess_a_missing_source_crs():
     ys = np.linspace(3_200_000, 3_199_000, 11)
     with pytest.raises(ValueError, match="without source EPSG/CRS"):
         aoi_grid(xs, ys, SOURCE_RING, None)
+
+
+def test_unvalidated_gunw_mask_dtypes_fail_closed():
+    import pytest
+    with pytest.raises(TypeError, match="Unsupported GUNW mask dtype"):
+        decode_gunw_mask(np.array([[12]], dtype=np.uint16))
+    with pytest.raises(TypeError, match="Unsupported GUNW mask dtype"):
+        decode_gunw_mask(np.array([[12]], dtype=np.int64))
