@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.compare_impoundment_geojson import compare_geojson
+from tools.compare_impoundment_geojson import compare_geojson, main as compare_main
 
 
 def _write(path: Path, features):
@@ -166,3 +166,53 @@ def test_truncated_height_results_are_reported_separately_as_lower_bounds():
     ]
     assert response_counts(rows, [10]) == {"10": 3}
     assert truncated_response_counts(rows, [10]) == {"10": 1}
+
+
+def test_coordinate_rounding_is_separate_from_exact_identity():
+    baseline = _write(tmp_path := Path(tempfile.mkdtemp()) / "baseline.geojson", [_feature(85.500005, 28.3)])
+    candidate = _write(tmp_path.parent / "candidate.geojson", [_feature(85.5, 28.3)])
+    summary, changes = compare_geojson(baseline, candidate)
+    assert summary["exact_coordinate_matches"] == 0
+    assert summary["coordinate_rounding_matches"] == 1
+    assert summary["baseline_sites_unmatched_after_coordinate_tolerance"] == 0
+    assert summary["candidate_sites_unmatched_after_coordinate_tolerance"] == 0
+    assert summary["status"] == "SEMANTIC_MATCH_WITH_COORDINATE_ROUNDING"
+    assert summary["review_row_count"] == 0
+    assert changes[0]["status"] == "COORDINATE_ROUNDING_MATCH"
+    assert changes[0]["nearest_neighbour_is_identity_match"] is False
+
+
+def test_property_change_at_rounded_coordinate_pair_requires_review(tmp_path):
+    baseline = _write(tmp_path / "baseline.geojson", [_feature(85.500005, 28.3, sill=3500)])
+    candidate = _write(tmp_path / "candidate.geojson", [_feature(85.5, 28.3, sill=3525)])
+    summary, changes = compare_geojson(baseline, candidate)
+    assert summary["coordinate_rounding_matches"] == 1
+    assert summary["property_change_count_at_rounded_coordinate_matches"] == 1
+    assert summary["status"] == "REVIEW_REQUIRED"
+    assert any(row["status"] == "PROPERTY_CHANGED_AT_ROUNDED_COORDINATE_MATCH"
+               and row["field"] == "sill_m" for row in changes)
+
+
+def test_cli_csv_keeps_nearest_neighbour_review_columns(tmp_path, monkeypatch):
+    import csv
+    import sys
+
+    baseline = _write(tmp_path / "baseline.geojson", [_feature(85.5, 28.3)])
+    candidate = _write(tmp_path / "candidate.geojson", [_feature(85.5001, 28.3001)])
+    out_json, out_csv = tmp_path / "compare.json", tmp_path / "compare.csv"
+    monkeypatch.setattr(sys, "argv", [
+        "compare_impoundment_geojson.py",
+        "--baseline", str(baseline),
+        "--candidate", str(candidate),
+        "--json", str(out_json),
+        "--csv", str(out_csv),
+    ])
+    assert compare_main() == 0
+    with out_csv.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+        assert "nearest_candidate_distance_m" in rows[0]
+        assert "nearest_baseline_distance_m" in rows[0]
+        assert "nearest_neighbour_is_identity_match" in rows[0]
+    summary = json.loads(out_json.read_text(encoding="utf-8"))
+    assert summary["status"] == "REVIEW_REQUIRED"
+    assert summary["exact_coordinate_matches"] == 0
