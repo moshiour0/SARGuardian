@@ -148,8 +148,9 @@ def _cand(cid="4", elev="5370"):
             "slope_deg": "36.7", "aspect_deg": "350.7", "reading": "DETACHMENT-like"}
 
 
-def _goff(cid, pair, px, blk):
-    return {"target_id": cid, "usable": "True", "file": f"GOFF_{pair}_PR_HH-layer2.tif",
+def _goff(cid, pair, px, blk, *, window_px=169, usable="True"):
+    return {"target_id": cid, "usable": usable, "window_px": str(window_px),
+            "file": f"GOFF_{pair}_PR_HH-layer2.tif",
             "local_floor_mm_day": str(px), "block_median_floor_mm_day": str(blk)}
 
 
@@ -207,3 +208,38 @@ def test_source_bound_refuses_a_candidate_outside_the_source_polygon():
 def test_nonfinite_noise_floor_values_are_not_used_as_bounds():
     assert math.isnan(bound.worst([{"floor": "inf"}, {"floor": "nan"}], "floor"))
     assert bound.worst([{"floor": "1.0"}, {"floor": "inf"}], "floor") == 1.0
+
+
+def test_bound_rejects_stale_usable_flags_with_insufficient_support_or_invalid_floors():
+    invalid = [
+        _goff("4", "20260702_20260714", 32.0, 9.2, window_px=3),
+        _goff("4", "20260714_20260726", 0.0, 6.2),
+        _goff("4", "20260726_20260819", float("inf"), 6.2),
+        _goff("4", "20260819_20260831", 999.0, 999.0),  # post-event; also excluded
+    ]
+    result = bound.assess(_cand(), invalid, [], [])
+    assert result["goff_intervals"] == 0
+    assert math.isnan(result["los_floor_pixel_mm_day"])
+    assert math.isnan(result["downslope_bound_mm_day"])
+    assert math.isnan(result["ratio_los_pixel"])
+
+
+def test_bound_ignores_invalid_block_floor_but_keeps_valid_pixel_floor():
+    rows = [
+        _goff("4", "20260702_20260714", 32.0, 0.0),
+        _goff("4", "20260714_20260726", 26.0, float("nan")),
+    ]
+    result = bound.assess(_cand(), rows, [], [])
+    assert result["goff_intervals"] == 2
+    assert result["los_floor_pixel_mm_day"] == 32.0
+    assert math.isnan(result["los_floor_block_mm_day"])
+    assert math.isnan(result["ratio_los_block"])
+    assert "interpreted as LOS" in result["precursor_rate_assumption"]
+
+
+def test_floor_row_eligibility_requires_sample_count_and_finite_positive_value():
+    assert bound.eligible_floor_row(_goff("4", "20260702_20260714", 1.0, 1.0), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", 1.0, 1.0, window_px=5), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", 0.0, 1.0), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", float("nan"), 1.0), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", 1.0, 1.0, usable="False"), "local_floor_mm_day")
