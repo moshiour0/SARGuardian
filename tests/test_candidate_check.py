@@ -127,6 +127,6 @@ def test_descriptive_delay_ratio_does_not_hard_reject_candidate(monkeypatch, cap
     problems = []
     geometry_test(28.27799, 85.52983, {"A": -3.49, "D": -1.47}, problems)
     out = capsys.readouterr().out
-    assert "descriptive only" in out
+    assert "not a statistically conclusive rejection" in out
     assert "PATH-DELAY HYPOTHESIS" in out
     assert problems == []
