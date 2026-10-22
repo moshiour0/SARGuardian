@@ -195,7 +195,7 @@ def main() -> int:
             "baseline_path": str(baseline_path),
             "historical_model": hist_summary,
             "current_hydrology_historical_ranking": legacy_rank_summary,
-            "current_model_threshold_first_ranking": current_summary,
+            "current_threshold_first_ranking": current_summary,
             "comparisons": {
                 "historical_vs_committed_baseline": hist_vs_baseline,
                 "current_hydrology_historical_ranking_vs_committed_baseline": curr_legacy_vs_baseline,
@@ -280,7 +280,16 @@ def main() -> int:
     print(f"HISTORICAL_MODEL_ATTRIBUTION={report['attribution_result']}")
     print(f"HISTORICAL_CLOSER_AOIS={closer_count}/{len(AOIS)}")
     for aoi, item in report["historical_model_closeness_by_aoi"].items():
-        print(f"AOI={aoi} historical_unmatched={item['historical_unmatched_site_total']} current_unmatched={item['current_unmatched_site_total']} historical_rounding={item['historical_rounding_matches']} current_rounding={item['current_rounding_matches']} historical_closer={item['historical_model_closer_to_baseline']}")
+        print(
+            f"AOI={aoi} historical_unmatched={item['historical_unmatched_site_total']} "
+            f"current_legacy_rank_unmatched={item['current_legacy_ranking_unmatched_site_total']} "
+            f"current_threshold_first_unmatched={item['current_threshold_first_ranking_unmatched_site_total']} "
+            f"historical_rounding={item['historical_rounding_matches']} "
+            f"legacy_rank_rounding={item['current_legacy_ranking_rounding_matches']} "
+            f"threshold_first_rounding={item['current_threshold_first_ranking_rounding_matches']} "
+            f"historical_closer={item['historical_model_closer_to_baseline']} "
+            f"legacy_rank_closer={item['current_hydrology_with_historical_ranking_closer_to_baseline']}"
+        )
     print(f"WROTE_REPORT={report_path}")
     # A completed experiment may legitimately conclude REVIEW_REQUIRED.
     return 0
