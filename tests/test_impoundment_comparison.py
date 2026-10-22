@@ -129,3 +129,19 @@ def test_response_count_skips_partial_or_nonfinite_height_results():
                         }}}},
     ]
     assert response_counts(rows, [10]) == {"10": 0}
+
+
+def test_nearest_neighbour_is_review_only_and_never_an_exact_site_match(tmp_path):
+    baseline = _write(tmp_path / "baseline.geojson", [_feature(85.5, 28.3)])
+    candidate = _write(tmp_path / "candidate.geojson", [_feature(85.5001, 28.3001)])
+    summary, changes = compare_geojson(baseline, candidate)
+
+    assert summary["exact_coordinate_matches"] == 0
+    assert summary["status"] == "REVIEW_REQUIRED"
+    review = summary["nearest_neighbour_review_only"]
+    assert review["baseline_unmatched_to_candidate"]["count"] == 1
+    assert review["baseline_unmatched_to_candidate"]["max_m"] < 100
+    assert review["baseline_unmatched_to_candidate"]["within_100m"] == 1
+    missing = next(row for row in changes if row["status"] == "BASELINE_SITE_MISSING")
+    assert missing["nearest_neighbour_is_identity_match"] is False
+    assert missing["nearest_candidate_distance_m"] < 100
