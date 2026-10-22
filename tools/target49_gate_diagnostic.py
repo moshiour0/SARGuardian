@@ -246,7 +246,7 @@ def audit_gunw(path, aoi, radius, coh_min, apply_iono=True):
             aoi_cells += int(am.sum())
             for tid,t in targets.items():
                 row, col = t["row"], t["col"]
-                if y0 <= row < y1 and 0 <= col < shape[1]:
+                if t["inside_grid_extent"] and y0 <= row < y1 and 0 <= col < shape[1]:
                     rr = row - y0
                     center_status[tid] = {
                         "nearest_grid_cell_finite_nonzero_phase": bool(stage[rr, col]),
@@ -373,7 +373,7 @@ def audit_goff(path, aoi, radius, corr_min, snr_min):
                 am=make_aoi_mask(xs,ys[rs],aoi,epsg); c["after_aoi"]+=int((valid&am).sum()); aoicells+=int(am.sum())
                 for tid,t in targets.items():
                     row, col = t["row"], t["col"]
-                    if y0 <= row < y1 and 0 <= col < shape[1]:
+                    if t["inside_grid_extent"] and y0 <= row < y1 and 0 <= col < shape[1]:
                         rr = row - y0
                         center_status[tid] = {
                             "nearest_grid_cell_finite_range_offset": bool(np.isfinite(rng[rr, col])),
