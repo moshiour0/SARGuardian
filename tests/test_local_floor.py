@@ -26,7 +26,7 @@ import numpy as np
 from pathlib import Path
 
 from local_floor import (MIN_PX, compare, detection_floor, robust_sigma,
-                         span_from_name, window, point_in_aoi,
+                         span_from_name, window, point_in_aoi, measure_target,
                          infer_aoi_from_dir, skipped_row)
 
 
@@ -377,3 +377,29 @@ def test_inverse_velocity_floor_export_refuses_a_target_outside_the_aoi(tmp_path
     }
     with pytest.raises(ValueError, match="outside its named AOI"):
         write_as_floors([row], tmp_path / "outside.csv", "layer2")
+
+
+def test_invalid_calendar_date_in_export_filename_is_not_a_crash():
+    assert np.isnan(span_from_name("GOFF_20261302_20261315_PR_HH-layer2.tif"))
+
+
+def test_target_outside_raster_emits_one_row_per_requested_radius(tmp_path):
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "GOFF_20260702_20260714_PR_HH-layer2.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=10, width=10, count=1,
+        dtype="float32", crs="EPSG:32645",
+        transform=from_origin(500000, 3200000, 80, 80), nodata=-9999.0,
+    ) as dst:
+        dst.write(np.ones((10, 10), dtype=np.float32), 1)
+
+    rows = measure_target(
+        [path], "outside", lat=-20.0, lon=-40.0,
+        radii=[2, 6, 9], band=1, aoi_name="source",
+    )
+    assert len(rows) == 3
+    assert {row["radius_px"] for row in rows} == {2, 6, 9}
+    assert all(row["status"] == "TARGET_OUTSIDE_RASTER" for row in rows)
+    assert all(not row["usable"] and np.isnan(row["local_floor_mm_day"]) for row in rows)
