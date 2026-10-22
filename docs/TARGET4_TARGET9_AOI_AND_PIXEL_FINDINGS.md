@@ -2,7 +2,7 @@
 
 Date: 2026-10-22  
 Evidence: SARGuardian source snapshot + SARGuardian-backend Run #55 (39657764262) logs and output TIFFs.  
-Status: raw HDF5 diagnosis completed for 12 exact Run #55 products (6 GUNW, 6 GOFF); Target 9 source-AOI exclusion confirmed; Target 4 GUNW sample support remains below the six-cell floor. See [the full raw HDF5 findings](TARGET4_TARGET9_RAW_HDF5_FINDINGS_2026-10-22.md).
+Status: raw HDF5 diagnosis completed for 13 exact Run #55 products (7 GUNW, 6 GOFF); Target 9 source-AOI exclusion confirmed; Target 4 GUNW sample support remains below the six-cell floor. Final evidence: [backend run #5](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39712719257), artifact 12398535967. See [the full raw HDF5 findings](TARGET4_TARGET9_RAW_HDF5_FINDINGS_2026-10-22.md).
 
 ## Main correction
 
@@ -42,9 +42,9 @@ These are different frame IDs (016_010, 016_024, 016_025), not same-footprint co
 
 ## What is and is not proved
 
-Proved by the 12-file raw HDF5 audit (workflow run 39693169804):
-- Target 9 is outside source AOI by about 670 m but inside Langtang by about 183 m. In source runs, AOI clipping removes target support; in Langtang, two P05023 GUNW pairs retain 29 and 33 cells after the current default gates.
-- Target 4 lies in both polygons. Among six tested GUNW files, four local windows have zero connected-component support or no finite phase; another has only four connected-component pixels. Two P05023 pairs have 10 pixels before the interpolated-ionosphere-screen gate and only 3 after it.
+Proved by the 13-product raw HDF5 audit (workflow run 39712719257):
+- Target 9 is outside source AOI by about 670 m but inside Langtang by about 183 m. In source runs, AOI clipping removes target support; in Langtang, three ascending P05023 GUNW pairs retain 27, 29 and 33 cells after the current default gates.
+- Target 4 lies in both polygons. Among seven tested GUNW files, five local windows have zero connected-component support (including one with no finite phase); another has four connected-component pixels; one has ten before the interpolated-ionosphere-screen gate and only three after it.
 - The P05023 GUNW bit-24 screen mask removes roughly 96.1–99.0% of the phase samples remaining after prior gates in the five tested P05023 files. This is a major scientific policy decision to validate; it is not automatic proof of a software defect.
 - Six raw GOFF products have many layer-2 cells after correlation/SNR gates in Langtang: Target 4 has 100–160 cells and Target 9 has 52–99 cells. That does not establish offset accuracy.
 
