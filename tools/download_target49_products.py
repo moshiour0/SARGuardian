@@ -41,12 +41,16 @@ def file_sha256(path):
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--profile",choices=sorted(PROFILES),default="target4-9-matched")
+    ap.add_argument("--label",action="append",choices=sorted(RUN55_GRANULES),
+                    help="Download only this exact Run #55 product label; may be repeated. "
+                         "When supplied, overrides --profile.")
     ap.add_argument("--outdir",type=Path,default=Path("data/target49_raw"))
     ap.add_argument("--dry-run",action="store_true")
     ap.add_argument("--manifest",type=Path,default=None)
     args=ap.parse_args()
-    selected=[(k,RUN55_GRANULES[k]) for k in PROFILES[args.profile]]
-    print(f"profile={args.profile}; products={len(selected)}")
+    labels=args.label if args.label else PROFILES[args.profile]
+    selected=[(k,RUN55_GRANULES[k]) for k in labels]
+    print(f"profile={'explicit-labels' if args.label else args.profile}; products={len(selected)}")
     for label,name in selected: print(f"{label}\t{name}")
     if args.dry_run:
         print("DRY_RUN: no network calls or downloads performed")
@@ -73,13 +77,22 @@ def main():
                     raise RuntimeError(f"Exact basename lookup returned {len(results)} results; expected 1")
                 print(f"DOWNLOADING {granule}",flush=True)
                 token = os.environ.get("EARTHDATA_TOKEN", "").strip()
+                username = os.environ.get("EARTHDATA_USERNAME", "").strip()
+                password = os.environ.get("EARTHDATA_PASSWORD", "")
                 if token:
                     session = asf.ASFSession().auth_with_token(token)
-                    results.download(path=str(args.outdir), processes=1, session=session)
+                elif username and password:
+                    session = asf.ASFSession().auth_with_creds(username, password)
+                elif username or password:
+                    raise RuntimeError("Set both EARTHDATA_USERNAME and EARTHDATA_PASSWORD, or set EARTHDATA_TOKEN.")
                 else:
                     # ASF's preferred fallback is ~/.netrc. Auth is handled by
                     # the library; no credential is written to the manifest.
+                    session = None
+                if session is None:
                     results.download(path=str(args.outdir), processes=1)
+                else:
+                    results.download(path=str(args.outdir), processes=1, session=session)
                 matches=list(args.outdir.rglob(granule))
                 if len(matches)!=1 or matches[0].stat().st_size==0:
                     raise RuntimeError(f"Exact non-empty basename not uniquely present; matches={len(matches)}")
