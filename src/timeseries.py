@@ -152,8 +152,8 @@ def pairs_from_granule_names(names: list[str], paths: list, directions: list) ->
             continue
         metadata = granule_metadata(name)
         out.append(Pair(
-            path=path,
-            direction=(direction or (metadata or {}).get("direction") or "?")[0],
+            path=(metadata or {}).get("path", path),
+            direction=(metadata or {}).get("direction", direction or "?")[0],
             ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
             sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
             source=name, metadata=metadata,
@@ -1014,11 +1014,12 @@ def main() -> int:
     if args.buffer_km < 0:
         ap.error("--buffer-km must be non-negative")
 
+    if (args.processing or args.crid or args.min_valid_pixels != 6) and not args.from_stats:
+        ap.error("--processing, --crid and --min-valid-pixels are supported only with --from-stats")
+
     if args.from_stats:
         if args.min_valid_pixels < 1:
             ap.error("--min-valid-pixels must be positive")
-        if (args.processing or args.crid) and not args.from_stats:
-            ap.error("--processing/--crid are supported only with --from-stats")
         try:
             pairs = pairs_from_stats(
                 resolve(args.from_stats),
