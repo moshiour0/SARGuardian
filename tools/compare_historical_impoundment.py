@@ -60,6 +60,32 @@ def finite_count_by_height(rows: list[dict], heights=HEIGHTS) -> dict[str, int]:
     return result
 
 
+def legacy_efficiency_rank(sites: list[dict], rank_by: str, top_n: int,
+                          min_separation_km: float) -> list[dict]:
+    """Reproduce the rank/NMS policy from the baseline generator commit.
+
+    This is audit-only. Historical code sorted all sites by efficiency (or
+    volume), then applied 1.5-km non-maximum suppression and top-N truncation.
+    The function intentionally does not adopt the current threshold-first rank.
+    """
+    if rank_by not in {"volume", "efficiency"}:
+        raise ValueError(f"Unsupported ranking metric: {rank_by}")
+    metric = "efficiency_Mm3_per_m" if rank_by == "efficiency" else "max_volume_Mm3"
+    ranked = sorted(sites, key=lambda row: -float(row[metric]))
+    keep = []
+    for row in ranked:
+        if any(math.hypot(
+            (float(row["lat"]) - float(other["lat"])) * 110.57,
+            (float(row["lon"]) - float(other["lon"])) * 111.32
+            * math.cos(math.radians(float(row["lat"])))
+        ) < min_separation_km for other in keep):
+            continue
+        keep.append(row)
+        if len(keep) >= top_n:
+            break
+    return keep
+
+
 def one_model_summary(module, z, lats, lons, label: str, out_dir: Path, aoi: str):
     rows = module.analyse(
         z, lats, lons, list(HEIGHTS), MIN_ACCUM_CELLS, TOP_N,
@@ -144,7 +170,7 @@ def main() -> int:
         # alone; current rank_sites prioritizes minimum tested height first.
         original_rank_sites = current.rank_sites
         try:
-            current.rank_sites = historical.rank_sites
+            current.rank_sites = legacy_efficiency_rank
             legacy_rank_rows, legacy_rank_path, legacy_rank_summary = one_model_summary(
                 current, z.copy(), lats.copy(), lons.copy(),
                 "current_hydrology_historical_efficiency_ranking", args.out_dir, aoi
