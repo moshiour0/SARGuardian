@@ -76,14 +76,20 @@ MAD_SIGMA = 1.4826          # MAD -> Gaussian sigma
 
 # ---------------------------------------------------------------------------
 def layer_groups(datasets: dict) -> list[str]:
-    """Every .../pixelOffsets/<pol>/<layerN> group present, in order."""
+    """Return measurement layers under science grids, not processing metadata.
+
+    Some newer products contain a similarly named configuration node at
+    metadata/processingInformation/parameters/pixelOffsets/frequencyA/layer2.
+    That node is not a raster layer and has none of the offset/quality arrays.
+    Requiring the grids/frequency/pixelOffsets/polarization/layerN path prevents
+    metadata parameters from being mistaken for measurements.
+    """
     groups = set()
     for path in datasets:
-        m = re.match(r"(.*/pixelOffsets/[^/]+/layer\d+)/", path)
+        m = re.match(r"(.*/grids/[^/]+/pixelOffsets/[^/]+/layer\d+)/", path)
         if m:
             groups.add(m.group(1))
     return sorted(groups)
-
 
 def robust_sigma(a: np.ndarray) -> float:
     """MAD-based scatter - immune to the gross outliers in unculled offsets."""
