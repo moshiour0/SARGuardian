@@ -2,7 +2,7 @@
 
 Date: 2026-10-22  
 Evidence: SARGuardian source snapshot + SARGuardian-backend Run #55 (39657764262) logs and output TIFFs.  
-Status: Target 9 AOI mismatch confirmed; Target 4 GUNW support unresolved; raw HDF5 diagnosis pending.
+Status: raw HDF5 diagnosis completed for 12 exact Run #55 products (6 GUNW, 6 GOFF); Target 9 source-AOI exclusion confirmed; Target 4 GUNW sample support remains below the six-cell floor. See [the full raw HDF5 findings](TARGET4_TARGET9_RAW_HDF5_FINDINGS_2026-10-22.md).
 
 ## Main correction
 
@@ -28,7 +28,7 @@ Counts below describe existing derived, quality-gated, source-AOI-clipped TIFFs 
 | 9 | GUNW | 15 | 15 | 15 | 0 | 0 |
 | 9 | GOFF | 18 | 10 | 18 | 0 | 0–1 |
 
-These summaries are not raw-HDF5 validity. The Target 4 GUNW issue remains real within the chosen source polygon, although footprint coverage and mask effects still need separation. For Target 9, rerun with --aoi langtang or a defined target-specific AOI before considering local support.
+These summaries are from derived, source-AOI-clipped TIFFs. The raw HDF5 run now separates their causes: Target 4 GUNW support remains scarce after coherence, connected-components and the current ionosphere-screen mask; Target 9's source-AOI outputs cannot represent its point because the point is outside that polygon. Raw per-stage counts are in [the full findings report](TARGET4_TARGET9_RAW_HDF5_FINDINGS_2026-10-22.md).
 
 ## Relevant Run #55 GUNW stage counts
 
@@ -38,30 +38,29 @@ These summaries are not raw-HDF5 validity. The Target 4 GUNW issue remains real 
 | GUNW-007 | P05023 / PROVISIONAL | 9,061,090 | 7,460,176 | 7,372,633 | 77,074 | 174 |
 | GUNW-009 | P05023 / PROVISIONAL | 8,896,083 | 7,356,248 | 7,258,483 | 79,801 | 363 |
 
-These are different frame IDs (016_010, 016_024, 016_025), not same-footprint controls. Whole-product counts alone cannot prove a CRID-specific mask bug. The ISRO/NISAR product format document defines a three-digit UByte mask: the hundreds digit is the reference-RSLC water flag, the tens digit the reference subswath, and the units digit the secondary subswath. The raw HDF5 audit must record the exact selected mask path, shape and histogram before any change to mask logic. ASF documents valid-data mask alignment as a BETA issue; that does not prove the same issue exists in the P05023 products.
+These are different frame IDs (016_010, 016_024, 016_025), not same-footprint controls. Raw HDF5 attributes confirm that BETA X05010 uses a uint8 decimal-digit mask while P05023 uses a uint32 packed bit mask: bits 0–7 water/subswath, bits 8–23 anomaly, bit 24 interpolated ionosphere screen, and bits 25–31 reserved. The decoder must use CRID/dtype-aware bit logic. The current major P05023 count drop occurs at the bit-24 ionosphere-screen gate, not the reserved-bit gate; see the full raw findings report before making any mask change.
 
 ## What is and is not proved
 
-Proved from delivered derived TIFFs and logs:
-- Target 9 is outside the source AOI but inside langtang.
-- Target 4's GUNW local window never reaches MIN_PX=6 in the 15 delivered source-clipped TIFFs; two files have 3 finite cells each.
-- Target 4 has sufficient finite GOFF cells in the current derived TIFFs.
-- GUNW-007/009 show far fewer cells after the current mask gate than GUNW-006; products have different frame IDs, so this is a warning signal, not proof of mask interpretation error.
+Proved by the 12-file raw HDF5 audit (workflow run 39693169804):
+- Target 9 is outside source AOI by about 670 m but inside Langtang by about 183 m. In source runs, AOI clipping removes target support; in Langtang, two P05023 GUNW pairs retain 29 and 33 cells after the current default gates.
+- Target 4 lies in both polygons. Among six tested GUNW files, four local windows have zero connected-component support or no finite phase; another has only four connected-component pixels. Two P05023 pairs have 10 pixels before the interpolated-ionosphere-screen gate and only 3 after it.
+- The P05023 GUNW bit-24 screen mask removes roughly 96.1–99.0% of the phase samples remaining after prior gates in the five tested P05023 files. This is a major scientific policy decision to validate; it is not automatic proof of a software defect.
+- Six raw GOFF products have many layer-2 cells after correlation/SNR gates in Langtang: Target 4 has 100–160 cells and Target 9 has 52–99 cells. That does not establish offset accuracy.
 
-Not yet proved:
-- Whether raw GUNW HDF5 has usable Target 9 phase/quality values before source-AOI clipping.
-- Whether Target 4 is outside the footprint for any pair, lacks local coherence/connected components, is removed by masks, or is affected by other quality filters.
-- Whether the very different GUNW global mask counts are due to frame coverage, product mask quality/encoding, sibling dataset selection or combinations.
-- Whether Target 4's GOFF offsets are geophysically accurate; finite cells alone are not an accuracy validation.
+Still not proved:
+- Whether the interpolated ionosphere-screen locations should be hard-excluded from corrected phase, retained with a defensible uncertainty model, or treated with a different estimator.
+- Whether GOFF-derived local displacement noise floors are well-calibrated, because finite/correlation/SNR-valid offsets can still contain outliers and spatially correlated errors.
+- Geophysical validity against independent reference displacement or stable control data; BETA and P05023 samples are not all matched frame/track controls.
 
-## Next experiment
+## Next experiments
 
-1. Download exact Run #55 granules using the new downloader on a host with internet and Earthdata Login configured using ASF's supported .netrc or ASFSession methods. Keep credentials out of the repository and output manifest.
-2. Run the raw-HDF5 diagnostic once with --aoi source and once with --aoi langtang. Preserve SHA-256, CRID, selected dataset paths, shapes, EPSG/grid extent, raw mask histograms, local stage counts and AOI membership.
-3. Target 4: establish whether its native coordinate lies inside each granule's grid extent before interpreting local stage counts. Compare finite phase, coherence, connected components, mask, then AOI.
-4. Target 9: compare pre-AOI native-grid support, then separately show why a source-AOI clip rejects it. Do not pass Target 9's clipped 0/1-cell window to local_floor.py as an instrument floor.
-5. Compare X05010 and P05023 only where spatially overlapping, on matched grids/frames. Do not globally compare counts from unmatched frame IDs.
-6. Do not change thresholds or scientific outputs until raw HDF5 evidence and the official product format are checked.
+1. Investigate the P05023 ionosphere screen's spatial interpolation and uncertainty/residuals; compare corrected/default and uncorrected diagnostic models without treating them as interchangeable measurements.
+2. Keep `MIN_PX=6`; do not report a GUNW floor where 0–3 valid samples remain. Add candidate-centre AOI membership as a hard precondition before any local-floor calculation.
+3. For Target 9, use a scientifically justified candidate AOI rather than the source polygon. Document whether that ground is stable or event-affected before using it as a control.
+4. For GOFF, independently test range and azimuth outlier handling, layer selection, offset sign/units, temporal reference behavior, and noise calibration.
+5. Extend the sample to matched overlapping frames for maturity comparisons. Do not attribute global differences to CRID alone if the footprints differ.
+6. Do not change published science outputs or merge this branch until these checks are complete.
 
 ## Official technical references
 
