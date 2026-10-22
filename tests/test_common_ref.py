@@ -39,12 +39,12 @@ def _target_csv(path: Path):
 
 
 def test_common_reference_refuses_duplicate_acquisition_pairs_from_multiple_polarizations(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, caplog
 ):
     from rasterio.transform import from_origin
 
     out = tmp_path / "export_goff_src"
-    transform = from_origin(535000, 3155000, 80, 80)
+    transform = from_origin(344000, 3141000, 80, 80)
     _write_tif(out / "GOFF_20260702_20260714_PR_HH-layer2.tif", transform=transform)
     _write_tif(out / "GOFF_20260702_20260714_PR_VV-layer2.tif", transform=transform)
     targets = tmp_path / "targets.csv"
@@ -54,7 +54,7 @@ def test_common_reference_refuses_duplicate_acquisition_pairs_from_multiple_pola
         "--targets", str(targets),
     ])
     assert common_ref.main() == 1
-    assert "multiple exports for the same acquisition pair" in capsys.readouterr().err.lower()
+    assert "multiple exports for the same acquisition pair" in caplog.text.lower()
 
 
 def test_common_reference_refuses_same_shape_rasters_with_different_transforms(
@@ -64,7 +64,7 @@ def test_common_reference_refuses_same_shape_rasters_with_different_transforms(
 
     out = tmp_path / "export_goff_src"
     t1 = from_origin(535000, 3155000, 80, 80)
-    t2 = from_origin(535080, 3155000, 80, 80)
+    t2 = from_origin(344080, 3141000, 80, 80)
     _write_tif(out / "GOFF_20260702_20260714_PR_HH-layer2.tif", transform=t1)
     _write_tif(out / "GOFF_20260714_20260726_PR_HH-layer2.tif", transform=t2)
     targets = tmp_path / "targets.csv"
@@ -74,7 +74,7 @@ def test_common_reference_refuses_same_shape_rasters_with_different_transforms(
         "--targets", str(targets),
     ])
     assert common_ref.main() == 1
-    assert "grid mismatch" in capsys.readouterr().err.lower()
+    assert "grid mismatch" in caplog.text.lower()
 
 
 def test_common_reference_excludes_out_of_aoi_candidate_and_uses_exact_polygon(
