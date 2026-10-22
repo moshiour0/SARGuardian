@@ -85,6 +85,7 @@ logger = logging.getLogger("local_floor")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import resolve  # noqa: E402
+from gunw_reader import AOIS  # noqa: E402
 
 MIN_PX = 6                # below this a MAD is not a measurement
 DATE = re.compile(r"(\d{8})_(\d{8})")
@@ -245,6 +246,66 @@ def span_from_name(name: str) -> float:
     return float((b - a).days)
 
 
+
+def point_in_ring(lon: float, lat: float, ring) -> bool:
+    """Return whether a WGS84 lon/lat point is inside or on an AOI ring.
+
+    These AOIs cover a small Himalayan region, so a ray-casting test in
+    geographic coordinates is sufficient for candidate eligibility. Raster
+    georeferencing and metric distances still use the raster CRS / pyproj.
+    A point exactly on a segment is treated as inside.
+    """
+    inside = False
+    n = len(ring)
+    if n < 3:
+        return False
+    eps = 1e-10
+    for i in range(n):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        cross = (lon - x1) * (y2 - y1) - (lat - y1) * (x2 - x1)
+        if abs(cross) <= eps and min(x1, x2) - eps <= lon <= max(x1, x2) + eps and min(y1, y2) - eps <= lat <= max(y1, y2) + eps:
+            return True
+        if (y1 > lat) != (y2 > lat):
+            x_intersect = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
+            if lon < x_intersect:
+                inside = not inside
+    return inside
+
+
+def point_in_aoi(lon: float, lat: float, aoi_name: str) -> bool:
+    """Check target eligibility against the named polygon, not its bbox."""
+    if aoi_name not in AOIS:
+        raise ValueError(f"Unknown AOI {aoi_name!r}; choose from {sorted(AOIS)}")
+    return point_in_ring(lon, lat, AOIS[aoi_name])
+
+
+def infer_aoi_from_dir(directory: str | Path) -> str | None:
+    """Infer only unambiguous export folder names; otherwise require --aoi."""
+    name = Path(directory).name.lower()
+    if "langtang" in name:
+        return "langtang"
+    if "lhende" in name:
+        return "lhende"
+    if "source" in name or re.search(r"(^|[_-])src($|[_-])", name):
+        return "source"
+    return None
+
+
+def skipped_row(file: Path, target_id: str, lat: float, lon: float,
+                radius: int, aoi_name: str, status: str) -> dict:
+    """Machine-readable rejection row. A skipped point must never create a floor."""
+    span = span_from_name(file.name)
+    c = compare(np.array([], dtype=float), np.array([], dtype=float),
+                span if np.isfinite(span) else 0.0)
+    return {
+        "file": file.name, "radius_px": radius, "target_id": target_id,
+        "lat": lat, "lon": lon, "aoi_name": aoi_name,
+        "aoi_eligible": status != "TARGET_OUTSIDE_AOI",
+        "status": status, **c,
+    }
+
+
 # ---------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(
@@ -254,6 +315,10 @@ def main() -> int:
                     help="only files whose name contains this, e.g. layer2")
     ap.add_argument("--lat", type=float)
     ap.add_argument("--lon", type=float)
+    ap.add_argument("--aoi", choices=sorted(AOIS), default=None,
+                    help="AOI polygon used for candidate eligibility. Inferred "
+                         "only from an unambiguous export-directory suffix; "
+                         "otherwise required to prevent bbox-only eligibility.")
     ap.add_argument("--targets", metavar="CANDIDATES.csv",
                     help="measure at every row of a CSV with id, lat, lon "
                          "columns (scar_map.py --candidates-csv writes one), "
@@ -314,37 +379,57 @@ def main() -> int:
     else:
         ap.error("give --lat and --lon, or --targets")
 
+    aoi_name = args.aoi or infer_aoi_from_dir(args.dir)
+    if aoi_name is None:
+        ap.error("could not infer AOI from --dir; pass --aoi source|langtang|lhende explicitly")
+    if aoi_name == "lhende":
+        logger.warning("LHENDE IS AN EVENT-AFFECTED RUNOUT/IMPOUNDMENT CORRIDOR; it is not a stable-ground control.")
+
     radii = args.sweep or [args.radius]
     rows = []
+    eligible_targets = []
     for tid, lat, lon in targets:
-        rows += measure_target(files, tid, lat, lon, radii, args.band)
+        if not point_in_aoi(lon, lat, aoi_name):
+            logger.error("TARGET_OUTSIDE_AOI id=%s lat=%.6f lon=%.6f AOI=%s; refusing to compute a local floor for this target",
+                         tid or "(single target)", lat, lon, aoi_name)
+            rows.extend(skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                    "TARGET_OUTSIDE_AOI")
+                        for f in files for radius in radii)
+            continue
+        eligible_targets.append((tid, lat, lon))
+        target_rows = measure_target(files, tid, lat, lon, radii, args.band,
+                                     aoi_name=aoi_name)
+        rows.extend(target_rows)
 
-    if not rows:
-        print("  Nothing measured.")
+    measured_rows = [x for x in rows if x.get("aoi_eligible", True) and x.get("usable")]
+    if args.csv:
+        p = Path(resolve(args.csv))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=sorted({k for x in rows for k in x}))
+            w.writeheader()
+            w.writerows(rows)
+        logger.info("Wrote %s", p)
+
+    if not measured_rows:
+        print("  No eligible target has enough valid pixels for a measured floor.")
         return 1
 
-    r = np.array([x["ratio"] for x in rows])
-    if np.median(r) > 1.25:
+    r = np.array([x["ratio"] for x in measured_rows if np.isfinite(x["ratio"])])
+    if r.size == 0:
+        print("  Floors exist, but no finite AOI/local ratio could be formed.")
+    elif np.nanmedian(r) > 1.25:
         print("  The floor at the point is materially WORSE than the floor over")
         print("  the AOI. Any bound quoted at this location must use the local")
         print("  figure; the AOI figure overstates what the product could see.")
-    elif np.median(r) < 0.8:
+    elif r.size and np.nanmedian(r) < 0.8:
         print("  The point is quieter than the AOI. The AOI floor is")
         print("  conservative here, which is safe but not tight.")
     else:
         print("  The two agree. The AOI floor is representative at this point.")
 
-    if args.csv:
-        p = Path(resolve(args.csv))
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=sorted(rows[0]))
-            w.writeheader()
-            for x in rows:
-                w.writerow(x)
-        logger.info("Wrote %s", p)
     if args.as_floors:
-        write_as_floors(rows, Path(resolve(args.as_floors)), args.match or "")
+        write_as_floors(measured_rows, Path(resolve(args.as_floors)), args.match or "")
     return 0
 
 
@@ -371,7 +456,7 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     return len(usable)
 
 
-def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
+def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[dict]:
     """Every file, every radius, at one target. Rows carry the target."""
     import rasterio
     from pyproj import Transformer
@@ -396,6 +481,9 @@ def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
             span = span_from_name(f.name)
             if not np.isfinite(span) or span <= 0:
                 logger.warning("no date pair in %s, skipped", f.name)
+                for radius in radii:
+                    rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                             "INVALID_DATE_SPAN"))
                 continue
             with rasterio.open(f) as s:
                 arr = s.read(band).astype(float)
@@ -409,7 +497,10 @@ def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
             # target inside a nodata hole is a measurement fact about the site.
             if not (0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]):
                 print(f"  {DATE.search(f.name).group(0):<24}{span:>5.0f}"
-                      f"   TARGET OUTSIDE RASTER - check --lat/--lon")
+                      f"   TARGET OUTSIDE RASTER - no floor")
+                for radius in radii:
+                    rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                             "TARGET_OUTSIDE_RASTER"))
                 continue
             win = window(arr, row, col, radius)
             c = compare(arr, win, span)
@@ -417,6 +508,10 @@ def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
             if not c["usable"]:
                 print(f"  {name:<24}{span:>5.0f}   too few valid pixels "
                       f"({c['window_px']}/{c['window_total_px']})")
+                rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
+                             "lat": lat, "lon": lon, "aoi_name": aoi_name,
+                             "aoi_eligible": True, "status": "INSUFFICIENT_LOCAL_PIXELS",
+                             **c})
                 continue
             ci = (f"[{c['local_floor_ci_lo']:.0f}-{c['local_floor_ci_hi']:.0f}]"
                   if np.isfinite(c["local_floor_ci_lo"]) else "-")
@@ -426,7 +521,8 @@ def measure_target(files, tid, lat, lon, radii, band) -> list[dict]:
                   f"{c['ratio']:>7.2f}{c['window_px']:>7}/{c['window_total_px']}")
             block.append(c)
             rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
-                         "lat": lat, "lon": lon, **c})
+                         "lat": lat, "lon": lon, "aoi_name": aoi_name,
+                         "aoi_eligible": True, "status": "MEASURED", **c})
 
         if not block:
             print("  nothing usable at this radius\n")
