@@ -108,9 +108,15 @@ def detection_floor(values_mm: np.ndarray, span_days: float) -> float:
     purpose - the point of this module is that the AOI and the point give
     different answers to the SAME question, so the question must not change.
     """
-    if span_days <= 0:
+    if not np.isfinite(span_days) or span_days <= 0:
         return float("nan")
-    return 3.0 * robust_sigma(values_mm) / span_days
+    sigma = robust_sigma(values_mm)
+    # A zero MAD is not evidence of zero instrument noise. It can result from
+    # quantization, repeated fill/rounding values, or too little effective
+    # information; never publish it as a perfect detection floor.
+    if not np.isfinite(sigma) or sigma <= 0:
+        return float("nan")
+    return 3.0 * sigma / span_days
 
 
 def window(arr: np.ndarray, row: int, col: int, radius: int) -> np.ndarray:
@@ -150,7 +156,10 @@ def floor_ci(values_mm: np.ndarray, span_days: float, n_boot: int = 2000,
     """
     v = values_mm[np.isfinite(values_mm)]
     n = v.size
-    if n < MIN_PX or span_days <= 0:
+    if n < MIN_PX or not np.isfinite(span_days) or span_days <= 0:
+        return (float("nan"), float("nan"))
+    base_sigma = robust_sigma(v)
+    if not np.isfinite(base_sigma) or base_sigma <= 0:
         return (float("nan"), float("nan"))
     rng = np.random.default_rng(seed)
     idx = rng.integers(0, n, size=(n_boot, n))
@@ -200,7 +209,10 @@ def block_median_floor(field_mm: np.ndarray, size: int, span_days: float,
                 meds.append(float(np.median(v)))
     if len(meds) < MIN_PX:
         return (float("nan"), len(meds))
-    return (3.0 * robust_sigma(np.array(meds)) / span_days, len(meds))
+    sigma = robust_sigma(np.array(meds))
+    if not np.isfinite(sigma) or sigma <= 0:
+        return (float("nan"), len(meds))
+    return (3.0 * sigma / span_days, len(meds))
 
 
 def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
@@ -222,18 +234,28 @@ def compare(aoi_mm: np.ndarray, win_mm: np.ndarray, span_days: float) -> dict:
            "local_floor_ci_lo": float("nan"),
            "local_floor_ci_hi": float("nan"),
            "block_median_floor_mm_day": float("nan"), "n_blocks": 0,
-           "ratio": float("nan"), "usable": False}
+           "ratio": float("nan"), "usable": False,
+           "status": "INSUFFICIENT_LOCAL_PIXELS"}
+    if not np.isfinite(span_days) or span_days <= 0:
+        out["status"] = "INVALID_DATE_SPAN"
+        return out
     if a.size < MIN_PX or w.size < MIN_PX:
         return out
+
     fa = detection_floor(a, span_days)
     fl = detection_floor(w, span_days)
+    if not np.isfinite(fl) or fl <= 0:
+        out.update(aoi_floor_mm_day=fa, status="DEGENERATE_LOCAL_MAD")
+        return out
     lo, hi = floor_ci(w, span_days)
     size = max(win_mm.shape) if win_mm.ndim == 2 else 0
     bm, nb = block_median_floor(aoi_mm, size, span_days)
+    ratio = fl / fa if np.isfinite(fa) and fa > 0 else float("nan")
+    status = "MEASURED" if np.isfinite(fa) and fa > 0 else "MEASURED_LOCAL_FLOOR_AOI_MAD_UNUSABLE"
     out.update(aoi_floor_mm_day=fa, local_floor_mm_day=fl,
                local_floor_ci_lo=lo, local_floor_ci_hi=hi,
                block_median_floor_mm_day=bm, n_blocks=nb,
-               ratio=(fl / fa) if fa > 0 else float("nan"), usable=True)
+               ratio=ratio, usable=True, status=status)
     return out
 
 
@@ -349,7 +371,7 @@ def skipped_row(file: Path, target_id: str, lat: float, lon: float,
         "file": file.name, "radius_px": radius, "target_id": target_id,
         "lat": lat, "lon": lon, "aoi_name": aoi_name,
         "aoi_eligible": status != "TARGET_OUTSIDE_AOI",
-        "status": status, **c,
+        **c, "status": status,
     }
 
 
@@ -586,12 +608,17 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[
             c = compare(arr, win, span)
             name = DATE.search(f.name).group(0)
             if not c["usable"]:
-                print(f"  {name:<24}{span:>5.0f}   too few valid pixels "
-                      f"({c['window_px']}/{c['window_total_px']})")
+                if c["status"] == "DEGENERATE_LOCAL_MAD":
+                    message = "zero/non-finite local MAD; no measurable noise floor"
+                elif c["status"] == "INVALID_DATE_SPAN":
+                    message = "invalid date span; no floor"
+                else:
+                    message = (f"too few valid pixels ({c['window_px']}/"
+                               f"{c['window_total_px']})")
+                print(f"  {name:<24}{span:>5.0f}   {message}")
                 rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
                              "lat": lat, "lon": lon, "aoi_name": aoi_name,
-                             "aoi_eligible": True, "status": "INSUFFICIENT_LOCAL_PIXELS",
-                             **c})
+                             "aoi_eligible": True, **c})
                 continue
             ci = (f"[{c['local_floor_ci_lo']:.0f}-{c['local_floor_ci_hi']:.0f}]"
                   if np.isfinite(c["local_floor_ci_lo"]) else "-")
