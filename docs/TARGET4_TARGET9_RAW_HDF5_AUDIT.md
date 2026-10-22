@@ -19,7 +19,7 @@
 
 The source AOI and Langtang AOI are not interchangeable. In some GOFF source-AOI windows around Target 9, one neighbouring raster cell intersects the polygon even though the target coordinate itself is outside it. A nearby valid cell must not be presented as a measurement at Target 9.
 
-The diagnostic now exposes separate window/point flags: **has_nearby_aoi_gated_support** reports any eligible pixel in the local window; **has_aoi_gated_support** and **has_target_point_support** require the target point itself to be inside the requested polygon as well as there being gated support. The raw cumulative counts remain available for transparent review.
+The diagnostic now exposes separate window/point flags: **has_nearby_aoi_gated_support** reports any eligible pixel in the local window; **has_aoi_gated_support** and **has_target_point_support** require both polygon eligibility and the nearest grid cell representing the requested coordinate to pass the product quality gates and AOI mask. A nearby in-polygon cell cannot satisfy the point-level flag. The raw cumulative counts and nearest-cell gate results remain available for transparent review.
 
 ### GUNW support at Target 4
 
