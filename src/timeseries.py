@@ -767,8 +767,22 @@ def main() -> int:
     ap.add_argument("--json", metavar="OUT.json", help="dump the network summary")
     args = ap.parse_args()
 
-    from gunw_reader import set_aoi
+    from gunw_reader import AOIS, point_in_ring, set_aoi
     set_aoi(args.aoi)
+
+    if (args.target_lat is None) != (args.target_lon is None):
+        ap.error("--target-lat and --target-lon must be supplied together")
+    if args.target_lat is not None:
+        if not (np.isfinite(args.target_lat) and np.isfinite(args.target_lon)
+                and -90 <= args.target_lat <= 90 and -180 <= args.target_lon <= 180):
+            ap.error("target coordinates must be finite WGS84 latitude/longitude")
+        if not point_in_ring(args.target_lon, args.target_lat, AOIS[args.aoi]):
+            ap.error(f"target point ({args.target_lat:.6f}, {args.target_lon:.6f}) is outside the exact {args.aoi} AOI polygon; select the AOI that actually contains the target")
+
+    if args.target_radius < 0:
+        ap.error("--target-radius must be non-negative")
+    if args.buffer_km < 0:
+        ap.error("--buffer-km must be non-negative")
 
     if args.from_stats:
         pairs = pairs_from_stats(resolve(args.from_stats),
