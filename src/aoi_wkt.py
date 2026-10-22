@@ -27,7 +27,7 @@ def parse_polygon_wkt(value: str, *, max_vertices: int = 500) -> List[Point]:
     body = match.group(1).strip()
     # Reject interior rings before tokenizing; never flatten multiple rings into
     # one accidental exterior boundary.
-    if re.search(r"\\)\\s*,\\s*\\(", body):
+    if re.search(r"\)\s*,\s*\(", body):
         raise ValueError("AOI_WKT_MUST_BE_SINGLE_RING_POLYGON_WGS84_NO_HOLES")
     chunks = body.split(",")
     if len(chunks) > max_vertices:
