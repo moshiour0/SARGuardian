@@ -482,6 +482,11 @@ def probe(lat, lon, d, both, pre, tf, radius=5) -> dict:
     there, and if not, is that because it is hidden or because it is absent?
     Reporting the usable-pixel count separates those.
     """
+    if not point_in_ring(float(lon), float(lat), SOURCE_RING):
+        return {
+            "lat": float(lat), "lon": float(lon), "n_usable": 0,
+            "observed": False, "status": "TARGET_OUTSIDE_AOI",
+        }
     from rasterio.transform import rowcol
     from rasterio.warp import transform as warp_transform
     x, y = warp_transform("EPSG:4326", "EPSG:32645", [lon], [lat])
@@ -611,8 +616,12 @@ def main() -> int:
         r = probe(args.probe[0], args.probe[1], d, both, pre, tf)
         print(f"\nPROBE {r['lat']:.5f} N {r['lon']:.5f} E")
         if not r["observed"]:
-            print("  no usable pixels - cloud in one or both epochs, so this")
-            print("  location is untested rather than clear.")
+            if r.get("status") == "TARGET_OUTSIDE_AOI":
+                print("  target centre is OUTSIDE the exact source AOI polygon;")
+                print("  refusing to infer point status from nearby in-polygon pixels.")
+            else:
+                print("  no usable pixels - cloud in one or both epochs, so this")
+                print("  location is untested rather than clear.")
             return 0
         print(f"  usable pixels     {r['n_usable']}")
         print(f"  NDSI change       median {r['d_ndsi_median']:+.3f}, "

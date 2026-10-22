@@ -171,3 +171,26 @@ def test_representative_sample_refuses_clusters_without_an_in_aoi_pixel():
     ys = np.array([2.0, 3.0])
     with pytest.raises(ValueError, match="no observed pixel centre"):
         representative_cluster_index(xs, ys, xs, ys, ring)
+
+
+def test_probe_refuses_target9_outside_source_polygon_even_if_nearby_pixels_are_valid():
+    # Every array cell is valid, but the requested centre itself is 670 m
+    # outside SOURCE_RING. Nearby in-polygon cells must not imply observation
+    # at this point.
+    d = np.full(GRID, -0.5, np.float32)
+    both = np.ones(GRID, bool)
+    pre = np.full(GRID, 0.9, np.float32)
+    r = probe(28.25460, 85.47591, d, both, pre, grid_transform(), radius=20)
+    assert r["observed"] is False
+    assert r["n_usable"] == 0
+    assert r["status"] == "TARGET_OUTSIDE_AOI"
+
+
+def test_probe_reports_exact_aoi_edge_as_eligible():
+    lon, lat = SOURCE_RING[0]
+    d = np.zeros(GRID, np.float32)
+    both = np.ones(GRID, bool)
+    pre = np.full(GRID, 0.9, np.float32)
+    r = probe(lat, lon, d, both, pre, grid_transform(), radius=1)
+    # Eligibility is a polygon property; the chosen AOI vertex is accepted.
+    assert r.get("status") != "TARGET_OUTSIDE_AOI"
