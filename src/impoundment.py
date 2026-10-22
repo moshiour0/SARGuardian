@@ -643,7 +643,7 @@ def write_geojson(rows, out: Path):
             "properties": {k: v for k, v in row.items() if k not in ("lat", "lon")},
         })
     fc = {"type": "FeatureCollection", "features": features}
-    text = json.dumps(fc, indent=1, allow_nan=False) + "\\n"
+    text = json.dumps(fc, indent=1, allow_nan=False) + "\n"
     out.parent.mkdir(parents=True, exist_ok=True)
     temp = out.with_suffix(out.suffix + ".tmp")
     temp.write_text(text, encoding="utf-8")
