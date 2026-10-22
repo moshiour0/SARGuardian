@@ -25,9 +25,8 @@ if str(ROOT / "docs" / "site") not in sys.path:
     sys.path.insert(0, str(ROOT / "docs" / "site"))
 
 import build_data  # noqa: E402
-from gunw_reader import AOIS, point_in_ring  # noqa: E402
-from scar_map import (GRID, SOURCE_AOI_MASK if False else GRID,  # noqa: F401
-                      enumerate_candidates, classify, grid_transform,
+from gunw_reader import AOIS  # noqa: E402
+from scar_map import (GRID, enumerate_candidates, classify, grid_transform,
                       source_aoi_mask)  # noqa: E402
 from local_floor import point_in_aoi  # noqa: E402
 
