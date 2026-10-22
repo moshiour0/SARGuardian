@@ -390,18 +390,46 @@ def compare_geojson(
         "property_change_count_at_rounded_coordinate_matches": property_changes_rounded,
         "review_row_count": len(substantive_changes),
         "comparison_row_count": len(changes),
+        # Keep the old key as a compatibility alias, but expose the meaning
+        # more explicitly. The input GeoJSON stores a ranked/top-N, NMS-selected
+        # subset; counts here are not a census of every possible channel site in
+        # the AOI and cannot be compared across changed ranking policies as an
+        # AOI-wide prevalence statistic.
+        "scenario_coverage_counts_by_height_m": {
+            "baseline": response_counts(baseline, heights),
+            "candidate": response_counts(candidate, heights),
+        },
         "response_counts_by_threshold_height_m": {
             "baseline": response_counts(baseline, heights),
             "candidate": response_counts(candidate, heights),
+        },
+        "truncated_scenario_coverage_counts_by_height_m": {
+            "baseline": truncated_response_counts(baseline, heights),
+            "candidate": truncated_response_counts(candidate, heights),
         },
         "truncated_response_counts_by_threshold_height_m": {
             "baseline": truncated_response_counts(baseline, heights),
             "candidate": truncated_response_counts(candidate, heights),
         },
+        "scenario_count_scope": {
+            "denominator": "number of Feature records in the supplied GeoJSON",
+            "population": "ranked and spatially suppressed output sites only",
+            "not_a_census": True,
+            "warning": (
+                "These counts describe complete modelled scenario records among the "
+                "returned features only. They are not a count/fraction of all "
+                "candidate channel sites in the AOI, not evidence that an actual "
+                "landslide can form the imposed blockage, and not physical validation. "
+                "Different ranking/NMS policies can change which sites appear in the "
+                "GeoJSON and therefore change the count without changing the underlying "
+                "terrain's full candidate population."
+            ),
+        },
         "response_count_definition": (
-            "Count a site only when by_height contains the requested numeric height "
-            "and a complete finite non-negative volume_Mm3/area_km2/backwater_km "
-            "result. This is computed-result coverage, not independent hydrologic "
+            "Count a returned feature only when by_height contains the requested "
+            "numeric height and a complete finite non-negative "
+            "volume_Mm3/area_km2/backwater_km result. This is selected-output "
+            "scenario coverage, not an AOI-wide site census or independent hydrologic "
             "validation. Truncated counts are reported separately because their "
             "volumes are lower bounds. Missing historical threshold_height_m is "
             "derived from the lowest complete by_height key for comparison."
@@ -459,8 +487,8 @@ def main() -> int:
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="raise")
         writer.writeheader()
         writer.writerows(changes)
-    h10 = summary["response_counts_by_threshold_height_m"]
-    t10 = summary["truncated_response_counts_by_threshold_height_m"]
+    h10 = summary["scenario_coverage_counts_by_height_m"]
+    t10 = summary["truncated_scenario_coverage_counts_by_height_m"]
     print(
         f"IMPOUNDMENT_COMPARE status={summary['status']} "
         f"baseline_sites={summary['baseline_site_count']} "
@@ -472,10 +500,12 @@ def main() -> int:
         f"review_rows={summary['review_row_count']}"
     )
     print(
-        f"BASELINE_H10={h10['baseline'].get('10',0)} CANDIDATE_H10={h10['candidate'].get('10',0)} "
-        f"BASELINE_H10_TRUNCATED={t10['baseline'].get('10',0)} "
-        f"CANDIDATE_H10_TRUNCATED={t10['candidate'].get('10',0)}"
+        f"BASELINE_SELECTED_SCENARIO_H10={h10['baseline'].get('10',0)} "
+        f"CANDIDATE_SELECTED_SCENARIO_H10={h10['candidate'].get('10',0)} "
+        f"BASELINE_SELECTED_SCENARIO_H10_TRUNCATED={t10['baseline'].get('10',0)} "
+        f"CANDIDATE_SELECTED_SCENARIO_H10_TRUNCATED={t10['candidate'].get('10',0)}"
     )
+    print("SCENARIO_COUNT_SCOPE=selected GeoJSON features only; not an AOI-wide channel-site census.")
     print(f"WROTE_JSON={args.json_out} WROTE_CSV={args.csv_out}")
     # Differences are scientifically important but must be reviewed, not hidden.
     # Workflow remains successful so the diagnostic artifact is retained.
