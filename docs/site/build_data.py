@@ -84,6 +84,24 @@ AOI_POLYGON_VERSION = "source-ring-v1"
 CACHE_SCHEMA_VERSION = 2
 
 
+def source_grid_metadata() -> dict:
+    """Projection metadata needed to apply the same polygon mask in the browser."""
+    from pyproj import Transformer
+    from scar_map import grid_transform
+    from gunw_reader import SOURCE_RING
+
+    affine = grid_transform()
+    to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32645", always_xy=True)
+    projected_ring = [list(to_utm.transform(lon, lat)) for lon, lat in SOURCE_RING]
+    return {
+        "aoi_geometry": AOI_POLYGON_VERSION,
+        "affine_utm": [affine.c, affine.a, affine.b,
+                       affine.f, affine.d, affine.e],
+        "aoi_polygon_projected": projected_ring,
+        "aoi_polygon_wgs84": [[lon, lat] for lon, lat in SOURCE_RING],
+    }
+
+
 def scenes_block(cache: Path) -> list[dict]:
     """Every Sentinel-2 scene with cloud measured inside the exact source polygon."""
     if cache.exists():
@@ -169,7 +187,7 @@ def grid_block(cache: Path) -> tuple[str, dict]:
         "usable_px": usable_px,
         "aoi_px": aoi_px,
         "usable_pct": round(100.0 * usable_px / aoi_px, 1) if aoi_px else 0.0,
-        "aoi_geometry": AOI_POLYGON_VERSION,
+        **source_grid_metadata(),
         "aoi": [85.4645, 28.2453, 85.5562, 28.3529],
     }
 
