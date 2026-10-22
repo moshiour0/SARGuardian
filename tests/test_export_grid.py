@@ -26,10 +26,10 @@ import numpy as np
 
 from gunw_reader import aoi_grid, place_on_grid
 
-RES = 80.0
-# A square AOI in projected metres. epsg=None keeps the ring as-is, so the test
-# needs no pyproj and no network.
-RING = [(1000.0, 2000.0), (1400.0, 2000.0), (1400.0, 2400.0), (1000.0, 2400.0)]
+RES = 0.0008
+# A small WGS84 AOI rectangle. Tests provide EPSG:4326 explicitly so the grid
+# builder never has to guess what coordinate units the ring uses.
+RING = [(85.40, 28.20), (85.80, 28.20), (85.80, 28.60), (85.40, 28.60)]
 
 
 def _centres(x_start, y_start, nx, ny):
@@ -40,8 +40,8 @@ def _centres(x_start, y_start, nx, ny):
 
 
 def test_two_products_covering_different_ground_get_the_same_grid():
-    a = aoi_grid(*_centres(1000.0, 2440.0, 3, 3), RING, None)
-    b = aoi_grid(*_centres(1160.0, 2280.0, 4, 4), RING, None)
+    a = aoi_grid(*_centres(85.5584, 28.4816, 3, 3), RING, None)
+    b = aoi_grid(*_centres(85.56, 28.48, 4, 4), RING, None)
     assert a is not None and b is not None
     assert (a["height"], a["width"]) == (b["height"], b["width"])
     assert a["transform"] == b["transform"]
@@ -50,14 +50,14 @@ def test_two_products_covering_different_ground_get_the_same_grid():
 def test_the_same_map_coordinate_lands_in_the_same_cell():
     xs_a, ys_a = _centres(1000.0, 2440.0, 3, 3)
     xs_b, ys_b = _centres(1160.0, 2280.0, 4, 4)
-    ga = aoi_grid(xs_a, ys_a, RING, None)
-    gb = aoi_grid(xs_b, ys_b, RING, None)
+    ga = aoi_grid(xs_a, ys_a, RING, 4326)
+    gb = aoi_grid(xs_b, ys_b, RING, 4326)
 
     # Put a marker at the one map coordinate both products contain.
     A = np.full((len(ys_a), len(xs_a)), np.nan)
     B = np.full((len(ys_b), len(xs_b)), np.nan)
-    A[int(np.argmin(abs(ys_a - 2280.0))), int(np.argmin(abs(xs_a - 1160.0)))] = 42.0
-    B[int(np.argmin(abs(ys_b - 2280.0))), int(np.argmin(abs(xs_b - 1160.0)))] = 42.0
+    A[int(np.argmin(abs(ys_a - 28.48))), int(np.argmin(abs(xs_a - 85.56)))] = 42.0
+    B[int(np.argmin(abs(ys_b - 28.48))), int(np.argmin(abs(xs_b - 85.56)))] = 42.0
 
     oa, ob = place_on_grid(A, ga), place_on_grid(B, gb)
     assert oa.shape == ob.shape
@@ -66,8 +66,8 @@ def test_the_same_map_coordinate_lands_in_the_same_cell():
 
 def test_the_two_rasters_can_simply_be_subtracted():
     """The whole point: no cropping, no alignment step, no half-pixel guess."""
-    ga = aoi_grid(*_centres(1000.0, 2440.0, 3, 3), RING, None)
-    gb = aoi_grid(*_centres(1160.0, 2280.0, 4, 4), RING, None)
+    ga = aoi_grid(*_centres(85.5584, 28.4816, 3, 3), RING, 4326)
+    gb = aoi_grid(*_centres(85.56, 28.48, 4, 4), RING, 4326)
     oa = place_on_grid(np.ones((3, 3)) * 5.0, ga)
     ob = place_on_grid(np.ones((4, 4)) * 3.0, gb)
     d = ob - oa                       # would have raised before this fix
@@ -81,9 +81,9 @@ def test_a_product_off_the_lattice_is_refused_not_resampled():
     returning None sends the caller down the per-product path with a warning.
     """
     xs, ys = _centres(1000.0 + RES / 2, 2440.0, 3, 3)
-    assert aoi_grid(xs, ys, RING, None) is None
+    assert aoi_grid(xs, ys, RING, 4326) is None
 
 
 def test_a_degenerate_product_grid_is_refused():
-    assert aoi_grid(None, None, RING, None) is None
-    assert aoi_grid(np.array([1000.0]), np.array([2440.0]), RING, None) is None
+    assert aoi_grid(None, None, RING, 4326) is None
+    assert aoi_grid(np.array([85.4]), np.array([28.6]), RING, 4326) is None
