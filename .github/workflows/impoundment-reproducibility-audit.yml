@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - science/valid-pixel-target4-9-audit
+    # Run the expensive live DEM API audit only when scientific implementation
+    # changes. Test-only edits are covered by the fast pinned CI, and edits to
+    # this workflow are manual-dispatch only; neither should enqueue another
+    # multi-AOI OpenTopoData download while a reproducibility audit is running.
     paths:
-      - ".github/workflows/impoundment-reproducibility-audit.yml"
       - "src/impoundment.py"
       - "tools/compare_impoundment_geojson.py"
-      - "tests/test_impoundment*.py"
   workflow_dispatch:
 
 permissions:
@@ -23,10 +25,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - name: Check out the isolated science branch
+      - name: Check out the exact revision that triggered this audit
         uses: actions/checkout@v4
         with:
-          ref: science/valid-pixel-target4-9-audit
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
