@@ -117,11 +117,11 @@ def test_stats_csv_round_trips_through_the_network(tmp_path):
         [0, 10, 20], abs=1e-6)
 
 
-def test_duplicate_products_are_resolved_not_averaged(tmp_path):
+def test_conflicting_duplicate_products_require_explicit_processing_not_guess(tmp_path):
     """
-    PR and UR of the same acquisitions can differ by whole fringes. Averaging
-    them produces a number that is neither; the branch consistent with the rest
-    of the geometry must be kept and the other dropped.
+    PR and UR of the same acquisitions can differ by whole fringes. Without a
+    validated redundant-cycle solution, magnitude-only branch selection is not
+    defensible; require the caller to select a processing stream explicitly.
     """
     import csv
     import synth
