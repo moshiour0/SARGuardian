@@ -362,9 +362,12 @@ def decode_gunw_mask(mask: np.ndarray, *, apply_iono: bool = True) -> dict[str, 
     usable = base & (~iono_interpolated if apply_iono else True)
     return {
         "fill_255": fill,
-        "water_flag_nonzero": water != 0,
-        "reference_subswath_zero": ref_sub == 0,
-        "secondary_subswath_zero": sec_sub == 0,
+        # The explicit fill code 255 is not a meaningful water/subswath
+        # digit tuple. Keep it separately flagged rather than counting it as
+        # a water pixel in diagnostics.
+        "water_flag_nonzero": (water != 0) & ~fill,
+        "reference_subswath_zero": (ref_sub == 0) & ~fill,
+        "secondary_subswath_zero": (sec_sub == 0) & ~fill,
         "both_subswaths_valid_ignoring_water": valid_subswaths & ~fill,
         "land_valid_subswaths_low_byte": land_subswaths,
         "anomaly_flags_nonzero": anomaly,
