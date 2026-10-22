@@ -247,3 +247,62 @@ def test_out_of_aoi_target_produces_explicit_nonmeasurement_row():
     assert row["usable"] is False
     assert row["window_px"] == 0
     assert np.isnan(row["local_floor_mm_day"])
+
+
+def _write_tagged_floor_raster(path, tags, *, crs="EPSG:32645"):
+    import rasterio
+    from rasterio.transform import from_origin
+
+    with rasterio.open(
+        path, "w", driver="GTiff", height=2, width=2, count=1,
+        dtype="float32", crs=crs, transform=from_origin(500000, 3200000, 80, 80),
+        nodata=np.nan,
+    ) as dst:
+        dst.write(np.ones((2, 2), dtype=np.float32), 1)
+        if tags:
+            dst.update_tags(**tags)
+    return path
+
+
+def test_floor_provenance_requires_exact_matching_aoi_and_applied_mask(tmp_path):
+    import pytest
+    from local_floor import validate_export_provenance
+
+    good = _write_tagged_floor_raster(
+        tmp_path / "good.tif",
+        {"aoi_name": "source", "aoi_mask_applied": "true"},
+    )
+    validate_export_provenance([good], "source")
+    with pytest.raises(ValueError, match="AOI tag is"):
+        validate_export_provenance([good], "langtang")
+
+    unclipped = _write_tagged_floor_raster(
+        tmp_path / "unclipped.tif",
+        {"aoi_name": "source", "aoi_mask_applied": "false"},
+    )
+    with pytest.raises(ValueError, match="did not apply"):
+        validate_export_provenance([unclipped], "source")
+
+
+def test_untagged_legacy_floor_raster_needs_explicit_opt_in(tmp_path, caplog):
+    import pytest
+    from local_floor import validate_export_provenance
+
+    legacy = _write_tagged_floor_raster(tmp_path / "legacy.tif", {})
+    with pytest.raises(ValueError, match="missing aoi_name provenance tag"):
+        validate_export_provenance([legacy], "source")
+    validate_export_provenance([legacy], "source", allow_legacy_untagged=True)
+    assert "explicit legacy assumption" in caplog.text
+
+
+def test_floor_provenance_rejects_raster_without_resolvable_crs(tmp_path):
+    import pytest
+    from local_floor import validate_export_provenance
+
+    unreferenced = _write_tagged_floor_raster(
+        tmp_path / "no_crs.tif",
+        {"aoi_name": "source", "aoi_mask_applied": "true"},
+        crs=None,
+    )
+    with pytest.raises(ValueError, match="CRS/EPSG metadata"):
+        validate_export_provenance([unreferenced], "source")
