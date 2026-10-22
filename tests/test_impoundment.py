@@ -25,13 +25,16 @@ elevation queries to run at all, which is why none of it was ever exercised.
 
 from __future__ import annotations
 
+import json
 import math
+import urllib.parse
 
 import numpy as np
 import pytest
 
-from impoundment import (d8_receivers, fill_depressions, flow_accumulation,
-                         rank_sites)
+from impoundment import (AOIS, API_ENDPOINT, dem_from_api, dem_from_file,
+                         dem_provenance, d8_receivers, elevation_grid_sha256,
+                         fill_depressions, flow_accumulation, rank_sites)
 
 
 def site(lat, lon, by_height, name=""):
@@ -190,3 +193,174 @@ def test_diagonal_steps_are_not_treated_as_cardinal():
     # From (0,0): cardinal east drops 0.6 over 1 cell; there is no better move.
     recv = d8_receivers(z, dx=1.0, dy=1.0)
     assert recv[0] == 1, "steepest descent per unit LENGTH, not per step"
+
+
+def test_diagonal_distance_uses_rectangular_cell_geometry_exactly():
+    # At (0,0), the eastward slope is 0.305 m/m. The diagonal drop is 1.09 m:
+    # its slope is 1.09/sqrt(2^2+3^2) = 0.3023, so east must win. The old
+    # sqrt(2)*mean(dx,dy) approximation made the diagonal slope ~0.3085 and
+    # selected the wrong receiver.
+    z = np.array([
+        [10.0, 9.39, 30.0],
+        [30.0, 8.91, 30.0],
+        [30.0, 30.0, 30.0],
+    ])
+    receivers = d8_receivers(z, dx=2.0, dy=3.0)
+    assert receivers[0] == 1
+
+
+def test_api_dem_cache_reuses_exact_grid_without_a_second_network_call(
+    tmp_path, monkeypatch
+):
+    import impoundment
+
+    calls = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+        def read(self):
+            return self.payload
+
+    def fake_urlopen(url, timeout=0):
+        calls.append((url, timeout))
+        query = urllib.parse.urlsplit(url).query
+        locations = urllib.parse.parse_qs(query)["locations"][0]
+        points = urllib.parse.unquote(locations).split("|")
+        payload = json.dumps({
+            "results": [{"elevation": 100.0 + i} for i in range(len(points))]
+        }).encode("utf-8")
+        return Response(payload)
+
+    monkeypatch.setattr(impoundment.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(impoundment.time, "sleep", lambda *_: None)
+    bbox = AOIS["source"]
+    cache = tmp_path / "dem" / "source_srtm.npz"
+
+    first_z, first_lats, first_lons = dem_from_api(bbox, target_cells=12, cache_path=cache)
+    first_sha = elevation_grid_sha256(
+        first_z, first_lats, first_lons, bbox, 12, endpoint=API_ENDPOINT
+    )
+    assert cache.is_file()
+    assert len(calls) == 1
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("a valid existing cache must not trigger a network request")
+
+    monkeypatch.setattr(impoundment.urllib.request, "urlopen", no_network)
+    second_z, second_lats, second_lons = dem_from_api(bbox, target_cells=12, cache_path=cache)
+    second_sha = elevation_grid_sha256(
+        second_z, second_lats, second_lons, bbox, 12, endpoint=API_ENDPOINT
+    )
+
+    assert first_sha == second_sha
+    assert np.array_equal(first_z, second_z)
+    assert np.array_equal(first_lats, second_lats)
+    assert np.array_equal(first_lons, second_lons)
+    assert len(calls) == 1
+
+
+def test_api_dem_cache_fails_closed_when_grid_bytes_change(tmp_path, monkeypatch):
+    import impoundment
+
+    class Response:
+        def read(self):
+            return json.dumps({"results": [{"elevation": 100.0 + i for i in range(12)]}).encode()
+
+    monkeypatch.setattr(impoundment.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setattr(impoundment.time, "sleep", lambda *_: None)
+    bbox = AOIS["source"]
+    cache = tmp_path / "source.npz"
+    z, lats, lons = dem_from_api(bbox, target_cells=12, cache_path=cache)
+    with np.load(cache, allow_pickle=False) as data:
+        metadata_json = data["metadata_json"].copy()
+    z[0, 0] += 999.0
+    np.savez_compressed(cache, z=z, lats=lats, lons=lons, metadata_json=metadata_json)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("corrupt cache must not fall back to live data")
+
+    monkeypatch.setattr(impoundment.urllib.request, "urlopen", no_network)
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        dem_from_api(bbox, target_cells=12, cache_path=cache)
+
+
+def test_api_dem_cache_refuses_a_different_bbox(tmp_path, monkeypatch):
+    import impoundment
+
+    class Response:
+        def read(self):
+            return json.dumps({"results": [{"elevation": 100.0 + i for i in range(12)]}).encode()
+
+    monkeypatch.setattr(impoundment.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setattr(impoundment.time, "sleep", lambda *_: None)
+    cache = tmp_path / "source.npz"
+    dem_from_api(AOIS["source"], target_cells=12, cache_path=cache)
+    with pytest.raises(ValueError, match="bbox does not match"):
+        dem_from_api(AOIS["langtang"], target_cells=12, cache_path=cache)
+
+
+def test_api_dem_rejects_partial_results_instead_of_misaligning_elevations(
+    monkeypatch
+):
+    import impoundment
+
+    class Response:
+        def read(self):
+            # For 12 requested points, returning one value would silently
+            # scramble/rescale the elevation grid without a count check.
+            return json.dumps({"results": [{"elevation": 123.0}]}).encode()
+
+    monkeypatch.setattr(impoundment.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setattr(impoundment.time, "sleep", lambda *_: None)
+    with pytest.raises(RuntimeError, match="returned 1 results for 12 requested cells"):
+        dem_from_api(AOIS["source"], target_cells=12)
+
+
+def test_local_dem_is_cropped_to_aoi_bbox_and_keeps_lon_lat_axes(tmp_path):
+    rasterio = pytest.importorskip("rasterio")
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "larger_dem.tif"
+    data = np.arange(30 * 30, dtype=np.float32).reshape(30, 30)
+    transform = from_origin(85.44, 28.36, 0.005, 0.005)
+    with rasterio.open(
+        path, "w", driver="GTiff", height=30, width=30, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform, nodata=-9999,
+    ) as ds:
+        ds.write(data, 1)
+
+    bbox = AOIS["source"]
+    z, lats, lons = dem_from_file(path, bbox=bbox)
+    assert z.shape == (lats.size, lons.size)
+    assert z.shape[0] >= 2 and z.shape[1] >= 2
+    assert bbox[1] <= lats.min() < lats.max() <= bbox[3]
+    assert bbox[0] <= lons.min() < lons.max() <= bbox[2]
+
+
+def test_local_dem_rejects_projected_crs_instead_of_treating_metres_as_degrees(tmp_path):
+    rasterio = pytest.importorskip("rasterio")
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "projected_dem.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=4, width=4, count=1,
+        dtype="float32", crs="EPSG:32645",
+        transform=from_origin(300000, 3150000, 30, 30),
+    ) as ds:
+        ds.write(np.arange(16, dtype=np.float32).reshape(4, 4), 1)
+
+    with pytest.raises(ValueError, match="requires a WGS84/EPSG:4326"):
+        dem_from_file(path, bbox=AOIS["source"])
+
+
+def test_dem_provenance_identifies_local_input_without_claiming_api_source(tmp_path):
+    z = np.arange(12, dtype=float).reshape(3, 4)
+    lats = np.array([28.3, 28.2, 28.1])
+    lons = np.array([85.4, 85.5, 85.6, 85.7])
+    bbox = [85.4, 28.1, 85.7, 28.3]
+    provenance = dem_provenance(z, lats, lons, bbox=bbox, source="local GeoTIFF",
+                                target_cells=z.size)
+    assert provenance["endpoint"] is None
+    assert provenance["source"] == "local GeoTIFF"
+    assert len(provenance["grid_sha256"]) == 64
