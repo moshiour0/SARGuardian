@@ -258,11 +258,15 @@ def read_goff(
                     gy, gx = gy[::step], gx[::step]
                 zr = rng[gy, gx]
                 if gy.size < 3 or np.unique(gx).size < 2 or np.unique(gy).size < 2:
-                    logger.warning("[%s] too few non-collinear common range/azimuth inliers to deramp", name)
-                    fit_mask = np.zeros_like(fit_mask, dtype=bool)
-                    continue
+                    raise RuntimeError(
+                        f"{name}: too few common range/azimuth inliers for a stable 2-D deramp."
+                    )
                 A = np.column_stack([np.ones_like(gx, dtype=float), gx.astype(float),
                                      gy.astype(float)])
+                if np.linalg.matrix_rank(A) < 3:
+                    raise RuntimeError(
+                        f"{name}: common range/azimuth inliers do not span a 2-D deramp plane."
+                    )
                 coef, *_ = np.linalg.lstsq(A, zr, rcond=None)
                 YY, XX = np.mgrid[0:rng.shape[0], 0:rng.shape[1]]
                 plane = coef[0] + coef[1] * XX + coef[2] * YY
