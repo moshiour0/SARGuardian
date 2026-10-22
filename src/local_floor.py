@@ -550,7 +550,11 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     One target only: a floors file keyed by pair cannot say which point it
     describes, so mixing targets would gate one slope on another's noise.
     """
-    usable = [r for r in rows if r["usable"]]
+    usable = [
+        r for r in rows
+        if flag_is_true(r.get("usable"))
+        and flag_is_true(r.get("aoi_eligible", True), default=True)
+    ]
     if len({str(r.get("target_id", "")) for r in usable}) > 1:
         raise ValueError("--as-floors needs a single target")
     coordinates = {
