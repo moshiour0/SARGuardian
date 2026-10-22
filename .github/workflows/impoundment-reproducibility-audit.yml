@@ -1,0 +1,127 @@
+name: Impoundment DEM reproducibility and semantic audit
+
+on:
+  push:
+    branches:
+      - science/valid-pixel-target4-9-audit
+    paths:
+      - ".github/workflows/impoundment-reproducibility-audit.yml"
+      - "src/impoundment.py"
+      - "tools/compare_impoundment_geojson.py"
+      - "tests/test_impoundment*.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: impoundment-reproducibility-audit
+  cancel-in-progress: false
+
+jobs:
+  snapshot-and-compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the isolated science branch
+        uses: actions/checkout@v4
+        with:
+          ref: science/valid-pixel-target4-9-audit
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned scientific dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r requirements.txt
+
+      - name: Test the deterministic DEM cache and semantic comparator first
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_impoundment.py tests/test_impoundment_comparison.py -q
+          python tools/compare_impoundment_geojson.py --help >/dev/null
+
+      - name: Snapshot each live DEM grid, regenerate in a temporary directory, and compare with the committed reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/impoundment-semantic-audit"
+          mkdir -p "$OUT/dem" "$OUT/baseline" "$OUT/generated" "$OUT/comparison" "$OUT/logs"
+          echo "Live-source reproducibility experiment; semantic differences are REVIEW_REQUIRED, never auto-accepted." | tee "$OUT/README.txt"
+
+          for AOI in source langtang lhende blatten; do
+            BASELINE="outputs/dam_sites_${AOI}.geojson"
+            if [[ ! -s "$BASELINE" ]]; then
+              echo "::error::Missing committed reference GeoJSON: $BASELINE"
+              exit 1
+            fi
+            cp "$BASELINE" "$OUT/baseline/dam_sites_${AOI}.geojson"
+
+            echo "=== IMPOUNDMENT_AOI_START $AOI ==="
+            python src/impoundment.py \
+              --api --aoi "$AOI" --cells 12000 \
+              --heights 10 25 50 100 150 --rank-by efficiency \
+              --api-cache "$OUT/dem/${AOI}_srtm30m.npz" \
+              --geojson "$OUT/generated/dam_sites_${AOI}.geojson" \
+              2>&1 | tee "$OUT/logs/${AOI}.log"
+
+            python tools/compare_impoundment_geojson.py \
+              --baseline "$BASELINE" \
+              --candidate "$OUT/generated/dam_sites_${AOI}.geojson" \
+              --json "$OUT/comparison/${AOI}.json" \
+              --csv "$OUT/comparison/${AOI}.csv" \
+              2>&1 | tee -a "$OUT/logs/${AOI}.log"
+
+            test -s "$OUT/dem/${AOI}_srtm30m.npz"
+            test -s "$OUT/generated/dam_sites_${AOI}.geojson"
+            test -s "$OUT/generated/dam_sites_${AOI}.geojson.provenance.json"
+            test -s "$OUT/comparison/${AOI}.json"
+            echo "=== IMPOUNDMENT_AOI_COMPLETE $AOI ==="
+          done
+
+      - name: Write an explicit aggregate outcome without treating mismatches as scientific pass
+        if: always()
+        shell: bash
+        run: |
+          python - "$RUNNER_TEMP/impoundment-semantic-audit" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          summary_path = Path(sys.argv[2])
+          reports = sorted((root / "comparison").glob("*.json")) if (root / "comparison").exists() else []
+          lines = ["## Impoundment DEM reproducibility audit", "",
+                   "Successful execution is not scientific equivalence."]
+          if not reports:
+              lines += ["", "Status: INCOMPLETE — no complete semantic comparison report was produced."]
+          else:
+              values = [json.loads(path.read_text(encoding="utf-8")) for path in reports]
+              match = sum(item.get("status") == "EXACT_SEMANTIC_MATCH" for item in values)
+              review = sum(item.get("status") == "REVIEW_REQUIRED" for item in values)
+              lines += ["", f"- AOIs compared: {len(values)}/4",
+                        f"- Exact semantic matches: {match}",
+                        f"- AOIs requiring review: {review}",
+                        f"- Status: {'ALL_MATCH' if len(values) == 4 and review == 0 else 'REVIEW_REQUIRED'}", "",
+                        "| AOI | Baseline sites | New sites | Exact coordinate matches | H10 baseline | H10 candidate | Status |",
+                        "|---|---:|---:|---:|---:|---:|---|"]
+              for item in values:
+                  aoi = Path(item["candidate_path"]).stem.removeprefix("dam_sites_")
+                  h10 = item["response_counts_by_threshold_height_m"]
+                  lines.append(
+                      f"| {aoi} | {item['baseline_site_count']} | {item['candidate_site_count']} | "
+                      f"{item['exact_coordinate_matches']} | {h10['baseline'].get('10', 0)} | "
+                      f"{h10['candidate'].get('10', 0)} | {item['status']} |"
+                  )
+              lines += ["", "Artifact contains exact sampled elevation grids/caches, SHA-256 provenance sidecars, regenerated GeoJSONs, baseline GeoJSONs, exact-coordinate-only semantic diffs, and logs. No result is auto-committed."]
+          summary_path.parent.mkdir(parents=True, exist_ok=True)
+          summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload DEM snapshots and semantic comparison evidence (no automatic output commit)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impoundment-semantic-audit-${{ github.run_id }}
+          path: ${{ runner.temp }}/impoundment-semantic-audit/**
+          if-no-files-found: warn
+          retention-days: 30
