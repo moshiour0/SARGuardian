@@ -63,11 +63,16 @@ def test_bucket_and_filed_path_classification_are_explicit(tmp_path):
     assert row is not None
     assert bucket(row) == "2026-07_summer"
     dest = tmp_path / "data" / "nisar_l2"
-    assert is_already_filed(dest / "GUNW" / "2026-07_summer" / PROVISIONAL, dest)
-    assert is_already_filed(dest / "GOFF" / "co_event" / "file.h5", dest)
-    assert not is_already_filed(dest / "_incoming" / PROVISIONAL, dest)
-    assert not is_already_filed(dest / "misc" / "GUNW" / PROVISIONAL, dest)
-    assert not is_already_filed(dest / "GUNW" / "misc" / PROVISIONAL, dest)
+    correct = _put(dest / "GUNW" / "2026-07_summer", PROVISIONAL)
+    co_event = _put(dest / "GOFF" / "co_event", BETA.replace("GUNW", "GOFF"))
+    incoming = _put(dest / "_incoming", PROVISIONAL)
+    wrong_depth = _put(dest / "misc" / "GUNW", PROVISIONAL)
+    wrong_bucket = _put(dest / "GUNW" / "misc", PROVISIONAL)
+    assert is_already_filed(correct, dest)
+    assert is_already_filed(co_event, dest)
+    assert not is_already_filed(incoming, dest)
+    assert not is_already_filed(wrong_depth, dest)
+    assert not is_already_filed(wrong_bucket, dest)
 
 
 def test_incremental_organising_preserves_every_product_in_manifest(tmp_path, monkeypatch):
