@@ -228,8 +228,11 @@ def test_target9_is_rejected_by_source_polygon_but_eligible_in_langtang():
 
 def test_export_aoi_inference_requires_an_unambiguous_folder_name():
     assert infer_aoi_from_dir("outputs/export_goff_src") == "source"
+    assert infer_aoi_from_dir("outputs/export_source") == "source"
     assert infer_aoi_from_dir("outputs/export_phase_langtang") == "langtang"
     assert infer_aoi_from_dir("outputs/export_goff_lhende") == "lhende"
+    assert infer_aoi_from_dir("outputs/export_source_langtang") is None
+    assert infer_aoi_from_dir("outputs/notlangtang") is None
     assert infer_aoi_from_dir("outputs/some_custom_folder") is None
 
 
