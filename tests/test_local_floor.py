@@ -355,6 +355,13 @@ def test_inverse_velocity_floor_export_refuses_a_stale_usable_flag(tmp_path):
         "usable": True, "target_id": "4",
         "lat": 28.27799, "lon": 85.52983, "aoi_name": "source",
         "aoi_eligible": True, "status": "MEASURED",
+        "series_id": "ASC PATH 98 FRAME 16 SUBSWATH 26 BANDWIDTH 4000 POL SH CRID P05023 GOFF",
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "source_product": "NISAR_L2_PR_GOFF_026_098_A_016_028_4000_SH_20260726T233919_20260726T233954_20260819T233918_20260819T233953_P05023_N_F_J_001.h5",
+        "crid": "P05023", "maturity": "PROVISIONAL", "product": "GOFF",
+        "track": "ASC path 98", "frame": "16", "subswath": "26",
+        "bandwidth": "4000", "polarisation": "SH", "processing": "PR",
+        "layer": "HH-layer2",
         "window_px": 169,
     }
     for bad_floor in (0.0, -1.0, float("nan"), float("inf")):
@@ -376,6 +383,13 @@ def test_inverse_velocity_floor_export_refuses_a_target_outside_the_aoi(tmp_path
         "usable": True, "target_id": "9",
         "lat": 28.25460, "lon": 85.47591, "aoi_name": "source",
         "aoi_eligible": True, "status": "MEASURED",
+        "series_id": "ASC PATH 98 FRAME 16 SUBSWATH 26 BANDWIDTH 4000 POL SH CRID P05023 GOFF",
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "source_product": "NISAR_L2_PR_GOFF_026_098_A_016_028_4000_SH_20260726T233919_20260726T233954_20260819T233918_20260819T233953_P05023_N_F_J_001.h5",
+        "crid": "P05023", "maturity": "PROVISIONAL", "product": "GOFF",
+        "track": "ASC path 98", "frame": "16", "subswath": "26",
+        "bandwidth": "4000", "polarisation": "SH", "processing": "PR",
+        "layer": "HH-layer2",
         "window_px": 169, "local_floor_mm_day": 12.0,
     }
     with pytest.raises(ValueError, match="outside its named AOI"):
