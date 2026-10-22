@@ -66,6 +66,9 @@ def parse(path: Path) -> dict | None:
     if not m:
         return None
     d = m.groupdict()
+    # Do not silently label an unknown processing code as "routine".
+    if d["proc"] not in {"PR", "UR"}:
+        return None
     if d["product"] not in {"GUNW", "GOFF"}:
         return None
     stamps = re.findall(r"_(\d{8})T\d{6}", path.name)
@@ -114,15 +117,23 @@ def sha256_file(path: Path) -> str:
 
 
 def is_already_filed(path: Path, destination: Path) -> bool:
-    """Only treat products under a recognised product/season bucket as filed."""
+    """Return true only when path is in the correct product and time bucket.
+
+    A directory name that merely *looks* like a valid bucket is not enough:
+    a GUNW file accidentally placed under GOFF/ or under the wrong season
+    must be re-filed, not silently skipped by an incremental run.
+    """
     try:
         relative = path.resolve().relative_to(destination.resolve())
     except ValueError:
         return False
     parts = relative.parts
-    if len(parts) < 3 or parts[0] not in {"GUNW", "GOFF"}:
+    if len(parts) < 3:
         return False
-    return parts[1] == "co_event" or re.fullmatch(r"\d{4}-\d{2}_(?:winter|summer)", parts[1]) is not None
+    record = parse(path)
+    if record is None:
+        return False
+    return parts[0] == record["product"] and parts[1] == bucket(record)
 
 
 def write_full_manifest(destination: Path) -> Path:
