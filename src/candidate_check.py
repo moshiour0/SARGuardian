@@ -72,29 +72,45 @@ MIN_PX = 20                    # below this a target window is not measured
 MONSOON = (6, 7, 8, 9)
 
 TARGET_LINE = re.compile(
-    r"(\d{4}-\d\d-\d\d) -> (\d{4}-\d\d-\d\d) :\s+([-+]?[\d.]+) mm\s+"
-    r"\((\d+) px, coh ([\d.]+)\)")
+    r"(?P<reference>\d{4}-\d\d-\d\d) -> (?P<secondary>\d{4}-\d\d-\d\d)"
+    r"(?: \[(?P<granule>NISAR_L2_[^\]\s]+\.h5)\])? :\s+"
+    r"(?P<value>[-+]?[\d.]+) mm\s+\((?P<pixels>\d+) px, coh (?P<coherence>[\d.]+)\)")
 
 
 def read_target(path: Path) -> dict:
-    """Per-pair measurements at the target, from a timeseries.py --target run."""
+    """Per-granule target measurements from a timeseries.py --target log.
+
+    Dates alone are not a unique interferogram identity: ascending/descending
+    tracks and different CRIDs can share a date pair. Old logs without the
+    basename are parsed for diagnostics but cannot safely join to an AOI row.
+    """
     out = {}
     for line in open(path, errors="ignore"):
         m = TARGET_LINE.search(line)
         if m:
-            key = (m.group(1).replace("-", ""), m.group(2).replace("-", ""))
-            out.setdefault(key, (float(m.group(3)), int(m.group(4)), float(m.group(5))))
+            key = (
+                m.group("reference").replace("-", ""),
+                m.group("secondary").replace("-", ""),
+                Path(m.group("granule")).name if m.group("granule") else None,
+            )
+            out.setdefault(key, (
+                float(m.group("value")), int(m.group("pixels")),
+                float(m.group("coherence")),
+            ))
     return out
 
 
 def read_aoi(path: Path) -> dict:
+    """AOI medians keyed by exact granule basename, not date pair alone."""
     out = {}
     for r in csv.DictReader(open(path, newline="")):
-        if "_UR_" in r["file"]:
+        filename = Path(r["file"]).name
+        if "_UR_" in filename:
             continue
-        g = re.search(r"_GUNW_\d+_(\d+)_([AD])_", r["file"])
+        g = re.search(r"_GUNW_\d+_(\d+)_([AD])_", filename)
         if g:
-            out[(r["reference"], r["secondary"])] = (float(r["median"]), g.group(2))
+            key = (r["reference"], r["secondary"], filename)
+            out[key] = (float(r["median"]), g.group(2))
     return out
 
 
@@ -314,7 +330,12 @@ def main() -> int:
     aoi = read_aoi(resolve(args.aoi_csv))
     shared = sorted(set(tgt) & set(aoi))
     if not shared:
-        logger.error("No pairs common to the target log and the AOI CSV.")
+        logger.error(
+            "No exact granule identities common to the target log and AOI CSV. "
+            "Regenerate the target log with the current timeseries.py so each "
+            "measurement includes its [NISAR_L2_...h5] basename; legacy date-only "
+            "logs cannot safely distinguish tracks or CRIDs."
+        )
         return 1
 
     where = (f"{args.lat:.5f} N {args.lon:.5f} E"
