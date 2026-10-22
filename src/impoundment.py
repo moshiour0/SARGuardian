@@ -753,8 +753,25 @@ def analyse(z, lats, lons, heights, min_accum_cells, top_n,
             if flooded_indices.size < 2:
                 continue
             flooded_z = zf[flooded_indices]
-            vol = float(np.sum(wl - flooded_z) * cell_area)
+            # These are physical invariants of the simplified water-surface
+            # calculation, independent of ranking: every counted cell must
+            # have finite ground strictly below the water level, and both
+            # volume and area must be finite and positive. Fail closed rather
+            # than serialising impossible geometry into a "successful" result.
+            depths = wl - flooded_z
+            if (flooded_indices.size != np.unique(flooded_indices).size
+                    or not np.all(np.isfinite(flooded_z))
+                    or not np.all(np.isfinite(depths))
+                    or not np.all(depths > 0)):
+                raise RuntimeError(
+                    f"Invalid ponding cells for site ({i}, {j}) at H={H:g} m."
+                )
+            vol = float(np.sum(depths, dtype=np.float64) * cell_area)
             area = float(flooded_indices.size * cell_area)
+            if not (math.isfinite(vol) and vol > 0 and math.isfinite(area) and area > 0):
+                raise RuntimeError(
+                    f"Non-finite/non-positive ponding volume or area for site ({i}, {j}) at H={H:g} m."
+                )
             fi = flooded_indices // nx
             fj = flooded_indices % nx
             edge = bool((fi.min() == 0) or (fj.min() == 0) or
@@ -786,6 +803,23 @@ def analyse(z, lats, lons, heights, min_accum_cells, top_n,
     hs = sorted(heights)
     for s_ in sites.values():
         bh = s_["by_height"]
+        # Raising a water surface at a fixed dam sill cannot shrink the
+        # connected pool or reduce its volume. This is a physical invariant of
+        # the current tree-connected screening model, not a claim that the
+        # model captures lateral spill or real dam hydraulics.
+        ordered_present = [(h, bh[h]) for h in hs if h in bh]
+        for (h0, lower), (h1, upper) in zip(ordered_present, ordered_present[1:]):
+            tol = 1e-12
+            if upper["area_km2"] + tol < lower["area_km2"]:
+                raise RuntimeError(
+                    f"Ponded area decreased as water level rose at "
+                    f"({s_['lat']}, {s_['lon']}): H={h0:g}->{h1:g} m."
+                )
+            if upper["volume_Mm3"] + tol < lower["volume_Mm3"]:
+                raise RuntimeError(
+                    f"Ponded volume decreased as water level rose at "
+                    f"({s_['lat']}, {s_['lon']}): H={h0:g}->{h1:g} m."
+                )
         s_["max_volume_Mm3"] = max(v["volume_Mm3"] for v in bh.values())
         # The smallest blockage this site responds to at all. A reach that needs
         # 100 m of debris before it holds anything is a different proposition
