@@ -504,3 +504,38 @@ def test_analyse_runs_end_to_end_with_a_valid_rectangular_dem(caplog):
         assert np.isfinite(site["lat"]) and np.isfinite(site["lon"])
         assert site["threshold_height_m"] in {10.0, 25.0}
         assert np.isfinite(site["max_volume_Mm3"])
+
+
+def test_priority_flood_flat_plateau_routes_to_outlet_without_losing_cells():
+    """Filled pits must not become artificial D8 sinks on equal-height flats."""
+    import impoundment
+
+    z = np.full((7, 7), 10.0, dtype=float)
+    z[0, 3] = 1.0
+    z[3, 3] = 0.0
+    filled = impoundment.fill_depressions(z)
+    assert filled[3, 3] == pytest.approx(10.0)
+
+    receivers = impoundment.d8_receivers(filled, dx=30.0, dy=30.0)
+    # The interior filled pit is flat with its neighbours and must be routed,
+    # rather than marked as an outlet/sink.
+    assert receivers[3 * 7 + 3] >= 0
+    assert receivers[3 * 7 + 3] != 3 * 7 + 3
+
+    accumulation = impoundment.flow_accumulation(filled, receivers)
+    terminals = receivers.reshape(z.shape) < 0
+    assert accumulation[terminals].sum() == pytest.approx(np.isfinite(z).sum())
+    assert np.all(accumulation[~np.isfinite(z)] == 0.0)
+
+
+def test_flow_accumulation_refuses_cycles_and_receivers_into_nodata():
+    import impoundment
+
+    filled = np.array([[1.0, 1.0], [1.0, np.nan]])
+    cyclic = np.array([1, 0, -1, -1], dtype=np.int64).reshape(2, 2)
+    with pytest.raises(ValueError, match="contains a cycle"):
+        impoundment.flow_accumulation(filled, cyclic)
+
+    points_into_nodata = np.array([3, -1, -1, -1], dtype=np.int64).reshape(2, 2)
+    with pytest.raises(ValueError, match="nodata cell"):
+        impoundment.flow_accumulation(filled, points_into_nodata)
