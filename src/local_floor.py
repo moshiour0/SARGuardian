@@ -264,7 +264,10 @@ def span_from_name(name: str) -> float:
     m = DATE.search(name)
     if not m:
         return float("nan")
-    a, b = (dt.date(int(s[:4]), int(s[4:6]), int(s[6:8])) for s in m.groups())
+    try:
+        a, b = (dt.date(int(s[:4]), int(s[4:6]), int(s[6:8])) for s in m.groups())
+    except ValueError:
+        return float("nan")
     return float((b - a).days)
 
 
@@ -592,8 +595,9 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
         if not match:
             raise ValueError(f"Refusing --as-floors row without a valid date pair: {row.get('file')!r}")
         a, b = match.groups()
-        if span_from_name(row["file"]) <= 0:
-            raise ValueError(f"Refusing --as-floors row with non-positive temporal span: {row['file']}")
+        span = span_from_name(row["file"])
+        if not np.isfinite(span) or span <= 0:
+            raise ValueError(f"Refusing --as-floors row with invalid/non-positive temporal span: {row['file']}")
         validated.append((a, b, floor))
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -649,9 +653,8 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[
             if not (0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]):
                 print(f"  {DATE.search(f.name).group(0):<24}{span:>5.0f}"
                       f"   TARGET OUTSIDE RASTER - no floor")
-                for radius in radii:
-                    rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
-                                             "TARGET_OUTSIDE_RASTER"))
+                rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                         "TARGET_OUTSIDE_RASTER"))
                 continue
             win = window(arr, row, col, radius)
             c = compare(arr, win, span)
