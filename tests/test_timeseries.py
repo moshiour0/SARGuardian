@@ -142,11 +142,15 @@ def test_duplicate_products_are_resolved_not_averaged(tmp_path):
                                            "median", "mean_coherence", "valid_px"])
         w.writeheader(); w.writerows(rows)
 
-    pairs = pairs_from_stats(p)
-    assert len(pairs) == 2, "the duplicate was not resolved to one pair"
-    kept = [q for q in pairs if q.ref == date(2026, 8, 16)][0]
-    assert kept.value == pytest.approx(-14.66), (
-        "kept the fringe-offset branch, or averaged the two")
+    with pytest.raises(ValueError, match="magnitude-only guess"):
+        pairs_from_stats(p)
+
+    # Selecting an explicit processing branch is reproducible; the loader
+    # must not guess which whole-fringe branch is scientifically correct.
+    pairs = pairs_from_stats(p, processing="PR")
+    assert len(pairs) == 2
+    selected = [q for q in pairs if q.ref == date(2026, 8, 16)][0]
+    assert selected.value == pytest.approx(-14.66)
 
 
 # ---------------------------------------------------------------------------
@@ -302,3 +306,34 @@ def test_maturity_release_is_part_of_time_series_network_identity():
     assert beta.crid == "X05010"
     assert provisional.crid == "P05023"
     assert beta.network_key() != provisional.network_key()
+
+
+def test_identical_gunw_pr_ur_stats_can_be_deduplicated_without_branch_guess(tmp_path):
+    import synth
+
+    path = tmp_path / "identical-gunw-duplicates.csv"
+    common = {"median": -12.5, "mean_coherence": 0.8, "valid_px": 1000}
+    rows = [
+        {"file": synth.granule_name(proc="PR", ref="20260629", sec="20260711"), **common},
+        {"file": synth.granule_name(proc="UR", ref="20260629", sec="20260711"), **common},
+    ]
+    _write_stats(path, rows)
+    pairs = pairs_from_stats(path)
+    assert len(pairs) == 1
+    assert pairs[0].processing == "PR"
+    assert pairs[0].value == pytest.approx(-12.5)
+
+
+def test_processing_filter_prevents_ambiguous_values_from_entering_inversion(tmp_path):
+    import synth
+
+    path = tmp_path / "processing-filter.csv"
+    rows = [
+        {"file": synth.granule_name(proc="PR", ref="20260629", sec="20260711"),
+         "median": 12.0, "mean_coherence": 0.7, "valid_px": 1000},
+        {"file": synth.granule_name(proc="UR", ref="20260629", sec="20260711"),
+         "median": 240.0, "mean_coherence": 0.7, "valid_px": 1000},
+    ]
+    _write_stats(path, rows)
+    assert [p.value for p in pairs_from_stats(path, processing="PR")] == [12.0]
+    assert [p.value for p in pairs_from_stats(path, processing="UR")] == [240.0]
