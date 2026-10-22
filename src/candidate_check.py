@@ -109,8 +109,14 @@ def read_aoi(path: Path) -> dict:
             continue
         g = re.search(r"_GUNW_\d+_(\d+)_([AD])_", filename)
         if g:
+            try:
+                median = float(r["median"])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(median):
+                continue
             key = (r["reference"], r["secondary"], filename)
-            out[key] = (float(r["median"]), g.group(2))
+            out[key] = (median, g.group(2))
     return out
 
 
@@ -323,6 +329,8 @@ def main() -> int:
     ap.add_argument("--min-px", type=int, default=MIN_PX)
     args = ap.parse_args()
 
+    if args.min_px < 1:
+        ap.error("--min-px must be at least 1.")
     if args.lat is None or args.lon is None:
         ap.error("--lat and --lon are required so geometry sensitivity is evaluated at the actual target.")
     if not (math.isfinite(args.lat) and math.isfinite(args.lon)
@@ -370,7 +378,7 @@ def main() -> int:
         med, geom = aoi[k]
         val, px, coh = tgt[k]
         local = val - med
-        if exceeds_single_fringe(local):
+        if px >= args.min_px and exceeds_single_fringe(local):
             high_differential_pairs.append((geom, k, local))
         season = "monsoon" if int(k[0][4:6]) in MONSOON else "dry"
         groups.setdefault((geom, season), []).append((k, local, px))
