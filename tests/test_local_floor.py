@@ -280,7 +280,7 @@ def test_floor_provenance_requires_exact_matching_aoi_and_applied_mask(tmp_path)
         tmp_path / "unclipped.tif",
         {"aoi_name": "source", "aoi_mask_applied": "false"},
     )
-    with pytest.raises(ValueError, match="did not apply"):
+    with pytest.raises(ValueError, match="unclipped/mislabelled"):
         validate_export_provenance([unclipped], "source")
 
 
