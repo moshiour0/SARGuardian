@@ -218,7 +218,7 @@ def main() -> int:
     # Files in recognised product/season buckets are done. Files in _incoming
     # or unclassified folders remain eligible for organisation.
     n_filed = sum(1 for f in files if is_already_filed(f, dest))
-    files = [f for f in files if not is_already_filed(f)]
+    files = [f for f in files if not is_already_filed(f, dest)]
 
 
     recs, skipped = [], []
