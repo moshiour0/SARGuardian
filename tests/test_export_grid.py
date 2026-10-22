@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from gunw_reader import aoi_grid, export_clipped, place_on_grid
+from goff_reader import export_clipped as export_goff_clipped
 
 RES = 0.0008
 RING = [(85.40, 28.20), (85.80, 28.20), (85.80, 28.60), (85.40, 28.60)]
@@ -135,4 +136,71 @@ def test_gunw_export_refuses_to_claim_aoi_provenance_without_a_mask(tmp_path):
     }
     with pytest.raises(RuntimeError, match="did not apply the AOI mask"):
         export_clipped(result, tmp_path)
+    assert not list(tmp_path.glob("*.tif"))
+
+
+def test_all_invalid_goff_layer_writes_an_explicit_nodata_aoi_raster(tmp_path):
+    import rasterio
+
+    xs, ys = _projected_source_grid()
+    shape = (len(ys), len(xs))
+    result = {
+        "file": "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_"
+                "20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001.h5",
+        "reference_date": "20260702", "secondary_date": "20260714",
+        "aoi_name": "source", "aoi_mask_applied": True,
+        "correlation_min": 0.3, "snr_min": 3.0, "cull_sigma": 4.0,
+        "layers": {
+            "HH/layer2": {
+                "layer": "HH/layer2",
+                "range_m": np.zeros(shape, dtype=np.float32),
+                "azimuth_m": np.zeros(shape, dtype=np.float32),
+                "correlation": np.ones(shape, dtype=np.float32),
+                "valid": np.zeros(shape, dtype=bool),
+                "xs": xs, "ys": ys, "epsg": 32645,
+                "aoi_name": "source", "aoi_mask_applied": True,
+                "correlation_min": 0.3, "snr_min": 3.0, "cull_sigma": 4.0,
+            }
+        },
+    }
+    rows = export_goff_clipped(result, tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["export_status"] == "NO_VALID_PIXELS"
+    assert rows[0]["export_valid_px"] == 0
+    assert rows[0]["export_file"]
+
+    with rasterio.open(tmp_path / rows[0]["export_file"]) as src:
+        assert src.count == 3
+        assert src.crs.to_epsg() == 32645
+        assert src.tags()["aoi_name"] == "source"
+        assert src.tags()["aoi_mask_applied"] == "true"
+        assert src.tags()["export_status"] == "NO_VALID_PIXELS"
+        assert int(src.tags()["valid_pixel_count"]) == 0
+        for band in (1, 2, 3):
+            assert np.isnan(src.read(band)).all()
+
+
+def test_goff_export_requires_layer_and_parent_aoi_provenance(tmp_path):
+    xs, ys = _projected_source_grid()
+    shape = (len(ys), len(xs))
+    result = {
+        "file": "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_"
+                "20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001.h5",
+        "reference_date": "20260702", "secondary_date": "20260714",
+        "aoi_name": "source", "aoi_mask_applied": True,
+        "correlation_min": 0.3, "snr_min": 3.0, "cull_sigma": 4.0,
+        "layers": {
+            "HH/layer2": {
+                "range_m": np.zeros(shape, dtype=np.float32),
+                "azimuth_m": np.zeros(shape, dtype=np.float32),
+                "correlation": np.ones(shape, dtype=np.float32),
+                "valid": np.ones(shape, dtype=bool),
+                "xs": xs, "ys": ys, "epsg": 32645,
+                "aoi_name": "langtang", "aoi_mask_applied": True,
+                "correlation_min": 0.3, "snr_min": 3.0, "cull_sigma": 4.0,
+            }
+        },
+    }
+    with pytest.raises(RuntimeError, match="layer AOI provenance conflicts"):
+        export_goff_clipped(result, tmp_path)
     assert not list(tmp_path.glob("*.tif"))
