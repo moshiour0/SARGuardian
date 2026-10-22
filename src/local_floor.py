@@ -89,6 +89,85 @@ from gunw_reader import AOIS  # noqa: E402
 
 MIN_PX = 6                # below this a MAD is not a measurement
 DATE = re.compile(r"(\d{8})_(\d{8})")
+NISAR_SOURCE_RE = re.compile(
+    r"NISAR_L2_(?P<processing>PR|UR)_(?P<product>GUNW|GOFF)_"
+    r"(?P<cycle>\d+)_(?P<path>\d+)_(?P<direction>[AD])_(?P<frame>\d+)_"
+    r"(?P<subswath>\d+)_(?P<bandwidth>\d+)_(?P<polarisation>[A-Z]{2})_",
+    re.IGNORECASE,
+)
+SOURCE_CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}(?:\.h5)?$", re.IGNORECASE)
+
+
+def normalize_series_id(value: str) -> str:
+    """Canonical form shared with timeseries.Pair.network_label()."""
+    text = str(value or "").strip().upper()
+    text = re.sub(r"\bASCENDING\b", "ASC", text)
+    text = re.sub(r"\bDESCENDING\b", "DESC", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def raster_source_identity(tags: dict[str, str]) -> dict[str, str]:
+    """Parse original granule identity from the GeoTIFF's source provenance tag."""
+    source = Path(str(tags.get("source", ""))).name
+    match = NISAR_SOURCE_RE.match(source)
+    crid_match = SOURCE_CRID_RE.search(source)
+    if not match or not crid_match:
+        return {
+            "source_product": source,
+            "series_id": "",
+            "series_identity_status": "MISSING_OR_UNPARSEABLE_SOURCE_IDENTITY",
+            "crid": "",
+            "maturity": str(tags.get("maturity", "")),
+            "product": "",
+            "track": "",
+            "frame": "",
+            "subswath": "",
+            "bandwidth": "",
+            "polarisation": "",
+            "processing": "",
+            "layer": str(tags.get("layer", "")),
+        }
+    meta = match.groupdict()
+    crid = crid_match.group(1).upper()
+    direction = "ASC" if meta["direction"].upper() == "A" else "DESC"
+    product = meta["product"].upper()
+    series_id = (
+        f"{direction} path {int(meta['path'])} frame {int(meta['frame'])} "
+        f"subswath {int(meta['subswath'])} bandwidth {int(meta['bandwidth'])} "
+        f"pol {meta['polarisation'].upper()} CRID {crid} {product}"
+    )
+    return {
+        "source_product": source,
+        "series_id": normalize_series_id(series_id),
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "crid": crid,
+        "maturity": str(tags.get("maturity", "")),
+        "product": product,
+        "track": f"{direction} path {int(meta['path'])}",
+        "frame": str(int(meta["frame"])),
+        "subswath": str(int(meta["subswath"])),
+        "bandwidth": str(int(meta["bandwidth"])),
+        "polarisation": meta["polarisation"].upper(),
+        "processing": meta["processing"].upper(),
+        "layer": str(tags.get("layer", "")),
+    }
+
+
+def raster_search_text(path: Path, cache: dict[Path, tuple[str, dict]]) -> tuple[str, dict]:
+    """Search a TIFF's basename AND embedded source granule tags.
+
+    Export filenames intentionally omit orbit/frame/CRID; source tags preserve
+    those identity fields. --include/--exclude must inspect the tags too, or a
+    track selector could silently be ignored while mixing geometries.
+    """
+    if path not in cache:
+        import rasterio
+        with rasterio.open(path) as src:
+            tags = src.tags()
+        identity = raster_source_identity(tags)
+        searchable = " ".join([path.name, *[str(v) for v in tags.values()], *identity.values()])
+        cache[path] = (searchable.casefold(), {**tags, **identity})
+    return cache[path]
 
 
 # ---------------------------------------------------------------------------
@@ -419,19 +498,12 @@ def main() -> int:
                     help="report several radii, to show the answer is not an "
                          "artefact of one window size")
     ap.add_argument("--exclude", nargs="*", default=[],
-                    help="substrings to skip, e.g. a co-event pair")
+                    help="case-insensitive substrings searched in both TIFF filenames and their embedded source-granule tags")
     ap.add_argument("--include", nargs="*", default=[],
-                    help="keep only files matching one of these substrings. "
-                         "Export filenames carry no track field, so this is "
-                         "how you restrict a run to one geometry - and you "
-                         "should, because pooling tracks whose floors differ "
-                         "fivefold gives a median that describes neither")
+                    help="keep only files matching one of these substrings in either the TIFF filename or its source-granule tags (e.g. 098_A_016_010). Use this to isolate one geometry before comparing floors.")
     ap.add_argument("--csv", metavar="OUT.csv")
     ap.add_argument("--as-floors", metavar="OUT.csv",
-                    help="also write the local floors in the layout "
-                         "inverse_velocity.py --floors reads, so a series "
-                         "measured at a point is gated on the floor AT that "
-                         "point rather than the more lenient AOI floor")
+                    help="also write local floors with the parsed product/track/frame/subswath/CRID identity; inverse_velocity will apply them only to the matching time-series geometry")
     args = ap.parse_args()
 
     try:
@@ -442,11 +514,19 @@ def main() -> int:
         return 1
 
     files = sorted(Path(resolve(args.dir)).glob("*.tif"))
+    search_cache: dict[Path, tuple[str, dict]] = {}
+    def matches_tokens(path: Path, tokens: list[str]) -> bool:
+        searchable, _tags = raster_search_text(path, search_cache)
+        return any(str(token).casefold() in searchable for token in tokens)
+
     if args.match:
-        files = [f for f in files if args.match in f.name]
-    files = [f for f in files if not any(x in f.name for x in args.exclude)]
+        files = [f for f in files if matches_tokens(f, [args.match])]
+    if args.exclude:
+        files = [f for f in files if not matches_tokens(f, args.exclude)]
     if args.include:
-        files = [f for f in files if any(x in f.name for x in args.include)]
+        files = [f for f in files if matches_tokens(f, args.include)]
+    if args.as_floors and not args.match:
+        ap.error("--as-floors requires --match so the exported floor's measurement layer is explicit.")
     if not files:
         logger.error("No matching .tif under %s", args.dir)
         return 1
@@ -507,7 +587,7 @@ def main() -> int:
                         for f in files for radius in radii)
             continue
         target_rows = measure_target(files, tid, lat, lon, radii, args.band,
-                                     aoi_name=aoi_name)
+                                     aoi_name=aoi_name, identity_cache=search_cache)
         rows.extend(target_rows)
 
     measured_rows = [
@@ -553,11 +633,25 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     One target only: a floors file keyed by pair cannot say which point it
     describes, so mixing targets would gate one slope on another's noise.
     """
+    if not str(layer).strip():
+        raise ValueError("--as-floors requires an explicit, non-empty layer selector.")
     usable = [
         r for r in rows
         if flag_is_true(r.get("usable"))
         and flag_is_true(r.get("aoi_eligible", True), default=True)
     ]
+    if not usable:
+        raise ValueError("--as-floors cannot write a file without any usable local floors.")
+    series_ids = {normalize_series_id(r.get("series_id", "")) for r in usable}
+    if "" in series_ids or len(series_ids) != 1:
+        raise ValueError(
+            "--as-floors requires one fully identified NISAR geometry/CRID series; "
+            "use --include to select by the embedded source-granule identity."
+        )
+    series_id = next(iter(series_ids))
+    layers = {str(r.get("layer", "")) for r in usable}
+    if len(layers) != 1 or not next(iter(layers)):
+        raise ValueError("--as-floors rows do not have one unambiguous embedded GeoTIFF layer tag.")
     if len({str(r.get("target_id", "")) for r in usable}) > 1:
         raise ValueError("--as-floors needs a single target")
     coordinates = {
@@ -598,21 +692,46 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
         span = span_from_name(row["file"])
         if not np.isfinite(span) or span <= 0:
             raise ValueError(f"Refusing --as-floors row with invalid/non-positive temporal span: {row['file']}")
-        validated.append((a, b, floor))
+        if normalize_series_id(row.get("series_id", "")) != series_id:
+            raise ValueError("Refusing to mix geometry identities in --as-floors output.")
+        if str(row.get("layer", "")) not in layers:
+            raise ValueError("Refusing to mix embedded measurement layers in --as-floors output.")
+        validated.append((a, b, floor, str(row.get("source_product", "")), str(row.get("crid", "")),
+                          str(row.get("maturity", ""))))
+
+    # Duplicate processing variants of the same pair share a time-series key;
+    # keep the largest floor for the pair so reprocessing cannot improve a bound.
+    by_pair: dict[tuple[str, str], tuple[float, str, str, str]] = {}
+    for a, b, floor, source_product, crid, maturity in validated:
+        key = (a, b)
+        current = by_pair.get(key)
+        if current is None or floor > current[0]:
+            by_pair[key] = (floor, source_product, crid, maturity)
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["reference", "secondary", "layer",
-                                           "detect_floor_mm_day"])
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=[
+            "reference", "secondary", "layer", "series_id", "source_product",
+            "crid", "maturity", "aoi_name", "target_id", "lat", "lon",
+            "detect_floor_mm_day",
+        ])
         w.writeheader()
-        for a, b, floor in validated:
-            w.writerow({"reference": a, "secondary": b, "layer": layer,
-                        "detect_floor_mm_day": round(floor, 3)})
-    logger.info("Wrote %s (%d floors)", path, len(validated))
-    return len(validated)
+        for (a, b), (floor, source_product, crid, maturity) in sorted(by_pair.items()):
+            sample = next(r for r in usable if DATE.search(str(r.get("file", ""))).groups() == (a, b)
+                          and normalize_series_id(r.get("series_id", "")) == series_id)
+            w.writerow({
+                "reference": a, "secondary": b, "layer": layer,
+                "series_id": series_id, "source_product": source_product,
+                "crid": crid, "maturity": maturity, "aoi_name": sample["aoi_name"],
+                "target_id": sample.get("target_id", ""), "lat": sample["lat"],
+                "lon": sample["lon"], "detect_floor_mm_day": round(floor, 3),
+            })
+    logger.info("Wrote %s (%d unique pair floors, series=%s)", path, len(by_pair), series_id)
+    return len(by_pair)
 
 
-def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[dict]:
+def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str,
+                   identity_cache: dict[Path, tuple[str, dict]] | None = None) -> list[dict]:
     """Every file, every radius, at one target. Rows carry the target."""
     import rasterio
     from pyproj import Transformer
@@ -644,8 +763,10 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[
                 arr = s.read(band).astype(float)
                 if s.nodata is not None:
                     arr[arr == s.nodata] = np.nan
+                tags = s.tags()
                 tf = Transformer.from_crs(4326, s.crs.to_epsg(), always_xy=True)
                 row, col = s.index(*tf.transform(lon, lat))
+            identity = raster_source_identity(tags)
             # "too few valid pixels" and "the point is not in this raster" are
             # different failures and used to print the same line. A target
             # outside the footprint is a setup error the caller must fix; a
@@ -670,7 +791,7 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[
                 print(f"  {name:<24}{span:>5.0f}   {message}")
                 rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
                              "lat": lat, "lon": lon, "aoi_name": aoi_name,
-                             "aoi_eligible": True, **c})
+                             "aoi_eligible": True, **identity, **c})
                 continue
             ci = (f"[{c['local_floor_ci_lo']:.0f}-{c['local_floor_ci_hi']:.0f}]"
                   if np.isfinite(c["local_floor_ci_lo"]) else "-")
@@ -681,7 +802,7 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[
             block.append(c)
             rows.append({"file": f.name, "radius_px": radius, "target_id": tid,
                          "lat": lat, "lon": lon, "aoi_name": aoi_name,
-                         "aoi_eligible": True, "status": "MEASURED", **c})
+                         "aoi_eligible": True, **identity, "status": "MEASURED", **c})
 
         if not block:
             print("  nothing usable at this radius\n")
