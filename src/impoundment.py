@@ -577,6 +577,51 @@ def upstream_of(idx: int, recv: np.ndarray, children: dict[int, list[int]]) -> n
 
 
 # ---------------------------------------------------------------------------
+def connected_flooded_upstream(
+    idx: int, elevation: np.ndarray, children: dict[int, list[int]], water_level: float
+) -> np.ndarray:
+    """Upstream-tree cells hydraulically connected to a dam site below water level.
+
+    upstream_of() returns the entire contributing catchment. That set is not
+    itself a water mask: a high saddle can separate low terrain farther upstream
+    from the dam at a lower water level. Starting at the dam, traverse upstream
+    receiver-tree edges only while the child cell's original elevation is
+    strictly below the proposed water surface. A cell above the waterline blocks
+    its entire upstream subtree until a higher water level overtops it.
+
+    This is a tree-constrained ponding model, not a full 2-D spillway model:
+    lateral spill across watershed divides and the geometry of a breached dam
+    are still outside this function and must remain explicit limitations.
+    """
+    z = np.asarray(elevation, dtype=float).ravel()
+    if not isinstance(idx, (int, np.integer)) or idx < 0 or idx >= z.size:
+        raise ValueError("Dam-site index is outside the elevation grid.")
+    if not math.isfinite(water_level):
+        raise ValueError("Water level must be finite.")
+    if not np.isfinite(z[idx]) or z[idx] >= water_level:
+        return np.empty(0, dtype=np.int64)
+
+    connected: list[int] = [int(idx)]
+    seen = {int(idx)}
+    stack = [int(idx)]
+    while stack:
+        current = stack.pop()
+        for child_value in children.get(current, ()):
+            child = int(child_value)
+            if child in seen:
+                continue
+            if child < 0 or child >= z.size:
+                raise ValueError(f"Upstream child index {child} is outside the elevation grid.")
+            child_elevation = z[child]
+            if not np.isfinite(child_elevation) or child_elevation >= water_level:
+                # Do not traverse behind a dry ridge/saddle or nodata hole.
+                continue
+            seen.add(child)
+            connected.append(child)
+            stack.append(child)
+    return np.asarray(connected, dtype=np.int64)
+
+
 def analyse(z, lats, lons, heights, min_accum_cells, top_n,
             min_separation_km=1.5, rank_by="volume"):
     z = np.asarray(z, dtype=float)
@@ -642,13 +687,14 @@ def analyse(z, lats, lons, heights, min_accum_cells, top_n,
             continue
         for H in heights:
             wl = sill + H
-            flooded = zup < wl
-            if flooded.sum() < 2:
+            flooded_indices = connected_flooded_upstream(idx, zf, children, wl)
+            if flooded_indices.size < 2:
                 continue
-            vol = float(np.sum(wl - zup[flooded]) * cell_area)
-            area = float(flooded.sum() * cell_area)
-            fi = up[flooded] // nx
-            fj = up[flooded] % nx
+            flooded_z = zf[flooded_indices]
+            vol = float(np.sum(wl - flooded_z) * cell_area)
+            area = float(flooded_indices.size * cell_area)
+            fi = flooded_indices // nx
+            fj = flooded_indices % nx
             edge = bool((fi.min() == 0) or (fj.min() == 0) or
                         (fi.max() == ny - 1) or (fj.max() == nx - 1))
             back = float(math.hypot((fi.max() - fi.min()) * dy,
