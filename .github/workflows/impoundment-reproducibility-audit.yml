@@ -160,6 +160,32 @@ jobs:
           summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
+      - name: Enforce unresolved semantic differences as a blocking review result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/impoundment-semantic-audit/comparison" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          reports = sorted(root.glob("*.json")) if root.exists() else []
+          if len(reports) != 4:
+              raise SystemExit(f"BLOCKED: expected 4 AOI semantic comparisons, found {len(reports)}.")
+          values = [json.loads(p.read_text(encoding="utf-8")) for p in reports]
+          review = [v for v in values if v.get("status") not in {
+              "EXACT_SEMANTIC_MATCH", "SEMANTIC_MATCH_WITH_COORDINATE_ROUNDING"
+          }]
+          rounded = [v for v in values if v.get("status") == "SEMANTIC_MATCH_WITH_COORDINATE_ROUNDING"]
+          if review or rounded:
+              names = [Path(v["candidate_path"]).stem.removeprefix("dam_sites_") for v in review + rounded]
+              raise SystemExit(
+                  "BLOCKED: DEM audit is reproducible, but semantic differences still require human review "
+                  f"(AOIs={','.join(names)}). See uploaded artifact and summary; do not replace reference GeoJSONs automatically."
+              )
+          print("SEMANTIC_PARITY=PASS all four AOIs match exact/rounding-only policy.")
+          PY
+
       - name: Upload DEM snapshots and semantic comparison evidence (no automatic output commit)
         if: always()
         uses: actions/upload-artifact@v4
