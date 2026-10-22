@@ -82,6 +82,28 @@ The 13 HDF5 files were downloaded sequentially with the backend's `tools/downloa
 
 Source artifact: [authenticated raw-data diagnostic run #5](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39712719257), artifact ID 12398535967. The first isolated downloader attempt used an incomplete ASF exact-name catalogue lookup; the next direct-downloader run exposed and then fixed a shell variable expansion error. The final run completed **13/13 products, 40/40 reports, 128/128 rows, zero validation errors**, and uploaded diagnostics only. These workflow changes remain isolated on `science/target4-9-raw-investigation`; no production workflow or `main` was changed.
 
+## Cross-run source identity against the successful Run #55
+
+I compared each new raw-diagnostic download manifest with the corresponding Run #55 per-product artifact's `download-manifest.json`. **All 13/13 match on exact basename, observed byte count, and SHA-256**. Therefore the gate diagnostics are tied to the exact raw bytes that the successful processing run consumed, rather than merely to a similar granule name or a newer catalog result.
+
+| Product | Observed bytes | SHA-256 |
+|---|---:|---|
+| GUNW-006 | 2,365,587,456 | `e8b7571c0cb778c9a9e0d8e13d441a685b9bceb508e06cc2e3e16229e1c06392` |
+| GUNW-007 | 2,378,170,368 | `dd0e29376f9113060404b6a1b799a3a614f194cca02c8ff80736426699b7a6d2` |
+| GUNW-009 | 2,353,004,544 | `35b796f959b0ac76ed5a9b853976530e656aab43d8155274f8fc135825c3af8a` |
+| GUNW-010 | 2,336,227,328 | `05dbd5e131a236cf3d141dfadec0a586915400e21862e75e82d4fb5913ea2fa0` |
+| GUNW-011 | 2,344,615,936 | `3def328bd568c921486e4c1ed5a6ef7e359db43e99b63eaab083c0393029a499` |
+| GUNW-012 | 2,373,976,064 | `2f7b50e7029651cbb96ba58eb4a6c89e8a75106f81abddc2b3a1590f8f609e13` |
+| GUNW-013 | 2,390,753,280 | `cae4903019d10bc5568da3e64b7ad9f60bb050c67c947841c3b1104082d949d3` |
+| GOFF-023 | 1,115,684,864 | `57818f28c8564372d614eedc373e36fbb917f6fdd042fbe61b7d4eff38db28d8` |
+| GOFF-025 | 1,090,519,040 | `8a947f7fa4458afb564431514f36950a89e004d79e6f0e6bfb7461f7e867123c` |
+| GOFF-026 | 1,080,033,280 | `541dd2664ad23a18976f8996ee3c230483df6c73d38c6fba0a10bd62b80bf4b7` |
+| GOFF-027 | 1,092,616,192 | `ac3eb50eb5c35cb70769b44492398d6b212e880b70558d4d7d2376c5d8e49313` |
+| GOFF-028 | 1,119,879,168 | `02af3e9c06b5946dc4c7d42566e0512103e25f7d38e9e782a2f5848b2726eec5` |
+| GOFF-029 | 1,101,004,800 | `45e4641da04f235941b1e88262961e9e62ca05ce3ceb35fdac452649b13e416f` |
+
+**Size-field caveat:** the original product manifests sometimes have an `expected_size_bytes` value different from the actual `Content-Length`/downloaded byte count (for example GUNW-006's expected size is 2,400,000,000 bytes but the observed file is 2,365,587,456 bytes). The cross-run identity check deliberately compares the observed `source_bytes`, the exact basename and SHA-256; it does not mistake a catalog/expected-size estimate for the downloaded object's actual size.
+
 ## Decision and next steps
 
 - **Target 9:** exact AOI guards are now implemented on the science branch: `scar_map.py` masks NDSI, coverage denominators and clusters with `SOURCE_RING`; `local_floor.py --aoi source` refuses the target centre outside that polygon and records `TARGET_OUTSIDE_AOI`, never a floor. In Langtang, three tested P05023 ascending GUNW pairs have supported phase windows after the current gate, while all six tested GOFF products have layer-2 sample support. Temporal/geometry requirements and stability of the proposed reference still need validation.
