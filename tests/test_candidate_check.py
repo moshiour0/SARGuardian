@@ -22,7 +22,8 @@ guard the two ways the test can be honest about not knowing.
 
 from __future__ import annotations
 
-from candidate_check import classify_geometry, geometry_test
+import csv
+from candidate_check import classify_geometry, geometry_test, read_aoi, read_target
 
 
 # The measured Langtang candidate: 28.27484 N, 85.47405 E.
@@ -130,3 +131,52 @@ def test_descriptive_delay_ratio_does_not_hard_reject_candidate(monkeypatch, cap
     assert "not a statistically conclusive rejection" in out
     assert "PATH-DELAY HYPOTHESIS" in out
     assert problems == []
+
+
+def test_target_and_aoi_rows_join_by_exact_granule_not_shared_dates(tmp_path):
+    asc = (
+        "NISAR_L2_PR_GUNW_024_098_A_016_025_4000_SH_"
+        "20260702T233920_20260702T233955_20260714T233920_20260714T233954_"
+        "P05023_F_F_J_001.h5"
+    )
+    desc = (
+        "NISAR_L2_PR_GUNW_024_048_D_074_026_2000_SH_"
+        "20260702T125813_20260702T125848_20260714T125813_20260714T125848_"
+        "P05023_N_F_J_001.h5"
+    )
+    target_log = tmp_path / "target.log"
+    target_log.write_text(
+        f"2026-07-02 -> 2026-07-14 [{asc}] : -2.00 mm (25 px, coh 0.80)\n"
+        f"2026-07-02 -> 2026-07-14 [{desc}] : +3.00 mm (27 px, coh 0.75)\n",
+        encoding="utf-8",
+    )
+    aoi_csv = tmp_path / "gunw_stats_source.csv"
+    with aoi_csv.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["reference", "secondary", "median", "file"])
+        writer.writeheader()
+        writer.writerow({"reference": "20260702", "secondary": "20260714", "median": "-1.0", "file": asc})
+        writer.writerow({"reference": "20260702", "secondary": "20260714", "median": "2.0", "file": desc})
+
+    targets = read_target(target_log)
+    aoi = read_aoi(aoi_csv)
+    shared = set(targets) & set(aoi)
+    assert shared == {
+        ("20260702", "20260714", asc),
+        ("20260702", "20260714", desc),
+    }
+    assert targets[("20260702", "20260714", asc)][0] == -2.0
+    assert targets[("20260702", "20260714", desc)][0] == 3.0
+    assert aoi[("20260702", "20260714", asc)] == (-1.0, "A")
+    assert aoi[("20260702", "20260714", desc)] == (2.0, "D")
+
+
+def test_legacy_date_only_target_log_cannot_silently_join_to_wrong_track(tmp_path):
+    target_log = tmp_path / "legacy-target.log"
+    target_log.write_text(
+        "2026-07-02 -> 2026-07-14 : -2.00 mm (25 px, coh 0.80)\n",
+        encoding="utf-8",
+    )
+    targets = read_target(target_log)
+    key = ("20260702", "20260714", None)
+    assert key in targets
+    assert key[2] is None
