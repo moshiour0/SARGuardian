@@ -344,8 +344,12 @@ def decode_gunw_mask(mask: np.ndarray, *, apply_iono: bool = True) -> dict[str, 
     Anomaly and reserved bits remain conservatively excluded in either mode.
     """
     raw = np.asarray(mask)
-    if not np.issubdtype(raw.dtype, np.integer):
-        raise TypeError(f"GUNW mask must have integer dtype; got {raw.dtype}")
+    if raw.dtype not in (np.dtype("uint8"), np.dtype("uint32")):
+        raise TypeError(
+            "Unsupported GUNW mask dtype "
+            f"{raw.dtype}; validated schemas are uint8 (legacy decimal-digit mask) "
+            "and uint32 (packed P05023+ mask). Refusing to guess a new schema."
+        )
     m = raw.astype(np.uint64, copy=False)
     low = m & np.uint64(GUNW_MASK_LOW_BYTE)
     fill = m == 255
