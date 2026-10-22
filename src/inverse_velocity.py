@@ -171,6 +171,78 @@ def load_floor_catalogue(
     return global_floors, dict(scoped)
 
 
+
+_TRACK_RE = re.compile(r"\\b(ASC|DESC)\\b(?:\\s+PATH)?\\s+0*(\\d+)\\b", re.IGNORECASE)
+
+
+def normalize_track_id(value: str) -> str:
+    """Normalize a time-series track label and a stats-table track label.
+
+    The time-series output deliberately aggregates measurements at track/path
+    resolution (for example 'ASC path 98'), while GOFF stats retain each
+    frame/subswath/CRID. A track-only time series cannot safely claim one exact
+    granule identity. For this lower-resolution use case, select floors by
+    track + acquisition interval and take the maximum across source products.
+    """
+    match = _TRACK_RE.search(str(value or ""))
+    if not match:
+        raise ValueError(f"Could not identify ASC/DESC path in {value!r}.")
+    return f"{match.group(1).upper()} {int(match.group(2))}"
+
+
+def load_track_floor_catalogue(
+    path: Path, layer: str | None = None, processing: str | None = None
+) -> dict[str, dict[tuple[date, date], float]]:
+    """Load conservative per-pair floors at the time-series track resolution.
+
+    Rows are matched to the time series' actual identity resolution: track and
+    date pair. Multiple frames, subswaths, polarizations, or CRIDs may cover
+    the same track/pair; their maximum finite positive floor wins. This avoids
+    applying a floor from a different track and avoids picking a more
+    optimistic processing variant arbitrarily. It is not a substitute for
+    exact granule-scoped floors where the time-series input retains granule
+    identity.
+    """
+    scoped: dict[str, dict[tuple[date, date], float]] = defaultdict(dict)
+    seen_rows = 0
+    with open(path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            if layer and layer not in str(row.get("layer") or ""):
+                continue
+            if processing and str(row.get("processing") or "").strip().upper() != processing.upper():
+                continue
+            raw = row.get("detect_floor_mm_day")
+            try:
+                floor = float(raw)
+                a = datetime.strptime(str(row.get("reference", "")), "%Y%m%d").date()
+                b = datetime.strptime(str(row.get("secondary", "")), "%Y%m%d").date()
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(floor) or floor <= 0 or b <= a:
+                continue
+            track_value = row.get("track") or ""
+            if not track_value:
+                source = row.get("source_product") or row.get("file") or ""
+                sid = series_id_from_granule(source)
+                if sid:
+                    track_value = sid
+            try:
+                track_id = normalize_track_id(track_value)
+            except ValueError:
+                continue
+            key = (a, b)
+            pair_floors = scoped[track_id]
+            pair_floors[key] = max(floor, pair_floors.get(key, 0.0))
+            seen_rows += 1
+    result = {track: floors for track, floors in scoped.items() if floors}
+    if not result or seen_rows == 0:
+        raise ValueError(
+            f"No finite positive track-scoped floors could be read from {path} "
+            f"(layer={layer!r}, processing={processing!r})."
+        )
+    return result
+
+
 def load_floors(
     path: Path, layer: str | None = None, series_id: str | None = None
 ) -> dict[tuple[date, date], float]:
