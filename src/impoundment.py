@@ -520,8 +520,10 @@ def flow_accumulation(filled: np.ndarray, recv: np.ndarray) -> np.ndarray:
     """
     filled = np.asarray(filled, dtype=float)
     recv = np.asarray(recv, dtype=np.int64)
-    if filled.ndim != 2 or recv.shape != filled.shape:
-        raise ValueError("Filled DEM and receiver array must be matching 2-D grids.")
+    if filled.ndim != 2 or recv.size != filled.size or recv.ndim not in (1, 2):
+        raise ValueError("Filled DEM and receiver array must contain the same number of cells.")
+    if recv.ndim == 2 and recv.shape != filled.shape:
+        raise ValueError("A 2-D receiver array must match the filled DEM shape.")
     ny, nx = filled.shape
     flat_z = filled.ravel()
     flat_recv = recv.ravel()
