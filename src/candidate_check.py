@@ -121,6 +121,22 @@ def span_days(k) -> int:
     return (b - a).days
 
 
+def exceeds_single_fringe(local_displacement_mm: float,
+                          wavelength_m: float = WAVELENGTH_M) -> bool:
+    """Flag a per-pair differential displacement beyond lambda/4 for review.
+
+    This is an inspection trigger only. Phase unwrapping can recover integer
+    cycles, so crossing lambda/4 does not itself prove the product is wrong.
+    Never apply this displacement limit to an aggregated mm/day rate.
+    """
+    return (
+        math.isfinite(local_displacement_mm)
+        and math.isfinite(wavelength_m)
+        and wavelength_m > 0
+        and abs(local_displacement_mm) > wavelength_m * 1000.0 / 4.0
+    )
+
+
 MIN_SENS = 0.25            # below this a track is blind and the ratio is unstable
 RATIO_MARGIN = 0.15        # predictions closer than this cannot be told apart
 MIN_SLOPE_DEG = 10.0       # below this the aspect, and so the sensitivity, is noise
@@ -349,10 +365,13 @@ def main() -> int:
     print("  " + "-" * 68)
 
     groups: dict[tuple, list] = {}
+    high_differential_pairs = []
     for k in sorted(shared, key=lambda k: (aoi[k][1], k[0])):
         med, geom = aoi[k]
         val, px, coh = tgt[k]
         local = val - med
+        if exceeds_single_fringe(local):
+            high_differential_pairs.append((geom, k, local))
         season = "monsoon" if int(k[0][4:6]) in MONSOON else "dry"
         groups.setdefault((geom, season), []).append((k, local, px))
         flag = "" if px >= args.min_px else "  too few px"
@@ -375,9 +394,6 @@ def main() -> int:
 
     # ---- the four tests ---------------------------------------------------
     print(f"\n{'=' * 74}\nVERDICT\n{'=' * 74}")
-    ceiling = WAVELENGTH_M / 4 * 1000 / 12.0
-    fast = [f"{g} {s}" for (g, s), v in rates.items() if abs(v) > ceiling]
-
     dry = {g: v for (g, s), v in rates.items() if s == "dry"}
     mon = {g: v for (g, s), v in rates.items() if s == "monsoon"}
 
@@ -399,12 +415,14 @@ def main() -> int:
             print("  Check snow, precipitation, temperature, coherence, and independent")
             print("  displacement evidence before interpreting the pattern.")
 
-    if fast:
-        flags.append("phase_aliasing_risk")
-        print(f"\n  PHASE-ALIASING RISK in {', '.join(fast)}: the nominal rate exceeds lambda/4")
-        print(f"  per 12-day pair ({ceiling:.2f} mm/day). This warrants inspection of")
-        print("  unwrapping quality and spatial/temporal continuity; it does not prove")
-        print("  the unwrapped estimate is wrong by itself.")
+    if high_differential_pairs:
+        flags.append("high_differential_displacement_per_pair")
+        print("\n  HIGH DIFFERENTIAL DISPLACEMENT FLAG: these individual pair differences")
+        print(f"  exceed lambda/4 = {WAVELENGTH_M * 1000.0 / 4.0:.1f} mm and warrant review:")
+        for geom, key, local in high_differential_pairs:
+            print(f"    {geom} {key[0]}-{key[1]}: local target-minus-AOI = {local:+.1f} mm")
+        print("  This is not proof of failed unwrapping: spatial/temporal unwrapping can")
+        print("  recover cycles. Inspect per-pair phase, gradients, coherence and masks.")
 
     if flags:
         print(f"\n  SCREENING FLAGS (not automatic rejection): {', '.join(sorted(set(flags)))}")
