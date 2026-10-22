@@ -387,7 +387,6 @@ def main() -> int:
 
     radii = args.sweep or [args.radius]
     rows = []
-    eligible_targets = []
     for tid, lat, lon in targets:
         if not point_in_aoi(lon, lat, aoi_name):
             logger.error("TARGET_OUTSIDE_AOI id=%s lat=%.6f lon=%.6f AOI=%s; refusing to compute a local floor for this target",
@@ -396,7 +395,6 @@ def main() -> int:
                                     "TARGET_OUTSIDE_AOI")
                         for f in files for radius in radii)
             continue
-        eligible_targets.append((tid, lat, lon))
         target_rows = measure_target(files, tid, lat, lon, radii, args.band,
                                      aoi_name=aoi_name)
         rows.extend(target_rows)
@@ -481,9 +479,8 @@ def measure_target(files, tid, lat, lon, radii, band, *, aoi_name: str) -> list[
             span = span_from_name(f.name)
             if not np.isfinite(span) or span <= 0:
                 logger.warning("no date pair in %s, skipped", f.name)
-                for radius in radii:
-                    rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
-                                             "INVALID_DATE_SPAN"))
+                rows.append(skipped_row(f, tid, lat, lon, radius, aoi_name,
+                                         "INVALID_DATE_SPAN"))
                 continue
             with rasterio.open(f) as s:
                 arr = s.read(band).astype(float)
