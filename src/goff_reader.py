@@ -130,6 +130,11 @@ def read_goff(
     auto_ref: bool = True,
     deramp: bool = True,
 ) -> dict:
+    if deramp and not clip_aoi:
+        raise ValueError(
+            "GOFF deramping requires an AOI mask so the fit can exclude the signal AOI; "
+            "use clip_aoi=True or explicitly disable deramp."
+        )
     with h5py.File(path, "r") as f:
         datasets = walk(f)
         groups = layer_groups(datasets)
@@ -140,9 +145,18 @@ def read_goff(
             chosen = groups              # read all, pick later
         elif isinstance(layer, int) or str(layer).isdigit():
             want = f"layer{int(layer)}"
-            chosen = [g for g in groups if g.endswith("/" + want)] or groups[:1]
+            chosen = [g for g in groups if g.endswith("/" + want)]
+            if not chosen:
+                raise RuntimeError(
+                    f"Requested GOFF layer {want!r} not found; available groups: {groups}"
+                )
         else:
-            chosen = [g for g in groups if g.endswith("/" + str(layer))] or groups[:1]
+            want = str(layer)
+            chosen = [g for g in groups if g.endswith("/" + want)]
+            if not chosen:
+                raise RuntimeError(
+                    f"Requested GOFF layer {want!r} not found; available groups: {groups}"
+                )
 
         results = {}
         for grp in chosen:
@@ -155,9 +169,25 @@ def read_goff(
             corr = ds("correlationSurfacePeak")
             snr = ds("snr")
             rng_var = ds("slantRangeOffsetVariance")
-            if rng is None:
-                continue
-
+            required = {
+                "slantRangeOffset": rng, "alongTrackOffset": azi,
+                "correlationSurfacePeak": corr, "snr": snr,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise RuntimeError(
+                    f"{grp}: missing required GOFF measurement/quality layer(s): {missing}; "
+                    "refusing to create a product with silently skipped quality gates."
+                )
+            mismatched = [name for name, value in required.items()
+                          if value is not None and value.shape != rng.shape]
+            if mismatched:
+                raise RuntimeError(
+                    f"{grp}: GOFF measurement/quality layer shape mismatch against "
+                    f"slantRangeOffset {rng.shape}: {mismatched}"
+                )
+            if f"{grp}/xCoordinates" not in datasets or f"{grp}/yCoordinates" not in datasets:
+                raise RuntimeError(f"{grp}: AOI/grid coordinates are missing.")
             xs = np.asarray(f[f"{grp}/xCoordinates"][()], dtype=np.float64)
             ys = np.asarray(f[f"{grp}/yCoordinates"][()], dtype=np.float64)
             epsg = None
@@ -198,10 +228,22 @@ def read_goff(
 
         aoi_mask = None
         if clip_aoi:
+            if L["xs"] is None or L["ys"] is None:
+                raise RuntimeError(f"{L['group']}: AOI clipping requested but x/y coordinate vectors are missing.")
+            if L["epsg"] is None:
+                raise RuntimeError(f"{L['group']}: AOI clipping requested but projection/EPSG metadata is missing.")
+            if len(L["xs"]) != valid.shape[1] or len(L["ys"]) != valid.shape[0]:
+                raise RuntimeError(
+                    f"{L['group']}: coordinate lengths {(len(L['ys']), len(L['xs']))} "
+                    f"do not match offset raster shape {valid.shape}."
+                )
             aoi_mask = build_aoi_mask(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
-            if aoi_mask is not None:
-                valid &= aoi_mask
-                gates["inside AOI"] = int(valid.sum())
+            if aoi_mask.shape != valid.shape:
+                raise RuntimeError(
+                    f"{L['group']}: AOI mask shape {aoi_mask.shape} does not match offset raster shape {valid.shape}."
+                )
+            valid &= aoi_mask
+            gates["inside AOI"] = int(valid.sum())
 
         # Reference: offsets carry a bias from orbit and coregistration error,
         # exactly as unwrapped phase carries an arbitrary constant.
