@@ -195,14 +195,16 @@ SOURCE_RING = [
 
 AOIS = {"source": SOURCE_RING, "langtang": LANGTANG_RING, "lhende": LHENDE_RING}
 
+AOI_NAME = "langtang"
 AOI_RING = LANGTANG_RING          # module default; set_aoi() overrides
 
 
 def set_aoi(name: str) -> None:
-    """Switch the active AOI. Both readers import AOI_RING from here."""
-    global AOI_RING
+    """Switch the active AOI. Readers and exported rasters share this identity."""
+    global AOI_NAME, AOI_RING
     if name not in AOIS:
         raise SystemExit(f"Unknown AOI '{name}'. Choose from {sorted(AOIS)}")
+    AOI_NAME = name
     AOI_RING = AOIS[name]
 
 
@@ -292,15 +294,18 @@ def build_aoi_mask(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None) -> np
     Works directly when the grid is geographic. For a projected grid it needs
     pyproj to convert the ring into grid coordinates.
     """
+    if epsg is None:
+        raise ValueError("Cannot apply AOI polygon: the source grid has no EPSG/CRS metadata.")
     ring_xy = ring
-    if epsg and epsg != 4326:
+    if epsg != 4326:
         try:
             from pyproj import Transformer
             tf = Transformer.from_crs(4326, epsg, always_xy=True)
             ring_xy = [tf.transform(lon, lat) for lon, lat in ring]
-        except ImportError:
-            logger.warning("Grid is EPSG:%s and pyproj is missing - skipping AOI clip.", epsg)
-            return None
+        except ImportError as exc:
+            raise RuntimeError(
+                f"Cannot apply AOI polygon to EPSG:{epsg}: pyproj is required."
+            ) from exc
 
     xmin = min(p[0] for p in ring_xy); xmax = max(p[0] for p in ring_xy)
     ymin = min(p[1] for p in ring_xy); ymax = max(p[1] for p in ring_xy)
@@ -502,11 +507,23 @@ def read_gunw(
     quality_valid = valid.copy()
 
     aoi_mask = None
-    if clip_aoi and xs is not None and ys is not None:
-        aoi_mask = build_aoi_mask(xs, ys, globals()['AOI_RING'], epsg)
-        if aoi_mask is not None:
-            valid &= aoi_mask
-            gates["inside AOI"] = int(valid.sum())
+    if clip_aoi:
+        if xs is None or ys is None:
+            raise RuntimeError("AOI clipping requested but GUNW x/y coordinate vectors are missing.")
+        if epsg is None:
+            raise RuntimeError("AOI clipping requested but GUNW projection/EPSG metadata is missing.")
+        if len(xs) != valid.shape[1] or len(ys) != valid.shape[0]:
+            raise RuntimeError(
+                f"AOI clipping requested but coordinate lengths {(len(ys), len(xs))} "
+                f"do not match raster shape {valid.shape}."
+            )
+        aoi_mask = build_aoi_mask(xs, ys, AOI_RING, epsg)
+        if aoi_mask.shape != valid.shape:
+            raise RuntimeError(
+                f"AOI mask shape {aoi_mask.shape} does not match GUNW raster shape {valid.shape}."
+            )
+        valid &= aoi_mask
+        gates["inside AOI"] = int(valid.sum())
 
     # Automatic reference selection. Guessing a reference point does not work:
     # on this scene the three "obvious" choices had ZERO usable pixels because
@@ -675,7 +692,10 @@ def read_gunw(
         "coherence": coherence,
         "valid": valid,
         "xs": xs, "ys": ys, "epsg": epsg,
+        "aoi_name": AOI_NAME,
+        "aoi_mask_applied": bool(clip_aoi and aoi_mask is not None),
         "wavelength_m": wavelength,
+        "ionosphere_correction_applied": bool(iono is not None and apply_iono and iono.shape == phase.shape),
         # How many grid cells the AOI actually covers. Without this the only
         # denominator available is the full frame - 17.7 M pixels ascending,
         # 26.6 M descending - and "coverage over the source zone" then gets
@@ -858,6 +878,8 @@ def aoi_grid(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None,
     because the only ways forward from there are to resample - which invents
     values - or to stop. Stopping, loudly, is the better one.
     """
+    if epsg is None:
+        raise ValueError("Cannot place an AOI grid without source EPSG/CRS metadata.")
     if xs is None or ys is None or len(xs) < 2 or len(ys) < 2:
         return None
     res_x = abs(float(xs[1] - xs[0]))
@@ -993,10 +1015,17 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         dst.write(disp, 1); dst.set_band_description(1, "LOS displacement (mm)")
         if coh is not None:
             dst.write(coh, 2); dst.set_band_description(2, "coherence")
+        if not result.get("aoi_mask_applied", False):
+            raise RuntimeError("Refusing AOI-clipped GeoTIFF export: the source reader did not apply the AOI mask.")
         dst.update_tags(reference=result["reference_date"],
                         secondary=result["secondary_date"],
                         wavelength_m=str(result["wavelength_m"]),
-                        source=result["file"])
+                        aoi_name=str(result["aoi_name"]),
+                        aoi_mask_applied="true",
+                        source=result["file"],
+                        crid=crid_of(result["file"]),
+                        maturity=product_maturity(result["file"]),
+                        ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable")
     mb = target.stat().st_size / 1024 / 1024
     logger.info("Exported %s  %dx%d  %.2f MB", target.name, disp.shape[0], disp.shape[1], mb)
     return {"export_file": target.name, "export_mb": round(mb, 3),
@@ -1311,6 +1340,8 @@ def main() -> int:
                     help="write AOI-clipped GeoTIFFs (small enough to send back)")
     args = ap.parse_args()
 
+    if args.no_clip and args.export:
+        ap.error("--export requires AOI clipping; remove --no-clip or omit --export.")
     set_aoi(args.aoi)
 
     if args.inspect:
