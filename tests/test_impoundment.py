@@ -484,10 +484,11 @@ def test_elevation_grid_rejects_infinite_samples_but_keeps_nan_nodata():
 
 
 
-def test_analyse_runs_end_to_end_with_a_valid_rectangular_dem(capsys):
+def test_analyse_runs_end_to_end_with_a_valid_rectangular_dem(caplog):
     """A live DEM must pass grid validation, logging, routing, and ranking."""
     import impoundment
 
+    caplog.set_level("INFO", logger="impoundment")
     rows, cols = np.mgrid[0:7, 0:8]
     z = (rows * 3.0 + cols * 2.0).astype(float)
     lats = np.linspace(28.30, 28.24, z.shape[0])
@@ -496,8 +497,7 @@ def test_analyse_runs_end_to_end_with_a_valid_rectangular_dem(capsys):
         z, lats, lons, heights=[10, 25], min_accum_cells=1, top_n=3,
         min_separation_km=0.0, rank_by="efficiency",
     )
-    captured = capsys.readouterr()
-    assert "Grid 7 x 8" in captured.out or "Grid 7 x 8" in captured.err
+    assert any("Grid 7 x 8" in record.getMessage() for record in caplog.records)
     assert isinstance(result, list)
     assert result, "the sloping fixture should produce at least one candidate pool"
     for site in result:
