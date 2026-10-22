@@ -260,19 +260,18 @@ def geometry_test(lat, lon, dry: dict, problems: list) -> None:
         return
 
     if res["verdict"] == "motion":
-        print(f"\n  Consistent with DOWNSLOPE MOTION.")
+        print("\n  GEOMETRY RATIO IS CLOSER TO THE DOWNSLOPE-MOTION HYPOTHESIS.")
         print(f"  {res['reason']}")
-        print(f"  Implied downslope rate {res['implied_downslope_mm_day']:+.2f} mm/day.")
-        print("  This is necessary, not sufficient: it says the two geometries are")
-        print("  consistent with one moving surface, not that the surface moved.")
+        print(f"  Nominal implied downslope rate {res['implied_downslope_mm_day']:+.2f} mm/day.")
+        print("  This is descriptive, not conclusive: rate uncertainty/covariance is")
+        print("  not propagated, and a ratio match does not prove surface motion.")
     else:
-        problems.append("geometry")
-        print(f"\n  GEOMETRY SAYS PATH DELAY, NOT MOTION.")
+        print("\n  GEOMETRY RATIO IS CLOSER TO THE PATH-DELAY HYPOTHESIS.")
         print(f"  {res['reason']}")
-        print("  A path delay is not a vector. Atmosphere and snow add the same extra")
-        print("  path length whichever direction the radar looks from, so they arrive")
-        print("  with the same sign in both geometries. One downslope rate cannot,")
-        print("  where the sensitivities are opposed.")
+        print("  This comparison is not a statistically conclusive rejection: the")
+        print("  rate uncertainties/covariance are not supplied. Atmosphere and snow")
+        print("  can add geometry-independent path delay, but the ratio alone cannot")
+        print("  identify that cause uniquely.")
 
 
 def main() -> int:
@@ -385,11 +384,13 @@ def main() -> int:
         print("  unwrapper has guessed. Not a measurement.")
 
     if not problems:
-        print("\n  Survives every test available here. Still not a detection until an")
-        print("  independent measurement - field, GNSS, or a different sensor - agrees.")
+        print("\n  No hard rejection criterion fired. This is not a detection, and the")
+        print("  descriptive geometry ratio cannot confirm or reject motion by itself.")
+        print("  An independent measurement - field, GNSS, or a different sensor -")
+        print("  is still required.")
     else:
-        print(f"\n  NOT GROUND MOTION on this evidence. Record the location and the")
-        print("  reason; do not carry it forward as a detection.")
+        print(f"\n  REJECTED BY THE EXPLICIT TEST(S): {', '.join(problems)}.")
+        print("  Record the location and evidence; do not carry it forward as a detection.")
     return 0
 
 
