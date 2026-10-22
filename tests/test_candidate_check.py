@@ -130,7 +130,7 @@ def test_descriptive_delay_ratio_does_not_hard_reject_candidate(monkeypatch, cap
     out = capsys.readouterr().out
     assert "not a statistically conclusive rejection" in out
     assert "PATH-DELAY HYPOTHESIS" in out
-    assert problems == []
+    assert problems == ["geometry_ratio_closer_to_delay"]
 
 
 def test_target_and_aoi_rows_join_by_exact_granule_not_shared_dates(tmp_path):
