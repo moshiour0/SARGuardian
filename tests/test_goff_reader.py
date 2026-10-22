@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import h5py
 import numpy as np
 import pytest
 
-from goff_reader import mad_inlier_mask, robust_sigma
+from goff_reader import mad_inlier_mask, read_goff, robust_sigma
 
 
 def test_azimuth_only_outlier_is_rejected_without_borrowing_range_statistics():
@@ -66,3 +67,31 @@ def test_disabled_or_under_supported_culling_only_preserves_finite_base_pixels()
 def test_mad_outlier_mask_rejects_shape_mismatch():
     with pytest.raises(ValueError, match="identical shapes"):
         mad_inlier_mask(np.zeros((3, 3)), np.ones((3, 2), dtype=bool), 4.0)
+
+
+def _write_minimal_goff(path, *, missing_snr=False):
+    shape = (11, 11)
+    base = "science/LSAR/GOFF/grids/frequencyA/pixelOffsets/HH/layer2"
+    with h5py.File(path, "w") as h5:
+        h5.create_dataset(f"{base}/slantRangeOffset", data=np.zeros(shape))
+        h5.create_dataset(f"{base}/alongTrackOffset", data=np.zeros(shape))
+        h5.create_dataset(f"{base}/correlationSurfacePeak", data=np.ones(shape))
+        if not missing_snr:
+            h5.create_dataset(f"{base}/snr", data=np.ones(shape) * 5.0)
+        h5.create_dataset(f"{base}/xCoordinates", data=np.arange(shape[1]) + 500000.0)
+        h5.create_dataset(f"{base}/yCoordinates", data=np.arange(shape[0]) + 3200000.0)
+        projection = h5.create_dataset(f"{base}/projection", data=np.array([32645]))
+        projection.attrs["epsg_code"] = 32645
+    return path
+
+
+def test_read_goff_refuses_to_silently_skip_a_missing_quality_gate(tmp_path):
+    path = _write_minimal_goff(tmp_path / "missing_snr.h5", missing_snr=True)
+    with pytest.raises(RuntimeError, match="missing required GOFF measurement/quality"):
+        read_goff(path, layer="layer2", deramp=False)
+
+
+def test_read_goff_refuses_an_unknown_explicit_layer(tmp_path):
+    path = _write_minimal_goff(tmp_path / "layer2_only.h5")
+    with pytest.raises(RuntimeError, match="Requested GOFF layer 'layer3' not found"):
+        read_goff(path, layer="layer3", deramp=False)
