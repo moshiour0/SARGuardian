@@ -377,10 +377,36 @@ def dem_provenance(z, lats, lons, *, bbox, source: str,
     """
     _validate_elevation_grid(z, lats, lons, bbox)
     implementation = Path(__file__).resolve()
+    is_api_source = source == "OpenTopoData SRTM 30m"
+    latitude_posting_deg = float(np.median(-np.diff(np.asarray(lats, dtype=float))))
+    longitude_posting_deg = float(np.median(np.diff(np.asarray(lons, dtype=float))))
+    mean_latitude_deg = float(np.mean(np.asarray(lats, dtype=float)))
+    posting_ns_m = latitude_posting_deg * 110_574.0
+    posting_ew_m = longitude_posting_deg * 111_320.0 * math.cos(math.radians(mean_latitude_deg))
     data = {
-        "schema_version": 2,
+        # Bump the sidecar schema when the provenance contract adds source-vs-grid
+        # resolution semantics. This is intentionally separate from API_CACHE_SCHEMA.
+        "schema_version": 3,
         "source": source,
-        "endpoint": API_ENDPOINT if source == "OpenTopoData SRTM 30m" else None,
+        "endpoint": API_ENDPOINT if is_api_source else None,
+        "elevation_source": {
+            "name": source,
+            "nominal_resolution_m": 30.0 if is_api_source else None,
+            "access_method": "point_elevation_api_on_regular_analysis_grid" if is_api_source else "local_geotiff_pixel_centres",
+            "native_source_raster_grid_used_for_analysis": not is_api_source,
+            "resolution_note": (
+                "The elevation service is nominally SRTM 30 m, but this analysis requests "
+                "sparser point samples on a regular grid; the resulting analysis grid is not "
+                "a native 30 m raster."
+                if is_api_source else
+                "The local GeoTIFF pixel-centre grid is used after validating its CRS and affine."
+            ),
+        },
+        "analysis_grid_posting_approx_m": {
+            "east_west": float(posting_ew_m),
+            "north_south": float(posting_ns_m),
+            "note": "Approximate local metric postings derived from WGS84 coordinate axes; not a claim of source-data resolution.",
+        },
         "hydrology_model": {
             "algorithm_id": "priority-flood-d8-flat-routing-tree-connected-ponding-v2",
             "depression_filling": "priority-flood-for-routing-only",
@@ -400,8 +426,8 @@ def dem_provenance(z, lats, lons, *, bbox, source: str,
         "shape_rows_cols": list(np.asarray(z).shape),
         "latitude_north_south": [float(np.max(lats)), float(np.min(lats))],
         "longitude_west_east": [float(np.min(lons)), float(np.max(lons))],
-        "latitude_posting_deg": float(np.median(-np.diff(lats))),
-        "longitude_posting_deg": float(np.median(np.diff(lons))),
+        "latitude_posting_deg": latitude_posting_deg,
+        "longitude_posting_deg": longitude_posting_deg,
         "elevation_nodata_cells": int(np.count_nonzero(~np.isfinite(z))),
         "elevation_min_m": float(np.nanmin(z)),
         "elevation_max_m": float(np.nanmax(z)),
@@ -414,7 +440,10 @@ def dem_provenance(z, lats, lons, *, bbox, source: str,
         data["source_file"] = Path(source_file).name
         data["source_file_sha256"] = file_sha256(source_file)
     if cache_path is not None:
-        data["api_cache_file"] = str(cache_path)
+        # Absolute runner/temp paths are not portable evidence and differ between
+        # otherwise identical runs; identify the cache by basename only.
+        data["api_cache_file"] = Path(cache_path).name
+        data["api_cache_path_policy"] = "portable_basename_only"
     return data
 
 

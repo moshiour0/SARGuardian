@@ -379,7 +379,11 @@ def test_dem_provenance_identifies_local_input_without_claiming_api_source(tmp_p
                                 target_cells=z.size)
     assert provenance["endpoint"] is None
     assert provenance["source"] == "local GeoTIFF"
-    assert provenance["schema_version"] == 2
+    assert provenance["schema_version"] == 3
+    assert provenance["elevation_source"]["nominal_resolution_m"] is None
+    assert provenance["elevation_source"]["native_source_raster_grid_used_for_analysis"] is True
+    assert provenance["analysis_grid_posting_approx_m"]["east_west"] > 9_000
+    assert provenance["analysis_grid_posting_approx_m"]["north_south"] > 10_000
     assert len(provenance["grid_sha256"]) == 64
     assert len(provenance["implementation_sha256"]) == 64
     assert provenance["implementation_file"] == "impoundment.py"
@@ -588,3 +592,26 @@ def test_ponding_refuses_invalid_site_or_nonfinite_water_level():
     with pytest.raises(ValueError, match="Water level must be finite"):
         connected_flooded_upstream(0, elevation, children, float("nan"))
     assert connected_flooded_upstream(0, elevation, children, 100.0).size == 0
+
+
+
+def test_api_provenance_distinguishes_nominal_srtm_resolution_from_analysis_posting(tmp_path):
+    z = np.arange(12, dtype=float).reshape(3, 4)
+    lats = np.array([28.3, 28.2, 28.1])
+    lons = np.array([85.4, 85.5, 85.6, 85.7])
+    bbox = [85.4, 28.1, 85.7, 28.3]
+    runner_cache = tmp_path / "runner-temp" / "source_grid.npz"
+    provenance = dem_provenance(
+        z, lats, lons, bbox=bbox, source="OpenTopoData SRTM 30m",
+        target_cells=z.size, cache_path=runner_cache,
+    )
+
+    assert provenance["schema_version"] == 3
+    assert provenance["elevation_source"]["nominal_resolution_m"] == 30.0
+    assert provenance["elevation_source"]["native_source_raster_grid_used_for_analysis"] is False
+    assert "not a native 30 m raster" in provenance["elevation_source"]["resolution_note"]
+    assert provenance["analysis_grid_posting_approx_m"]["east_west"] > 9_000
+    assert provenance["analysis_grid_posting_approx_m"]["north_south"] > 10_000
+    assert provenance["api_cache_file"] == "source_grid.npz"
+    assert provenance["api_cache_path_policy"] == "portable_basename_only"
+    assert str(runner_cache) not in json.dumps(provenance)
