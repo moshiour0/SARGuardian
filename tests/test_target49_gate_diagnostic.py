@@ -41,10 +41,18 @@ def test_source_aoi_reports_target9_outside_without_relabeling_it_as_raw_no_data
     t9=result["targets"]["9"]; t4=result["targets"]["4"]
     assert t9["inside_grid_extent"] is True
     assert t9["inside_requested_aoi_polygon"] is False
+    assert t9["point_eligible_for_requested_aoi"] is False
     assert t9["window_cell_count"]==169
+    assert t9["has_finite_nonzero_phase_support"] is True
+    assert t9["has_connected_component_support"] is True
+    assert t9["has_current_reader_mask_support"] is True
+    assert t9["has_aoi_gated_support"] is False
     assert t9["cumulative_stage_counts"]["finite_nonzero_phase"]==169
     assert t9["cumulative_stage_counts"]["after_current_reader_mask_gate"]==168
     assert t9["cumulative_stage_counts"]["after_aoi"] < 168
+    assert "mask_numeric_layout_sampled_rows" in result
+    assert "mask_numeric_layout_exact" in result
+    assert not any(key.startswith(" ") for key in result)
     assert t4["inside_grid_extent"] is False
     assert any("TARGET_9_OUTSIDE_REQUESTED_AOI" in warning for warning in result["warnings"])
 
@@ -84,3 +92,37 @@ def test_uint32_product_mask_does_not_treat_bit24_as_decimal_water_code():
     assert uncorrected["current_reader_mask_gate"].tolist() == [[
         True, True, False, True, False, False, False, False, False, False
     ]]
+
+
+def test_exact_mask_bit_summary_comes_from_the_complete_global_histogram(tmp_path):
+    file = tmp_path / "uint32-mask_NISAR_L2_PR_GUNW.h5"
+    from pyproj import Transformer
+    from tools.target49_gate_diagnostic import TARGETS
+    # Put Target 4 at the centre of the grid so we can check both local support
+    # and the full-file histogram. The raster itself is deliberately tiny.
+    tf = Transformer.from_crs(4326, 32645, always_xy=True)
+    x0, y0 = tf.transform(TARGETS["4"]["lon"], TARGETS["4"]["lat"])
+    xs = x0 + (np.arange(13) - 6) * 80.0
+    ys = y0 + (6 - np.arange(13)) * 80.0
+    prefix = "science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram"
+    group = f"{prefix}/HH"
+    mask = np.full((13, 13), 11, dtype=np.uint32)
+    mask[6, 6] = 0x0100000C
+    mask[6, 7] = 0x0000010C
+    with h5py.File(file, "w") as h5:
+        h5.create_dataset(f"{group}/unwrappedPhase", data=np.ones((13, 13), np.float32))
+        h5.create_dataset(f"{group}/coherenceMagnitude", data=np.full((13, 13), 0.9, np.float32))
+        h5.create_dataset(f"{group}/connectedComponents", data=np.ones((13, 13), np.uint8))
+        h5.create_dataset(f"{prefix}/mask", data=mask)
+        h5.create_dataset(f"{prefix}/xCoordinates", data=xs)
+        h5.create_dataset(f"{prefix}/yCoordinates", data=ys)
+        p = h5.create_dataset(f"{prefix}/projection", data=np.array(32645, dtype=np.int32))
+        p.attrs["epsg_code"] = 32645
+    result = audit_gunw(file, aoi="source", radius=6, coh_min=0.3)
+    exact = result["mask_numeric_layout_exact"]
+    assert exact["coverage"].startswith("exact;")
+    assert exact["dtype"] == "uint32"
+    assert exact["bit_set_counts_lsb0"]["24"] == 1
+    assert exact["bit_set_counts_lsb0"]["8"] == 1
+    assert exact["low_byte_histogram_decimal"]["12"] == 2
+    assert result["targets"]["4"]["has_current_reader_mask_support"] is True
