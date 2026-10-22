@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/impoundment-semantic-audit"
-          mkdir -p "$OUT/dem" "$OUT/baseline" "$OUT/generated" "$OUT/comparison" "$OUT/logs"
+          mkdir -p "$OUT/dem" "$OUT/baseline" "$OUT/generated" "$OUT/generated_repeat" "$OUT/comparison" "$OUT/logs"
           echo "Live-source reproducibility experiment; semantic differences are REVIEW_REQUIRED, never auto-accepted." | tee "$OUT/README.txt"
 
           for AOI in source langtang lhende blatten; do
@@ -72,6 +72,29 @@ jobs:
               --json "$OUT/comparison/${AOI}.json" \
               --csv "$OUT/comparison/${AOI}.csv" \
               2>&1 | tee -a "$OUT/logs/${AOI}.log"
+
+            # Re-run from the exact cached elevation samples and same parameters.
+            # This is a repeatability check, separate from semantic baseline parity.
+            python src/impoundment.py \
+              --api --aoi "$AOI" --cells 12000 \
+              --heights 10 25 50 100 150 --rank-by efficiency \
+              --api-cache "$OUT/dem/${AOI}_srtm30m.npz" \
+              --geojson "$OUT/generated_repeat/dam_sites_${AOI}.geojson" \
+              2>&1 | tee "$OUT/logs/${AOI}_repeat.log"
+
+            if ! cmp -s "$OUT/generated/dam_sites_${AOI}.geojson" "$OUT/generated_repeat/dam_sites_${AOI}.geojson"; then
+              echo "::error::NONDETERMINISTIC_GEOJSON_OUTPUT for AOI=$AOI with fixed DEM grid and parameters"
+              diff -u "$OUT/generated/dam_sites_${AOI}.geojson" "$OUT/generated_repeat/dam_sites_${AOI}.geojson" \
+                > "$OUT/logs/${AOI}_geojson_determinism.diff" || true
+              exit 1
+            fi
+            if ! cmp -s "$OUT/generated/dam_sites_${AOI}.geojson.provenance.json" "$OUT/generated_repeat/dam_sites_${AOI}.geojson.provenance.json"; then
+              echo "::error::NONDETERMINISTIC_PROVENANCE for AOI=$AOI with fixed DEM grid and parameters"
+              diff -u "$OUT/generated/dam_sites_${AOI}.geojson.provenance.json" "$OUT/generated_repeat/dam_sites_${AOI}.geojson.provenance.json" \
+                > "$OUT/logs/${AOI}_provenance_determinism.diff" || true
+              exit 1
+            fi
+            echo "DETERMINISTIC_OUTPUTS=PASS AOI=$AOI" | tee -a "$OUT/logs/${AOI}.log"
 
             test -s "$OUT/dem/${AOI}_srtm30m.npz"
             test -s "$OUT/generated/dam_sites_${AOI}.geojson"
@@ -107,7 +130,9 @@ jobs:
                         f"- Coordinate-rounding-only semantic matches: {rounded}",
                         f"- AOIs with substantive differences requiring review: {review}",
                         f"- Aggregate status: {aggregate}",
-                        "- No generated output is automatically accepted or committed.", "",
+                        "- No generated output is automatically accepted or committed.",
+                        "- Each AOI was regenerated twice from the same saved DEM grid and parameters; the per-AOI log records byte-identical GeoJSON and provenance checks.",
+                        "- Algorithm and source-file SHA-256 are recorded in each result provenance sidecar.", "",
                         "| AOI | Baseline/candidate sites | Exact coord matches | Rounding-tolerant pairs | Unmatched baseline/candidate | H=10 result baseline/candidate | H=10 truncated baseline/candidate | Nearest remaining baseline→candidate median/max (m) | Status |",
                         "|---|---:|---:|---:|---:|---:|---:|---:|---|"]
               for item in values:
