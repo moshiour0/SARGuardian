@@ -185,6 +185,20 @@ def classify_geometry(sens_asc: float, sens_desc: float,
            "reason": None, "conclusive": False,
            "conclusiveness_limit": "Track-rate uncertainties/covariance are not supplied; ratio-distance classification is descriptive only."}
 
+    try:
+        finite_inputs = all(math.isfinite(float(value)) for value in
+                            (sens_asc, sens_desc, v_asc, v_desc))
+    except (TypeError, ValueError, OverflowError):
+        finite_inputs = False
+    if not finite_inputs:
+        out["verdict"] = "undetermined"
+        out["reason"] = "one or more sensitivities or measured rates are non-numeric or non-finite."
+        return out
+    if slope_deg is not None and not math.isfinite(float(slope_deg)):
+        out["verdict"] = "undetermined"
+        out["reason"] = "slope is non-finite, so terrain sensitivity cannot be interpreted."
+        return out
+
     # Sensitivity is a projection onto the downslope direction, and that
     # direction comes from the DEM aspect. On gentle ground the aspect is
     # whichever way the DEM noise happens to tilt, so the sensitivity inherits
@@ -210,6 +224,10 @@ def classify_geometry(sens_asc: float, sens_desc: float,
         return out
 
     ratio_motion = sens_desc / sens_asc
+    if not math.isfinite(ratio_motion):
+        out["verdict"] = "undetermined"
+        out["reason"] = "the geometry-predicted ratio is non-finite."
+        return out
     out["ratio_motion"] = ratio_motion
 
     # If the geometry happens to predict a motion ratio near +1, the two
@@ -229,6 +247,10 @@ def classify_geometry(sens_asc: float, sens_desc: float,
         return out
 
     ratio = v_desc / v_asc
+    if not math.isfinite(ratio):
+        out["verdict"] = "undetermined"
+        out["reason"] = "the measured rate ratio is non-finite."
+        return out
     out["ratio_measured"] = ratio
     d_motion = abs(ratio - ratio_motion)
     d_delay = abs(ratio - 1.0)
