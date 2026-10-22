@@ -88,17 +88,34 @@ def load(name: str) -> list[dict]:
         return list(csv.DictReader(fh))
 
 
-def worst(rows: list[dict], key: str) -> float:
-    """Largest finite value only; NaN/Inf must never become a reported bound."""
+def worst(rows: list[dict], key: str, *, positive_only: bool = False) -> float:
+    """Largest eligible finite value; NaN/Inf must never become a reported bound.
+
+    A detection floor is a strictly positive noise estimate. Zero is not a
+    scientifically valid "perfect instrument" floor; negative floors are
+    invalid too. Set positive_only for any quantity used as a noise floor.
+    """
     vals = []
     for row in rows:
         try:
             value = float(row.get(key, "nan"))
         except (TypeError, ValueError, OverflowError):
             continue
-        if math.isfinite(value):
+        if math.isfinite(value) and (not positive_only or value > 0):
             vals.append(value)
     return max(vals) if vals else float("nan")
+
+
+def eligible_floor_row(row: dict, floor_key: str) -> bool:
+    """Require sample support and a finite positive floor; ignore stale usable flags."""
+    if str(row.get("usable", "")).strip().lower() not in {"true", "1", "yes"}:
+        return False
+    try:
+        n = int(float(row.get("window_px", "nan")))
+        floor = float(row.get(floor_key, "nan"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return n >= 6 and math.isfinite(floor) and floor > 0
 
 
 def eligible_source_candidates(rows: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -132,9 +149,18 @@ def assess(cand: dict, goff: list[dict], phase: list[dict], cref: list[dict]) ->
     if not math.isfinite(sens):
         sens = float("nan")
 
-    g = [r for r in goff if r["target_id"] == cid and r["usable"] == "True"
-         and r["file"][5:13] in ASC_REFS and covers_pre_event(r["file"])]
-    p = [r for r in phase if r["target_id"] == cid and r["usable"] == "True"]
+    g = [
+        r for r in goff
+        if str(r.get("target_id")) == cid
+        and eligible_floor_row(r, "local_floor_mm_day")
+        and str(r.get("file", ""))[5:13] in ASC_REFS
+        and covers_pre_event(str(r.get("file", "")))
+    ]
+    p = [
+        r for r in phase
+        if str(r.get("target_id")) == cid
+        and eligible_floor_row(r, "local_floor_mm_day")
+    ]
     c = []
     for row in cref:
         if str(row.get("target_id")) != cid:
@@ -147,8 +173,8 @@ def assess(cand: dict, goff: list[dict], phase: list[dict], cref: list[dict]) ->
         if window_px >= 6 and math.isfinite(common_velocity):
             c.append(row)
 
-    px = worst(g, "local_floor_mm_day")
-    blk = worst(g, "block_median_floor_mm_day")
+    px = worst(g, "local_floor_mm_day", positive_only=True)
+    blk = worst(g, "block_median_floor_mm_day", positive_only=True)
     common_velocities = []
     for row in c:
         try:
@@ -174,8 +200,9 @@ def assess(cand: dict, goff: list[dict], phase: list[dict], cref: list[dict]) ->
         "ratio_los_block": round(blk / PRECURSOR_MM_DAY, 1) if g else float("nan"),
         "max_speed_common_datum_mm_day": round(v_common, 2),
         "phase_pairs": len(p),
-        "phase_floor_pixel_mm_day": round(worst(p, "local_floor_mm_day"), 2),
-        "phase_floor_block_mm_day": round(worst(p, "block_median_floor_mm_day"), 2),
+        "phase_floor_pixel_mm_day": round(worst(p, "local_floor_mm_day", positive_only=True), 2),
+        "phase_floor_block_mm_day": round(worst(p, "block_median_floor_mm_day", positive_only=True), 2),
+        "precursor_rate_assumption": "10 mm/month interpreted as LOS; source reports do not specify direction",
     }
 
 
