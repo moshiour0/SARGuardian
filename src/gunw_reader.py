@@ -820,6 +820,8 @@ def report(result: dict) -> dict:
 
 
 def write_geotiff(result: dict, out: Path) -> None:
+    if result.get("epsg") is None:
+        raise RuntimeError("Refusing GeoTIFF export: source GUNW projection/EPSG metadata is missing.")
     try:
         import rasterio
         from rasterio.transform import from_origin
@@ -952,6 +954,10 @@ def export_clipped(result: dict, outdir: Path) -> dict:
     the clip rather than the frame is a ~1000x reduction and loses nothing that
     the analysis uses. Bands: displacement (mm) and coherence.
     """
+    if not result.get("aoi_mask_applied", False):
+        raise RuntimeError("Refusing AOI-clipped GeoTIFF export: the source reader did not apply the AOI mask.")
+    if result.get("epsg") is None:
+        raise RuntimeError("Refusing AOI-clipped GeoTIFF export: source GUNW CRS/EPSG metadata is missing.")
     try:
         import rasterio
         from rasterio.transform import from_origin
@@ -1015,8 +1021,6 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         dst.write(disp, 1); dst.set_band_description(1, "LOS displacement (mm)")
         if coh is not None:
             dst.write(coh, 2); dst.set_band_description(2, "coherence")
-        if not result.get("aoi_mask_applied", False):
-            raise RuntimeError("Refusing AOI-clipped GeoTIFF export: the source reader did not apply the AOI mask.")
         dst.update_tags(reference=result["reference_date"],
                         secondary=result["secondary_date"],
                         wavelength_m=str(result["wavelength_m"]),
