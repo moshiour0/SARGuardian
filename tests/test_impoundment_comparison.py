@@ -50,6 +50,10 @@ def test_exactly_equal_geojson_is_reported_as_semantic_match(tmp_path):
     assert summary["exact_coordinate_matches"] == 2
     assert summary["response_counts_by_threshold_height_m"]["baseline"]["10"] == 1
     assert summary["response_counts_by_threshold_height_m"]["candidate"]["10"] == 1
+    assert summary["scenario_coverage_counts_by_height_m"] == summary["response_counts_by_threshold_height_m"]
+    assert summary["scenario_count_scope"]["not_a_census"] is True
+    assert summary["scenario_count_scope"]["denominator"] == "number of Feature records in the supplied GeoJSON"
+    assert "Different ranking/NMS policies" in summary["scenario_count_scope"]["warning"]
     assert changes == []
 
 
@@ -220,3 +224,20 @@ def test_cli_csv_keeps_nearest_neighbour_review_columns(tmp_path, monkeypatch):
     summary = json.loads(out_json.read_text(encoding="utf-8"))
     assert summary["status"] == "REVIEW_REQUIRED"
     assert summary["exact_coordinate_matches"] == 0
+
+
+def test_scenario_coverage_counts_are_explicitly_limited_to_returned_ranked_features(tmp_path):
+    baseline = _write(tmp_path / "baseline.geojson", [
+        _feature(85.5, 28.3, threshold=10),
+        _feature(85.51, 28.31, threshold=25),
+    ])
+    candidate = _write(tmp_path / "candidate.geojson", [
+        _feature(85.5, 28.3, threshold=10),
+        _feature(85.51, 28.31, threshold=25),
+    ])
+    summary, _ = compare_geojson(baseline, candidate)
+    assert summary["scenario_coverage_counts_by_height_m"]["baseline"]["10"] == 1
+    scope = summary["scenario_count_scope"]
+    assert scope["population"] == "ranked and spatially suppressed output sites only"
+    assert scope["not_a_census"] is True
+    assert "not an AOI-wide site census" in scope["warning"]
