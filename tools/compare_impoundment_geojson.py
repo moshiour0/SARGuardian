@@ -75,18 +75,46 @@ def _values_equal(a: Any, b: Any, tolerance: float) -> bool:
 
 
 def response_counts(rows: list[dict[str, Any]], heights: list[float]) -> dict[str, int]:
-    counts = {}
+    """Count sites with a complete by_height result at each requested height.
+
+    The top-level threshold_height_m field is a current-output eligibility or
+    ranking property and is absent from historical GeoJSONs. It is not a stable
+    cross-version schema. Count a site only when its by_height map contains the
+    requested numeric key and finite volume, area and backwater values.
+    """
+    counts: dict[str, int] = {}
+    required_fields = ("volume_Mm3", "area_km2", "backwater_km")
     for height in heights:
         key = f"{height:g}"
         count = 0
         for row in rows:
-            props = row["properties"]
-            threshold = props.get("threshold_height_m")
-            try:
-                threshold = float(threshold)
-            except (TypeError, ValueError, OverflowError):
+            by_height = row["properties"].get("by_height")
+            if not isinstance(by_height, dict):
                 continue
-            if math.isfinite(threshold) and threshold <= height:
+            result = None
+            for raw_key, candidate in by_height.items():
+                try:
+                    parsed_height = float(raw_key)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(parsed_height) and math.isclose(
+                    parsed_height, height, rel_tol=0.0, abs_tol=1e-9
+                ):
+                    result = candidate
+                    break
+            if not isinstance(result, dict):
+                continue
+            complete = True
+            for field in required_fields:
+                try:
+                    value = float(result[field])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    complete = False
+                    break
+                if not math.isfinite(value):
+                    complete = False
+                    break
+            if complete:
                 count += 1
         counts[key] = count
     return counts
@@ -141,6 +169,12 @@ def compare_geojson(baseline_path: Path, candidate_path: Path, *,
             "baseline": response_counts(baseline, heights),
             "candidate": response_counts(candidate, heights),
         },
+        "response_count_definition": (
+            "Count a site only when by_height contains the requested numeric height "
+            "and a complete finite volume_Mm3/area_km2/backwater_km result. The "
+            "top-level threshold_height_m property is not used because it is not "
+            "present in historical GeoJSONs."
+        ),
         "comparison_tolerance": tolerance,
         "identity_rule": "Only exact WGS84 coordinate pairs are treated as the same site; nearest neighbours are never paired as if identical.",
         "interpretation": "A semantic match is a regression check, not geophysical validation. A difference is flagged for review and does not by itself identify which result is scientifically correct.",
