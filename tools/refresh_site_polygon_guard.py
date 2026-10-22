@@ -152,34 +152,82 @@ def refresh(data: dict, template: str, *, scenes_cache: Path) -> tuple[dict, str
     return data, html
 
 
+def validate_current(site_path: Path, template_path: Path, html_path: Path) -> dict:
+    data = json.loads(site_path.read_text(encoding="utf-8"))
+    grid = data.get("meta", {}).get("grid", {})
+    if grid.get("aoi_geometry") != AOI_VERSION:
+        raise ValueError("site_data.json is not refreshed to the exact source polygon.")
+    projected, affine = polygon_and_affine()
+    if grid.get("affine_utm") != affine or grid.get("aoi_polygon_projected") != projected:
+        raise ValueError("site_data.json projected polygon/affine metadata does not match the source geometry.")
+    image_bytes = base64.b64decode(data["change_png"], validate=True)
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    exact_aoi = np.asarray(source_aoi_mask(), dtype=bool)
+    if rgb.shape[:2] != exact_aoi.shape:
+        raise ValueError("Site PNG and source polygon mask dimensions differ.")
+    if np.any(rgb[:, :, 2][~exact_aoi] > 128):
+        raise ValueError("Site change PNG still marks pixels outside SOURCE_RING as usable.")
+    if int(grid.get("aoi_px", -1)) != int(exact_aoi.sum()):
+        raise ValueError("Site AOI pixel denominator does not match SOURCE_RING.")
+    usable = int(np.count_nonzero((rgb[:, :, 2] > 128) & exact_aoi))
+    if int(grid.get("usable_px", -1)) != usable:
+        raise ValueError("Site usable pixel count does not match the polygon-masked PNG.")
+    expect_pct = round(100.0 * usable / int(exact_aoi.sum()), 1)
+    if float(grid.get("usable_pct", -1)) != expect_pct:
+        raise ValueError("Site usable percentage does not use the exact polygon denominator.")
+    for row in data.get("clusters", []):
+        if not point_in_aoi(float(row["lon"]), float(row["lat"]), "source"):
+            raise ValueError(f"Out-of-AOI candidate {row.get('id')} remains in site cluster table.")
+    for row in data.get("bound", {}).get("candidates", []):
+        if not point_in_aoi(float(row["lon"]), float(row["lat"]), "source"):
+            raise ValueError(f"Out-of-AOI candidate {row.get('id')} remains in site bound table.")
+    if sum(row.get("reading") == "DETACHMENT-like" for row in data.get("clusters", [])) < 2:
+        raise ValueError("Site bundle no longer supports multiple detachment-like candidates.")
+    payload = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    if "</script" in payload.lower():
+        raise ValueError("Site payload contains a closing script tag.")
+    expected_html = template_path.read_text(encoding="utf-8").replace("{{DATA}}", payload)
+    if html_path.read_text(encoding="utf-8") != expected_html:
+        raise ValueError("index.html is not generated from current site_data.json and template.")
+    return data
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--site-data", type=Path, default=ROOT / "docs/site/site_data.json")
     parser.add_argument("--template", type=Path, default=ROOT / "docs/site/index.tpl.html")
     parser.add_argument("--html", type=Path, default=ROOT / "docs/site/index.html")
     parser.add_argument("--scenes-cache", type=Path, default=ROOT / "docs/site/_scenes_polygon_v2.json")
-    parser.add_argument("--check", action="store_true", help="validate only; do not rewrite files")
+    parser.add_argument("--check", action="store_true", help="validate existing polygon-aware bundle without network calls")
     args = parser.parse_args()
 
-    old_data = json.loads(args.site_data.read_text(encoding="utf-8"))
     template = args.template.read_text(encoding="utf-8")
-    refreshed, html = refresh(old_data, template, scenes_cache=args.scenes_cache)
     if args.check:
-        current = json.loads(args.site_data.read_text(encoding="utf-8"))
-        if current.get("meta", {}).get("grid", {}).get("aoi_geometry") != AOI_VERSION:
-            raise SystemExit("site_data.json is not refreshed to the exact source polygon.")
-        if args.html.read_text(encoding="utf-8") != html:
-            raise SystemExit("index.html is not generated from current site_data.json and template.")
-        print("SITE_POLYGON_BUNDLE=PASS")
+        data = validate_current(args.site_data, args.template, args.html)
+        print(
+            "SITE_POLYGON_BUNDLE=PASS "
+            f"clusters={len(data['clusters'])} bounds={len(data['bound']['candidates'])} "
+            f"grid_usable={data['meta']['grid']['usable_px']}/{data['meta']['grid']['aoi_px']}"
+        )
         return 0
 
+    old_data = json.loads(args.site_data.read_text(encoding="utf-8"))
+    refreshed, html = refresh(old_data, template, scenes_cache=args.scenes_cache)
+    # Validate the in-memory output before writing either file.
+    temp_payload = json.dumps(refreshed, separators=(",", ":"), ensure_ascii=False)
+    if "</script" in temp_payload.lower():
+        raise ValueError("Updated site payload contains a closing script tag.")
+    if html != args.template.read_text(encoding="utf-8").replace("{{DATA}}", temp_payload):
+        raise ValueError("Generated HTML does not embed the exact generated JSON.")
+
     # Write atomically so an interruption cannot leave mismatched HTML/JSON.
-    for path, value in ((args.site_data, json.dumps(refreshed, separators=(",", ":"), ensure_ascii=False)),
-                        (args.html, html)):
+    for path, value in ((args.site_data, temp_payload), (args.html, html)):
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(path.suffix + ".tmp")
         temp.write_text(value, encoding="utf-8")
         temp.replace(path)
+    validate_current(args.site_data, args.template, args.html)
     print(
         "SITE_POLYGON_BUNDLE=REFRESHED "
         f"clusters={len(refreshed['clusters'])} "
