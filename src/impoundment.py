@@ -61,6 +61,7 @@ import logging
 import math
 import sys
 import time
+from collections import deque
 import urllib.parse
 from datetime import datetime, timezone
 import urllib.request
@@ -432,7 +433,15 @@ def fill_depressions(z: np.ndarray) -> np.ndarray:
 
 
 def d8_receivers(filled: np.ndarray, dx: float, dy: float) -> np.ndarray:
-    """Index of the steepest-descent neighbour for each cell (-1 if none)."""
+    """D8 receiver indices, including acyclic routing across filled DEM flats.
+
+    First assign the steepest strictly downhill neighbour. Priority-flood
+    filling creates equal-height plateaus; leaving those cells with receiver
+    -1 turns them into artificial sinks. Resolve equal-height cells with a
+    multi-source shortest-path search seeded at existing downhill receivers
+    and the raster boundary. Each flat receiver points to a cell with strictly
+    smaller distance-to-outlet, which makes the flat routing acyclic.
+    """
     filled = np.asarray(filled, dtype=float)
     if filled.ndim != 2 or min(filled.shape) < 2:
         raise ValueError("Filled DEM must be a 2-D grid with at least two rows and columns.")
@@ -445,31 +454,113 @@ def d8_receivers(filled: np.ndarray, dx: float, dy: float) -> np.ndarray:
             if not np.isfinite(filled[i, j]):
                 continue
             best, best_idx = 0.0, -1
-            for di, dj, dist in NB:
+            for di, dj, _ in NB:
                 ni, nj = i + di, j + dj
                 if not (0 <= ni < ny and 0 <= nj < nx) or not np.isfinite(filled[ni, nj]):
                     continue
                 # Exact map-plane distance for rectangular geographic postings.
-                # sqrt(2) * mean(dx, dy) is only exact for square cells and can
-                # reverse the steepest-neighbour choice when dx != dy.
                 length = math.hypot(dj * dx, di * dy)
                 slope = (filled[i, j] - filled[ni, nj]) / length
                 if slope > best:
                     best, best_idx = slope, ni * nx + nj
             recv[i * nx + j] = best_idx
+
+    # A filled depression/flat has no local downhill direction. Seed the
+    # equal-height routing graph with cells that already drain downhill and
+    # all valid cells on the raster edge (off-grid drainage is an outlet).
+    flat_distance = np.full(ny * nx, np.inf, dtype=float)
+    flat_parent = np.full(ny * nx, -1, dtype=np.int64)
+    queue: list[tuple[float, int]] = []
+    for i in range(ny):
+        for j in range(nx):
+            if not np.isfinite(filled[i, j]):
+                continue
+            idx = i * nx + j
+            is_edge = i == 0 or j == 0 or i == ny - 1 or j == nx - 1
+            if recv[idx] >= 0 or is_edge:
+                flat_distance[idx] = 0.0
+                heapq.heappush(queue, (0.0, idx))
+
+    while queue:
+        distance, idx = heapq.heappop(queue)
+        if distance > flat_distance[idx] + 1e-9:
+            continue
+        i, j = divmod(idx, nx)
+        for di, dj, _ in NB:
+            ni, nj = i + di, j + dj
+            if not (0 <= ni < ny and 0 <= nj < nx):
+                continue
+            nidx = ni * nx + nj
+            if not np.isfinite(filled[ni, nj]):
+                continue
+            # Flat routing only crosses equal elevations. Strictly descending
+            # edges were already resolved above and stay authoritative.
+            if not math.isclose(float(filled[i, j]), float(filled[ni, nj]),
+                                rel_tol=0.0, abs_tol=1e-9):
+                continue
+            length = math.hypot(dj * dx, di * dy)
+            candidate_distance = distance + length
+            if candidate_distance + 1e-9 < flat_distance[nidx]:
+                flat_distance[nidx] = candidate_distance
+                flat_parent[nidx] = idx
+                heapq.heappush(queue, (candidate_distance, nidx))
+
+    flat_cells = np.isfinite(filled.ravel()) & (recv < 0)
+    routable_flat_cells = flat_cells & (flat_parent >= 0)
+    recv[routable_flat_cells] = flat_parent[routable_flat_cells]
     return recv
 
 
 def flow_accumulation(filled: np.ndarray, recv: np.ndarray) -> np.ndarray:
-    """Number of upstream cells draining through each cell (including itself)."""
+    """Accumulate upstream cells in topological order, including each cell itself.
+
+    Elevation sorting is not a topological ordering when multiple cells share
+    a filled elevation. Build graph indegrees instead; refuse to publish
+    accumulation if any receiver cycle or invalid edge is present.
+    """
+    filled = np.asarray(filled, dtype=float)
+    recv = np.asarray(recv, dtype=np.int64)
+    if filled.ndim != 2 or recv.shape != filled.shape:
+        raise ValueError("Filled DEM and receiver array must be matching 2-D grids.")
     ny, nx = filled.shape
-    acc = np.ones(ny * nx, dtype=np.float64)
-    acc[~np.isfinite(filled).ravel()] = 0.0
-    order = np.argsort(-np.nan_to_num(filled.ravel(), nan=-np.inf))
-    for idx in order:
-        r = recv[idx]
-        if r >= 0:
-            acc[r] += acc[idx]
+    flat_z = filled.ravel()
+    flat_recv = recv.ravel()
+    valid = np.isfinite(flat_z)
+    n_valid = int(valid.sum())
+    acc = np.zeros(ny * nx, dtype=np.float64)
+    acc[valid] = 1.0
+    indegree = np.zeros(ny * nx, dtype=np.int64)
+
+    for idx in np.flatnonzero(valid):
+        target = int(flat_recv[idx])
+        if target < -1 or target >= ny * nx:
+            raise ValueError(f"Receiver index {target} is invalid for cell {idx}.")
+        if target < 0:
+            continue
+        if not valid[target]:
+            raise ValueError(f"Valid cell {idx} points into a nodata cell {target}.")
+        indegree[target] += 1
+
+    # Kahn's algorithm: sources first, accumulating only after all upstream
+    # predecessors have been processed.
+    queue = deque(int(idx) for idx in np.flatnonzero(valid & (indegree == 0)))
+    processed = 0
+    while queue:
+        idx = queue.popleft()
+        processed += 1
+        target = int(flat_recv[idx])
+        if target >= 0:
+            acc[target] += acc[idx]
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                queue.append(target)
+
+    if processed != n_valid:
+        cyclic = np.flatnonzero(valid & (indegree > 0))
+        raise ValueError(
+            "Receiver graph contains a cycle; refusing hydrologic accumulation "
+            f"({processed}/{n_valid} cells processed, {len(cyclic)} remain cyclic)."
+        )
     return acc.reshape(ny, nx)
 
 
