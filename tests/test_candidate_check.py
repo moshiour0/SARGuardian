@@ -22,7 +22,7 @@ guard the two ways the test can be honest about not knowing.
 
 from __future__ import annotations
 
-from candidate_check import classify_geometry
+from candidate_check import classify_geometry, geometry_test
 
 
 # The measured Langtang candidate: 28.27484 N, 85.47405 E.
@@ -111,3 +111,22 @@ def test_ratio_nearest_prediction_is_never_called_conclusive_without_uncertainti
     assert r["verdict"] == "motion"
     assert r["conclusive"] is False
     assert "not supplied" in r["conclusiveness_limit"]
+
+
+def test_descriptive_delay_ratio_does_not_hard_reject_candidate(monkeypatch, capsys):
+    import geometry_merge
+
+    monkeypatch.setattr(geometry_merge, "slope_aspect", lambda lat, lon: (38.0, 351.0, 5370.0))
+    monkeypatch.setattr(
+        geometry_merge, "sensitivities",
+        lambda lat, lon, slope, aspect, minimum: [
+            {"track": "NISAR ASC 98", "ascending": True, "sensitivity": -0.732},
+            {"track": "NISAR DESC 48", "ascending": False, "sensitivity": 0.472},
+        ],
+    )
+    problems = []
+    geometry_test(28.27799, 85.52983, {"A": -3.49, "D": -1.47}, problems)
+    out = capsys.readouterr().out
+    assert "descriptive only" in out
+    assert "PATH-DELAY HYPOTHESIS" in out
+    assert problems == []
