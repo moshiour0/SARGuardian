@@ -116,12 +116,39 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _identity_for_path(path: Path) -> dict | None:
+    """Parse product/date identity from a basename without requiring file bytes.
+
+    Path classification is also used before a destination file exists, so it
+    must not call parse(), whose manifest fields intentionally include stat()
+    size. Keep this helper limited to the identity needed for bucket checks.
+    """
+    match = NAME.match(path.name)
+    if not match:
+        return None
+    fields = match.groupdict()
+    if fields["proc"] not in {"PR", "UR"} or fields["product"] not in {"GUNW", "GOFF"}:
+        return None
+    stamps = re.findall(r"_(\\d{8})T\\d{6}", path.name)
+    if len(stamps) < 4:
+        return None
+    try:
+        reference = datetime.strptime(stamps[0], "%Y%m%d").date()
+        secondary = datetime.strptime(stamps[2], "%Y%m%d").date()
+    except ValueError:
+        return None
+    if secondary <= reference:
+        return None
+    return {"product": fields["product"], "reference": reference, "secondary": secondary}
+
+
 def is_already_filed(path: Path, destination: Path) -> bool:
     """Return true only when path is in the correct product and time bucket.
 
-    A directory name that merely *looks* like a valid bucket is not enough:
-    a GUNW file accidentally placed under GOFF/ or under the wrong season
-    must be re-filed, not silently skipped by an incremental run.
+    This is a path-classification check, not an existence check. A directory
+    name that merely *looks* like a valid bucket is not enough: a GUNW file
+    accidentally placed under GOFF/ or under the wrong season must be re-filed.
+    It must work for a not-yet-created destination path without stat() failure.
     """
     try:
         relative = path.resolve().relative_to(destination.resolve())
@@ -130,10 +157,11 @@ def is_already_filed(path: Path, destination: Path) -> bool:
     parts = relative.parts
     if len(parts) < 3:
         return False
-    record = parse(path)
-    if record is None:
+    identity = _identity_for_path(path)
+    if identity is None:
         return False
-    return parts[0] == record["product"] and parts[1] == bucket(record)
+    expected_bucket = bucket(identity)
+    return parts[0] == identity["product"] and parts[1] == expected_bucket
 
 
 def write_full_manifest(destination: Path) -> Path:
