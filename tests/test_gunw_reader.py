@@ -13,7 +13,8 @@ import numpy as np
 import pytest
 
 import synth
-from gunw_reader import (SOURCE_RING, aoi_grid, build_aoi_mask, check_consistency,\n                         decode_gunw_mask, read_gunw, verify_products)
+from gunw_reader import (SOURCE_RING, aoi_grid, build_aoi_mask, check_consistency,
+                         decode_gunw_mask, read_gunw, verify_products)
 
 TOL_MM = 1.5
 
