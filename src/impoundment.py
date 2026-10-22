@@ -120,7 +120,7 @@ def api_grid_shape(bbox, target_cells: int = 12000) -> tuple[int, int, float]:
     return ny, nx, w_km
 
 
-def elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint=API_ENDPOINT) -> str:
+def elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint: str | None = None) -> str:
     """Stable digest of the exact elevation array, axes and request geometry."""
     digest = hashlib.sha256()
     descriptor = {
@@ -179,7 +179,7 @@ def _load_api_cache(path: Path, bbox, target_cells: int) -> tuple[np.ndarray, np
     if z.shape != (ny, nx):
         raise ValueError(f"DEM cache shape mismatch: expected {(ny, nx)}, got {z.shape}.")
     _validate_elevation_grid(z, lats, lons, bbox)
-    fingerprint = elevation_grid_sha256(z, lats, lons, bbox, target_cells)
+    fingerprint = elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint=API_ENDPOINT)
     if metadata.get("grid_sha256") != fingerprint:
         raise ValueError(f"DEM cache fingerprint mismatch in {path}; the cached grid may be incomplete or modified.")
     logger.info("Loaded fixed DEM grid %s sha256=%s", path, fingerprint)
@@ -196,7 +196,7 @@ def _save_api_cache(path: Path, z, lats, lons, bbox, target_cells: int) -> None:
         "target_cells": int(target_cells),
         "shape": list(np.asarray(z).shape),
         "nodata_cells": int(np.count_nonzero(~np.isfinite(z))),
-        "grid_sha256": elevation_grid_sha256(z, lats, lons, bbox, target_cells),
+        "grid_sha256": elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint=API_ENDPOINT),
         "created_utc": datetime.now(timezone.utc).isoformat(),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,6 +273,8 @@ def dem_from_file(path: Path, bbox=None):
     except ImportError:
         logger.error("rasterio required for --dem: pip install rasterio")
         raise SystemExit(1)
+    from rasterio.windows import Window
+
     with rasterio.open(path) as src:
         if src.crs is None or src.crs.to_epsg() != 4326:
             raise ValueError("The impoundment solver currently requires a WGS84/EPSG:4326 DEM; reproject the GeoTIFF before analysis.")
@@ -280,15 +282,31 @@ def dem_from_file(path: Path, bbox=None):
         if (abs(transform.b) > 1e-10 or abs(transform.d) > 1e-10
                 or transform.a <= 0 or transform.e >= 0):
             raise ValueError("DEM must be an unrotated north-up EPSG:4326 grid (positive x posting, negative y posting).")
-        arr = src.read(1).astype(float)
-        if src.nodata is not None:
-            arr[arr == src.nodata] = np.nan
-        h, w = arr.shape
+        h, w = src.height, src.width
         if min(h, w) < 2:
             raise ValueError("DEM must contain at least two rows and columns.")
-        xs = np.array([src.xy(0, col)[0] for col in range(w)], dtype=float)
-        ys = np.array([src.xy(row, 0)[1] for row in range(h)], dtype=float)
-    _validate_elevation_grid(arr, ys, xs, bbox or (float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())))
+        full_xs = np.array([src.xy(0, col)[0] for col in range(w)], dtype=float)
+        full_ys = np.array([src.xy(row, 0)[1] for row in range(h)], dtype=float)
+        if bbox is None:
+            west, south, east, north = (
+                float(full_xs.min()), float(full_ys.min()),
+                float(full_xs.max()), float(full_ys.max())
+            )
+        else:
+            west, south, east, north = map(float, bbox)
+        cols = np.flatnonzero((full_xs >= west) & (full_xs <= east))
+        rows = np.flatnonzero((full_ys >= south) & (full_ys <= north))
+        if cols.size < 2 or rows.size < 2:
+            raise ValueError("DEM has fewer than two pixel centres in each axis inside the selected AOI bbox.")
+        # Crop by pixel centres in their native geographic grid, not by a
+        # rounded window that could reintroduce samples outside the AOI bbox.
+        r0, c0 = int(rows[0]), int(cols[0])
+        rh, cw = int(rows[-1] - rows[0] + 1), int(cols[-1] - cols[0] + 1)
+        arr = src.read(1, window=Window(c0, r0, cw, rh)).astype(float)
+        if src.nodata is not None:
+            arr[arr == src.nodata] = np.nan
+        xs, ys = full_xs[cols], full_ys[rows]
+    _validate_elevation_grid(arr, ys, xs, (west, south, east, north))
     return arr, ys, xs
 
 
@@ -318,7 +336,10 @@ def dem_provenance(z, lats, lons, *, bbox, source: str,
         "elevation_nodata_cells": int(np.count_nonzero(~np.isfinite(z))),
         "elevation_min_m": float(np.nanmin(z)),
         "elevation_max_m": float(np.nanmax(z)),
-        "grid_sha256": elevation_grid_sha256(z, lats, lons, bbox, target_cells),
+        "grid_sha256": elevation_grid_sha256(
+            z, lats, lons, bbox, target_cells,
+            endpoint=API_ENDPOINT if source == "OpenTopoData SRTM 30m" else None,
+        ),
     }
     if source_file is not None:
         data["source_file"] = str(source_file)
