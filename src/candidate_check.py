@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import math
 import re
 import sys
 from pathlib import Path
@@ -64,7 +65,7 @@ logger = logging.getLogger("candidate")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import resolve  # noqa: E402
-
+from local_floor import infer_aoi_from_dir, aoi_tokens_from_dir, point_in_aoi  # noqa: E402
 from gunw_reader import NISAR_LAMBDA_M as WAVELENGTH_M  # noqa: E402
 MIN_PX = 20                    # below this a target window is not measured
 MONSOON = (6, 7, 8, 9)
@@ -273,9 +274,33 @@ def main() -> int:
     ap.add_argument("--target-log", required=True,
                     help="log from timeseries.py --target-lat/--target-lon")
     ap.add_argument("--aoi-csv", required=True, help="gunw_reader --csv for the same AOI")
-    ap.add_argument("--lat", type=float); ap.add_argument("--lon", type=float)
+    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default=None,
+                    help="AOI polygon used for eligibility; inferred from the AOI CSV basename only when unambiguous")
+    ap.add_argument("--allow-event-affected-aoi", action="store_true",
+                    help="explicitly allow LHENDE, an event-affected runout/impoundment corridor, for a non-control analysis")
+    ap.add_argument("--lat", type=float)
+    ap.add_argument("--lon", type=float)
     ap.add_argument("--min-px", type=int, default=MIN_PX)
     args = ap.parse_args()
+
+    if args.lat is None or args.lon is None:
+        ap.error("--lat and --lon are required so geometry sensitivity is evaluated at the actual target.")
+    if not (math.isfinite(args.lat) and math.isfinite(args.lon)
+            and -90 <= args.lat <= 90 and -180 <= args.lon <= 180):
+        ap.error("target coordinates must be finite WGS84 latitude/longitude")
+    folder_aois = aoi_tokens_from_dir(args.aoi_csv)
+    if len(folder_aois) > 1:
+        ap.error(f"AOI CSV basename has conflicting AOI markers {sorted(folder_aois)}.")
+    inferred_aoi = next(iter(folder_aois)) if folder_aois else None
+    if args.aoi is None and inferred_aoi is None:
+        ap.error("could not infer AOI from --aoi-csv; pass --aoi source|langtang|lhende explicitly")
+    if args.aoi is not None and inferred_aoi is not None and args.aoi != inferred_aoi:
+        ap.error(f"--aoi {args.aoi!r} conflicts with --aoi-csv marker ({inferred_aoi!r}).")
+    aoi_name = args.aoi or inferred_aoi
+    if aoi_name == "lhende" and not args.allow_event_affected_aoi:
+        ap.error("LHENDE is event-affected and is not a stable-ground control; pass --allow-event-affected-aoi only for an explicitly justified analysis.")
+    if not point_in_aoi(args.lon, args.lat, aoi_name):
+        ap.error(f"target point ({args.lat:.6f}, {args.lon:.6f}) is outside the exact {aoi_name} AOI polygon.")
 
     tgt = read_target(resolve(args.target_log))
     aoi = read_aoi(resolve(args.aoi_csv))
