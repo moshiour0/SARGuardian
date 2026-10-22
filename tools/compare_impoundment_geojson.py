@@ -120,6 +120,64 @@ def response_counts(rows: list[dict[str, Any]], heights: list[float]) -> dict[st
     return counts
 
 
+def distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance between (lon, lat) WGS84 points, in metres."""
+    lon1, lat1 = map(math.radians, a)
+    lon2, lat2 = map(math.radians, b)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    hav = (math.sin(dlat / 2.0) ** 2
+           + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2.0) ** 2)
+    hav = min(1.0, max(0.0, hav))
+    return 2.0 * 6_371_008.8 * math.asin(math.sqrt(hav))
+
+
+def nearest_unmatched(source: dict[tuple[float, float], dict],
+                      target: dict[tuple[float, float], dict],
+                      unmatched: set[tuple[float, float]],
+                      *, target_name: str) -> tuple[list[dict], list[float]]:
+    """Provide nearest-site suggestions for review without treating them as matches."""
+    suggestions, distances = [], []
+    if not target:
+        return suggestions, distances
+    for coordinate in sorted(unmatched):
+        source_row = source[coordinate]
+        distance, nearest_coordinate = min(
+            (distance_m(coordinate, candidate_coordinate), candidate_coordinate)
+            for candidate_coordinate in target
+        )
+        distances.append(distance)
+        suggestion = {
+            f"nearest_{target_name}_lon": nearest_coordinate[0],
+            f"nearest_{target_name}_lat": nearest_coordinate[1],
+            f"nearest_{target_name}_distance_m": round(distance, 3),
+            "nearest_neighbour_is_identity_match": False,
+        }
+        source_row = source_row.copy()
+        source_row.update(suggestion)
+        suggestions.append(source_row)
+    return suggestions, distances
+
+
+def distance_summary(distances: list[float]) -> dict:
+    """Compact distance distribution; it is descriptive, never an identity rule."""
+    if not distances:
+        return {"count": 0, "min_m": None, "median_m": None, "max_m": None,
+                "within_100m": 0, "within_500m": 0, "within_1000m": 0}
+    ordered = sorted(distances)
+    n = len(ordered)
+    median = (ordered[n // 2] if n % 2 else
+              (ordered[n // 2 - 1] + ordered[n // 2]) / 2.0)
+    return {
+        "count": n,
+        "min_m": round(ordered[0], 3),
+        "median_m": round(median, 3),
+        "max_m": round(ordered[-1], 3),
+        "within_100m": sum(x <= 100 for x in ordered),
+        "within_500m": sum(x <= 500 for x in ordered),
+        "within_1000m": sum(x <= 1000 for x in ordered),
+    }
+
+
 def compare_geojson(baseline_path: Path, candidate_path: Path, *,
                     tolerance: float = 1e-9, heights: list[float] | None = None) -> tuple[dict, list[dict]]:
     baseline = _read_geojson(baseline_path)
@@ -141,12 +199,29 @@ def compare_geojson(baseline_path: Path, candidate_path: Path, *,
                     "baseline": json.dumps(a, sort_keys=True, allow_nan=False) if a is not None else "",
                     "candidate": json.dumps(b, sort_keys=True, allow_nan=False) if b is not None else "",
                 })
-    for lon, lat in sorted(bkeys - ckeys):
-        changes.append({"status": "BASELINE_SITE_MISSING", "lon": lon, "lat": lat,
-                        "field": "", "baseline": "present", "candidate": "missing"})
-    for lon, lat in sorted(ckeys - bkeys):
-        changes.append({"status": "NEW_CANDIDATE_SITE", "lon": lon, "lat": lat,
-                        "field": "", "baseline": "missing", "candidate": "present"})
+    baseline_unmatched = bkeys - ckeys
+    candidate_unmatched = ckeys - bkeys
+    baseline_nearest_rows, baseline_nearest_distances = nearest_unmatched(
+        bmap, cmap, baseline_unmatched, target_name="candidate"
+    )
+    candidate_nearest_rows, candidate_nearest_distances = nearest_unmatched(
+        cmap, bmap, candidate_unmatched, target_name="baseline"
+    )
+    nearest_baseline_by_coord = {row["coordinate"]: row for row in baseline_nearest_rows}
+    nearest_candidate_by_coord = {row["coordinate"]: row for row in candidate_nearest_rows}
+
+    for lon, lat in sorted(baseline_unmatched):
+        row = {"status": "BASELINE_SITE_MISSING", "lon": lon, "lat": lat,
+               "field": "", "baseline": "present", "candidate": "missing"}
+        row.update({k: v for k, v in nearest_baseline_by_coord[(lon, lat)].items()
+                    if k.startswith("nearest_") or k == "nearest_neighbour_is_identity_match"})
+        changes.append(row)
+    for lon, lat in sorted(candidate_unmatched):
+        row = {"status": "NEW_CANDIDATE_SITE", "lon": lon, "lat": lat,
+               "field": "", "baseline": "missing", "candidate": "present"}
+        row.update({k: v for k, v in nearest_candidate_by_coord[(lon, lat)].items()
+                    if k.startswith("nearest_") or k == "nearest_neighbour_is_identity_match"})
+        changes.append(row)
 
     baseline_count = len(baseline)
     candidate_count = len(candidate)
@@ -163,6 +238,11 @@ def compare_geojson(baseline_path: Path, candidate_path: Path, *,
         "baseline_sites_without_exact_match": len(bkeys - ckeys),
         "candidate_sites_without_exact_match": len(ckeys - bkeys),
         "coordinate_overlap_fraction_of_baseline": len(common) / baseline_count if baseline_count else None,
+        "nearest_neighbour_review_only": {
+            "baseline_unmatched_to_candidate": distance_summary(baseline_nearest_distances),
+            "candidate_unmatched_to_baseline": distance_summary(candidate_nearest_distances),
+            "warning": "Nearest neighbours are suggestions for human review only. They are not paired as identical sites, do not change exact_coordinate_matches, and can never produce an EXACT_SEMANTIC_MATCH status."
+        },
         "property_change_count_at_exactly_matched_sites": sum(r["status"] == "PROPERTY_CHANGED" for r in changes),
         "review_row_count": len(changes),
         "response_counts_by_threshold_height_m": {
