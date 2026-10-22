@@ -7,7 +7,7 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 from gunw_reader import decode_gunw_mask
-from tools.target49_gate_diagnostic import audit_gunw, decode_wrs_mask
+from tools.target49_gate_diagnostic import audit_gunw, audit_goff, decode_wrs_mask
 
 def test_documented_decimal_wrs_mask_digits_are_audited_separately():
     raw=np.array([[11,12,99,111,112,0,10,1,255]],dtype=np.uint8)
@@ -51,6 +51,7 @@ def test_source_aoi_reports_target9_outside_without_relabeling_it_as_raw_no_data
     assert t9["has_connected_component_support"] is True
     assert t9["has_current_reader_mask_support"] is True
     assert t9["has_nearby_aoi_gated_support"] is True
+    assert t9["nearest_grid_cell_support"]["nearest_grid_cell_after_aoi"] is False
     assert t9["has_aoi_gated_support"] is False
     assert t9["has_target_point_support"] is False
     assert t9["cumulative_stage_counts"]["finite_nonzero_phase"]==169
@@ -172,3 +173,34 @@ def test_raw_gunw_diagnostic_rejects_unvalidated_mask_dtypes():
     import pytest
     with pytest.raises(TypeError, match="Unsupported GUNW mask dtype"):
         decode_wrs_mask(np.array([[12]], dtype=np.uint16))
+
+
+def test_goff_target9_nearby_polygon_pixel_is_not_target_point_support(tmp_path):
+    from pyproj import Transformer
+
+    file = tmp_path / "synthetic_NISAR_L2_PR_GOFF.h5"
+    tf = Transformer.from_crs(4326, 32645, always_xy=True)
+    x0, y0 = tf.transform(85.47591, 28.25460)
+    xs = x0 + (np.arange(13) - 6) * 100.0
+    ys = y0 + (6 - np.arange(13)) * 100.0
+    parent = "science/LSAR/GOFF/grids/frequencyA/pixelOffsets/HH"
+    group = f"{parent}/layer1"
+    with h5py.File(file, "w") as f:
+        f.create_dataset(f"{group}/slantRangeOffset", data=np.ones((13, 13), dtype=np.float32))
+        f.create_dataset(f"{group}/alongTrackOffset", data=np.ones((13, 13), dtype=np.float32))
+        f.create_dataset(f"{group}/correlationSurfacePeak", data=np.full((13, 13), 0.9, dtype=np.float32))
+        f.create_dataset(f"{group}/snr", data=np.full((13, 13), 5.0, dtype=np.float32))
+        f.create_dataset(f"{group}/xCoordinates", data=xs)
+        f.create_dataset(f"{group}/yCoordinates", data=ys)
+        p = f.create_dataset(f"{parent}/projection", data=np.array(32645, dtype=np.int32))
+        p.attrs["epsg_code"] = 32645
+
+    result = audit_goff(file, aoi="source", radius=6, corr_min=0.3, snr_min=3.0)
+    t9 = result["layers"][0]["targets"]["9"]
+    assert t9["inside_grid_extent"] is True
+    assert t9["inside_requested_aoi_polygon"] is False
+    assert t9["cumulative_stage_counts"]["after_aoi"] > 0
+    assert t9["has_nearby_aoi_gated_support"] is True
+    assert t9["nearest_grid_cell_support"]["nearest_grid_cell_after_aoi"] is False
+    assert t9["has_aoi_gated_support"] is False
+    assert t9["has_target_point_support"] is False
