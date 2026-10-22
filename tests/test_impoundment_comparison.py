@@ -241,3 +241,4 @@ def test_scenario_coverage_counts_are_explicitly_limited_to_returned_ranked_feat
     assert scope["population"] == "ranked and spatially suppressed output sites only"
     assert scope["not_a_census"] is True
     assert "not an AOI-wide site census" in scope["warning"]
+    assert "not a count/fraction of all candidate channel sites in the AOI" in scope["warning"]
