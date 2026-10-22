@@ -172,7 +172,7 @@ def load_floor_catalogue(
 
 
 
-_TRACK_RE = re.compile(r"\\b(ASC|DESC)\\b(?:\\s+PATH)?\\s+0*(\\d+)\\b", re.IGNORECASE)
+_TRACK_RE = re.compile(r"\b(ASC|DESC)\b(?:\s+PATH)?\s+0*(\d+)\b", re.IGNORECASE)
 
 
 def normalize_track_id(value: str) -> str:
