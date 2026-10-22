@@ -166,6 +166,38 @@ def nearest_unmatched(source: dict[tuple[float, float], dict],
             f"nearest_{target_name}_distance_m": round(distance, 3),
             "nearest_neighbour_is_identity_match": False,
         }
+        # Carry scalar hydrology context to the review CSV, but label every
+        # value as nearest-neighbour context and never promote it to a match.
+        source_props = _normalised_properties(source_row)
+        target_props = _normalised_properties(target[nearest_coordinate])
+        review_fields = (
+            "sill_m", "threshold_height_m", "upstream_area_km2",
+            "upstream_cells", "volume_at_min_height_Mm3",
+            "max_volume_Mm3", "efficiency_Mm3_per_m", "truncated",
+        )
+        delta_names = {
+            "sill_m": "sill_m",
+            "threshold_height_m": "threshold_height_m",
+            "upstream_area_km2": "upstream_area_km2",
+            "upstream_cells": "upstream_cells",
+            "volume_at_min_height_Mm3": "volume_at_min_height_Mm3",
+            "max_volume_Mm3": "max_volume_Mm3",
+            "efficiency_Mm3_per_m": "efficiency_Mm3_per_m",
+        }
+        for field in review_fields:
+            target_value = target_props.get(field)
+            if isinstance(target_value, (str, int, float, bool)) or target_value is None:
+                suggestion[f"nearest_{target_name}_{field}"] = target_value
+            if field in delta_names:
+                source_value = source_props.get(field)
+                try:
+                    source_number, target_number = float(source_value), float(target_value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(source_number) and math.isfinite(target_number):
+                    suggestion[f"nearest_{target_name}_{delta_names[field]}_minus_source"] = (
+                        target_number - source_number
+                    )
         source_row = source_row.copy()
         source_row.update(suggestion)
         suggestions.append(source_row)
