@@ -1,16 +1,17 @@
 # Raw NISAR HDF5 investigation: Target 4 and Target 9
 
 **Date:** 2026-10-22  
-**Status:** 12 exact Run #55 raw products downloaded, SHA-256 verified, tested against two AOIs, and deleted from the isolated runner after inspection. The retained artifact contains only JSON diagnostics/manifests, never HDF5.  
-**Evidence run:** [SARGuardian-backend workflow run 39693169804](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39693169804)  
-**Artifact:** `target4-9-raw-hdf5-investigation` (artifact ID 12389838215; 114,265 bytes; 12/12 products; 0 diagnostic errors).
+**Status:** 13 exact Run #55 raw products (7 GUNW, 6 GOFF) were downloaded, SHA-256 and byte sizes were checked, both AOIs were diagnosed, and each raw HDF5 was deleted from the isolated runner immediately afterward. The retained artifact contains diagnostic JSON/CSV and download manifests only, never HDF5.  
+**Evidence run:** [authenticated raw audit run #5](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39712719257)  
+**Artifact:** `target49-raw-science-diagnostic` (artifact ID 12398535967; 126,850 bytes; 13/13 products, 40/40 diagnostic reports and 128/128 target/layer rows verified; 0 validation errors).  
+**Downloaded bytes:** 23,142,072,320 bytes (21.553 GiB) in total across the sequential one-file-at-a-time downloads; this is not retained storage.
 
 ## Executive findings
 
 1. **Target 9 is not eligible for analysis against the `source` polygon.** Its centre (85.47591°E, 28.25460°N) is about 670 m outside the exact source AOI, but 183 m inside the `langtang` AOI. In the raw files, Target 9 lies inside the coordinate-grid bounds, but source AOI masking removes its signal samples: GUNW `after_aoi=0`; GOFF may leave 0–1 edge cells, which are not support at the target point. Do not interpret those clipped zeros as absence of raw measurements. Any real Target 9 analysis must explicitly use the `langtang` or a justified target-specific polygon. Langtang may contain event-affected ground and is not automatically a stable control.
-2. **Target 4's GUNW support shortage is real in the tested local windows, not merely an AOI-centre error.** The point (85.52983°E, 28.27799°N) is inside both polygons and within the GUNW coordinate-grid bounds for all six sampled files. Across those six HDF5s, local windows have 0–10 cells after coherence and connected-component filtering. Four of six produce zero cells at the connected-component gate, one produces only four, and two produce ten before the ionosphere-screen interpolation gate.
+2. **Target 4's GUNW support shortage is real in the tested local windows, not merely an AOI-centre error.** The point (85.52983°E, 28.27799°N) is inside both polygons and within the GUNW coordinate-grid bounds for all six sampled files. Across all seven GUNW HDF5s, local windows have 0–10 cells after coherence and connected-component filtering. Five produce zero cells at the connected-component gate (one of these has no finite nonzero phase), one produces only four, and one produces ten before the ionosphere-screen interpolation gate.
 3. **The default ionosphere-correction policy is a major additional gate on P05023.** In the two P05023 pairs where Target 4 has 10 cells after coherence + connected components + the low-byte land/subswath gate, the default reader excludes pixels flagged as ionosphere-screen interpolated, leaving only 3/169 local cells. The `--no-iono` diagnostic-only sensitivity preserves those 10 cells, but that is a different physical/noise model and is not evidence that the default gate should be removed.
-4. **Target 9 has usable raw phase support in two P05023 ascending GUNW pairs when assessed inside `langtang`.** For GUNW frame 016_025: 80 cells pass coherence + connected components, 31 remain after the default ionosphere screen gate and 29 survive the Langtang polygon. For frame 016_026: 83 pass those earlier gates, 37 remain after the default screen gate and 33 survive the Langtang polygon. Other tested GUNW pairs at Target 9 fail at the connected-component gate.
+4. **Target 9 has usable raw phase support in three P05023 ascending GUNW pairs when assessed inside `langtang`.** For frame 016_024: 80 cells pass connected components, 29 remain after the default ionosphere-screen gate, and 27 survive the Langtang polygon. For frame 016_025: 80 pass connected components, 31 remain after the default screen gate, and 29 survive the Langtang polygon. For frame 016_026: 83 pass the earlier gates, 37 remain after the screen gate, and 33 survive the Langtang polygon. Other tested GUNW pairs at Target 9 fail at the connected-component gate.
 5. **GOFF local sample availability is not the bottleneck in `langtang`.** On the layer-2 offset window, the six tested products provide 100–160 cells for Target 4 and 52–99 for Target 9 after finite range/azimuth, correlation ≥0.3, SNR ≥3, and AOI clipping. This is sample availability, not proof that the raw/unculled offsets are accurate; outlier handling and independent displacement validation remain necessary.
 
 ## Target-local GUNW counts (13×13 cells, radius 6)
@@ -21,6 +22,8 @@ Each row is an exact raw HDF5 input; counts are cumulative at each gate. A 13×1
 |---|---:|---:|---:|---:|---:|---:|---:|
 | GUNW BETA X05010, frame 016_010 | 4 | 169 | 40 | 0 | 0 | 0 | 0 |
 | GUNW BETA X05010, frame 016_010 | 9 | 169 | 51 | 0 | 0 | 0 | 0 |
+| GUNW P05023, frame 016_024 | 4 | 169 | 17 | 0 | 0 | 0 | 0 |
+| GUNW P05023, frame 016_024 | 9 | 169 | 84 | 80 | 80 | 29 | 27 in Langtang; 0 in source |
 | GUNW P05023, frame 016_025 | 4 | 169 | 22 | 0 | 0 | 0 | 0 |
 | GUNW P05023, frame 016_025 | 9 | 169 | 80 | 80 | 80 | 31 | 29 in Langtang; 0 in source |
 | GUNW P05023, frame 074_026 (descending) | 4 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -47,6 +50,7 @@ A frequent raw mask value is decimal `16777228` = hex `0x0100000C`: bit 24 is se
 
 | P05023 GUNW frame | After connected components | After low-byte land/subswath + anomaly | After default ionosphere-screen interpolation gate | Percent removed at this last gate |
 |---|---:|---:|---:|---:|
+| 016_024 | 7,372,633 | 7,350,651 | 77,074 | 98.95% |
 | 016_025 | 7,258,483 | 7,242,135 | 79,801 | 98.90% |
 | 074_026 descending | 6,487,623 | 3,739,028 | 146,004 | 96.09% |
 | 016_026 | 7,153,109 | 7,141,049 | 80,156 | 98.88% |
@@ -74,16 +78,16 @@ ASF's GOFF documentation says offsets are delivered unculled and not low-pass fi
 
 ## Inputs downloaded and identity evidence
 
-The 12 HDF5 files were downloaded sequentially with the backend's `tools/download_nisar_product.py`, which records the expected response size and SHA-256. Combined bytes downloaded: **20,763,901,952 bytes (19.34 GiB)**. Each file was inspected for both AOIs; the GUNW files additionally had `--no-iono` sensitivity summaries. Raw HDF5 was removed from runner scratch after diagnosis. The artifact contains per-file download manifests and JSON reports, not the 19.34 GiB source files. Full basenames, bytes, SHA-256, dataset paths/shapes, raw mask histograms and all 120 target/layer/mode rows are in the companion CSVs/JSON artifact.
+The 13 HDF5 files were downloaded sequentially with the backend's `tools/download_nisar_product.py`, which records expected response size and SHA-256. Combined bytes downloaded: **23,142,072,320 bytes (21.553 GiB)**. Each file was inspected for both AOIs; each GUNW also has `--no-iono` sensitivity summaries for source and Langtang. Raw HDF5 was deleted from runner scratch after each product was diagnosed. The final artifact contains per-file manifests and JSON/CSV reports, not any source HDF5 bytes. The companion summary has all 128 target/layer/mode rows, including dataset paths/shapes, raw mask histograms, global gates and per-target stage counts.
 
-Source artifact metadata: [completed Run #55 raw-data diagnostic workflow](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39693169804). The first isolated workflow attempt used an ASF exact-name catalogue lookup that missed the BETA GUNW item; the new branch workflow was changed to use the backend's tested direct-product downloader and explicit secret-backed authentication. Its first direct-downloader rerun then exposed a shell variable-expansion typo after one successful 2.37 GB download; that typo was fixed. The repeat run [39706239018](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39706239018) was still running when this report was last refreshed, so no final-success claim is made for that repeat attempt. These workflow/debug changes are isolated from Run #55 and the old feature branch.
+Source artifact: [authenticated raw-data diagnostic run #5](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39712719257), artifact ID 12398535967. The first isolated downloader attempt used an incomplete ASF exact-name catalogue lookup; the next direct-downloader run exposed and then fixed a shell variable expansion error. The final run completed **13/13 products, 40/40 reports, 128/128 rows, zero validation errors**, and uploaded diagnostics only. These workflow changes remain isolated on `science/target4-9-raw-investigation`; no production workflow or `main` was changed.
 
 ## Decision and next steps
 
-- **Target 9:** exact AOI guards are now implemented on the science branch: `scar_map.py` masks NDSI, coverage denominators and clusters with `SOURCE_RING`; `local_floor.py --aoi source` refuses the target centre outside that polygon and records `TARGET_OUTSIDE_AOI`, never a floor. In Langtang, only two tested P05023 GUNW pairs have supported phase windows after the current gate, while all six tested GOFF products have layer-2 sample support. Temporal/geometry requirements and stability of the proposed reference still need validation.
+- **Target 9:** exact AOI guards are now implemented on the science branch: `scar_map.py` masks NDSI, coverage denominators and clusters with `SOURCE_RING`; `local_floor.py --aoi source` refuses the target centre outside that polygon and records `TARGET_OUTSIDE_AOI`, never a floor. In Langtang, three tested P05023 ascending GUNW pairs have supported phase windows after the current gate, while all six tested GOFF products have layer-2 sample support. Temporal/geometry requirements and stability of the proposed reference still need validation.
 - **Target 4:** keep `MIN_PX=6`. Do not claim a GUNW floor from 0–3 pixels. The two P05023 pairs have 10 pre-ionosphere-gate samples and 3 afterward; another has only 4 connected-component samples and one has no finite phase. Investigate the ionosphere-screen uncertainty/interpolation semantics before altering masks; otherwise report no GUNW floor for the unsupported pairs.
 - **Scripts:** AOI eligibility guards and stage-wise HDF5 gate counts have been implemented on the isolated branch. Remaining tasks: add a dedicated GOFF per-axis outlier test and known-offset validation; propagate uncertainty into detectability bounds; pin source/DEM samples and CRS for impoundment outputs; add semantic regression gates for the changed GeoJSON values.
-- **Do not merge the scientific branch or change Run #55 output/threshold behavior based on counts alone.** The successful 12-file diagnostic proves the observed counts and locations; it does not certify geophysical truth or settle how interpolated ionosphere-screen pixels should be treated.
+- **Do not merge the scientific branch or change Run #55 output/threshold behavior based on counts alone.** The successful 13-file diagnostic proves the observed counts and locations; it does not certify geophysical truth or settle how interpolated ionosphere-screen pixels should be treated.
 
 ## Primary technical references
 
