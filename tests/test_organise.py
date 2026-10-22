@@ -83,8 +83,8 @@ def test_incremental_organising_preserves_every_product_in_manifest(tmp_path, mo
     assert first[0]["release_crid"] == "X05010"
     assert first[0]["maturity"] == "BETA"
 
-    later = PROVISIONAL.replace("20260702", "20260726", 1).replace(
-        "20260714", "20260819", 1
+    later = PROVISIONAL.replace("20260702", "20260726").replace(
+        "20260714", "20260819"
     )
     # Keep a valid four-stamp name, but make this a separate pair/product.
     _put(source, later, b"second synthetic granule")
