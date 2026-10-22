@@ -136,12 +136,15 @@ def classify_geometry(sens_asc: float, sens_desc: float,
     artefact "a real phase signal". The verdict there survived only because the
     seasonality test caught it afterwards.
 
-    Returns a dict rather than printing, so the decision can be tested without
-    a network round trip for terrain.
+    Returns a dict rather than printing, so the comparison can be tested without
+    a network round trip for terrain. The motion/delay label is descriptive:
+    without uncertainties/covariance for both track rates, the ratio distance
+    is not a statistical test and must never be called conclusive.
     """
     out = {"sens_asc": sens_asc, "sens_desc": sens_desc,
            "ratio_motion": None, "ratio_measured": None, "verdict": None,
-           "reason": None, "conclusive": False}
+           "reason": None, "conclusive": False,
+           "conclusiveness_limit": "Track-rate uncertainties/covariance are not supplied; ratio-distance classification is descriptive only."}
 
     # Sensitivity is a projection onto the downslope direction, and that
     # direction comes from the DEM aspect. On gentle ground the aspect is
@@ -205,7 +208,10 @@ def classify_geometry(sens_asc: float, sens_desc: float,
                          f"geometry-independent path delay (distance {d_delay:.3f}) "
                          f"than to the downslope-motion prediction {ratio_motion:+.3f} "
                          f"(distance {d_motion:.3f}).")
-    out["conclusive"] = True
+    # Nearest-prediction classification is not a significance test. No
+    # measurement uncertainty/covariance enters this function, so it must not
+    # label either outcome conclusive even when one ratio is closer.
+    out["conclusive"] = False
     return out
 
 
