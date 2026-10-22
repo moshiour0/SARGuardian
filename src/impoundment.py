@@ -630,12 +630,24 @@ def report(rows, heights, rank_by):
 
 
 def write_geojson(rows, out: Path):
-    fc = {"type": "FeatureCollection", "features": [
-        {"type": "Feature",
-         "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
-         "properties": {k: v for k, v in r.items() if k not in ("lat", "lon")}}
-        for r in rows]}
-    out.write_text(json.dumps(fc, indent=1))
+    """Write finite WGS84 point features atomically; provenance is a separate sidecar."""
+    features = []
+    for row in rows:
+        lat, lon = float(row["lat"]), float(row["lon"])
+        if not (math.isfinite(lat) and math.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError(f"Cannot write invalid WGS84 site coordinates: {row.get('name', row)}")
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {k: v for k, v in row.items() if k not in ("lat", "lon")},
+        })
+    fc = {"type": "FeatureCollection", "features": features}
+    text = json.dumps(fc, indent=1, allow_nan=False) + "\\n"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temp = out.with_suffix(out.suffix + ".tmp")
+    temp.write_text(text, encoding="utf-8")
+    temp.replace(out)
     logger.info("Wrote %s (%d sites)", out, len(rows))
 
 
