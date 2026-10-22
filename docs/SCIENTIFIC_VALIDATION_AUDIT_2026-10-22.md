@@ -2,15 +2,16 @@
 
 **Isolation:** branch science/valid-pixel-target4-9-audit in moshiour0/SARGuardian. Base was main at 9fcb543ef28a7f6fe70a379aed9cfe3e43e277ec. This work does not modify SARGuardian-backend, its feature branch, PR #35, or either repository's main branch.
 
-**Processing evidence:** SARGuardian-backend Run #55, 39657764262; backend workflow revision e30ce4c6af9a62c194873b658bfbdb5738993408; pinned scientific code revision ab547ecc82bcc4d6ccef545a59852536c2beacc6.
+**Baseline processing evidence:** SARGuardian-backend Run #55, 39657764262; backend workflow revision e30ce4c6af9a62c194873b658bfbdb5738993408.  
+**Raw-data follow-up:** [authenticated Target 4/9 audit run #5](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39712719257), workflow revision 9aa829c2c32b706320d4e5bc24ed710654598142; science diagnostics pinned to 0f9b9328db4ddd14c38180d05e9dad9ca10f64cb; artifact ID 12398535967.
 
 ## Executive result
 
 - The 15 baseline CSVs previously compared between the uploaded source ZIP and Run #55 preserve expected logical row keys and scientific numeric/text values within floating-point tolerance; largest numeric difference was about 3.41e-13. Some export_mb file-size metadata changed by 0.001 MB.
 - Four newly generated CSVs have no committed reference baseline: ts_gunw_source.csv, geometry_sensitivity_source.csv, detectability_blatten_phase.csv and detectability_blatten_offsets.csv.
 - Four impoundment GeoJSON files changed materially. Each contains 12 sites, but exact-coordinate overlap with committed values is only source 4/12, Langtang 2/12, Lhende 1/12 and Blatten 6/12. The number reported as having a 10 m water response is now 12/12 in each AOI, compared with 4/12, 2/12, 1/12 and 6/12 in the reference. Treat as an unresolved scientific change, not formatting.
-- Target 9 is outside the exact source AOI polygon by 670 m but inside langtang by 183 m. The 0–1 valid-cell counts in source-clipped outputs cannot be interpreted as native HDF5 lack of signal. Target 4 is inside source AOI but only two of 15 source-clipped GUNW windows have 3 finite cells each; all are below MIN_PX=6. Target 4 has 23–119 finite GOFF cells in each of its 18 current derived-TIFF windows.
-- The current Run #55 raw HDF5 is not retained in its derived-only artifact. In this execution environment, Earthdata Login was not configured, the ASF package was not installed, and the Earthdata host could not be resolved. Therefore **raw HDF5 files were not downloaded here**; the branch adds a credential-safe downloader and gate diagnostic so the exact investigation can be run in an authenticated environment. Do not claim root cause for Target 4 or the P05023 mask attrition until that run is done.
+- Target 9 is outside the exact source AOI by about 670 m but inside Langtang by about 183 m. In the source AOI, clipped 0/1-cell windows are polygon ineligibility, not evidence that the native HDF5 lacks signal. Target 4 is inside the source AOI; across seven exact GUNW files its local windows have 0, 4 or 10 pixels after the coherence + connected-component gates, and only 3 pixels survive the default ionosphere-screen gate in two pairs. These are below `MIN_PX=6`.
+- **Raw HDF5 inspection is now complete for 13 exact products** (7 GUNW, 6 GOFF). The authenticated follow-up downloaded 23,142,072,320 bytes (21.553 GiB), validated 40/40 JSON reports and 128/128 target/layer rows against per-file identity, byte-size and SHA-256, with zero validation errors. HDF5 files were deleted from the ephemeral runner after each product; artifact 12398535967 contains diagnostic JSON/CSV/manifests, not raw HDF5. [Run #5](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39712719257).
 
 ## Target 4 and 9: the exact current evidence
 
@@ -23,15 +24,22 @@ A WGS84-to-EPSG:32645 polygon check gives:
 
 A 13×13 window has radius six 80 m cells (~480 m along each grid axis). Because target 9 lies outside the source polygon, occasional edge cells may cross the polygon, but they are not valid point support. The candidate generator in src/scar_map.py uses a rectangular STAC bbox, not a check against the exact SOURCE_RING. This allows a candidate to be listed for source-AOI analysis even though it is outside the source polygon. The science branch now masks optical NDSI/coverage/clusters with the exact SOURCE_RING, and local_floor.py requires explicit or unambiguously inferred AOI eligibility before it can report a noise floor.
 
-The relevant Run #55 GUNW gates are:
+The raw HDF5 audit confirms that the selected mask dataset is `science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/mask` for these products, but the representation differs by release. X05010 BETA is `uint8`; P05023 PROVISIONAL is `uint32`. P05023 uses low-byte water/subswath digits, bits 8–23 for anomaly flags, bit 24 for ionosphere-screen interpolation, and bits 25–31 reserved. The current reader excludes bit 24 when screen correction is applied.
 
-| Product | CRID | Finite nonzero phase | Coherence >= 0.3 | Connected components > 0 | Current water/subswath mask | Source AOI |
-|---|---|---:|---:|---:|---:|---:|
-| GUNW-006 | X05010 | 9,421,891 | 8,284,468 | 8,157,627 | 8,137,813 | 6,314 |
-| GUNW-007 | P05023 | 9,061,090 | 7,460,176 | 7,372,633 | 77,074 | 174 |
-| GUNW-009 | P05023 | 8,896,083 | 7,356,248 | 7,258,483 | 79,801 | 363 |
+| Product | CRID / dtype | Connected components > 0 | After low-byte land/subswath + anomaly | After bit-24 ionosphere-screen gate | After source AOI |
+|---|---|---:|---:|---:|---:|
+| GUNW-006 | X05010 / uint8 | 8,157,627 | 8,137,813 | 8,137,813 | 6,314 |
+| GUNW-007 | P05023 / uint32 | 7,372,633 | 7,350,651 | 77,074 | 174 |
+| GUNW-009 | P05023 / uint32 | 7,258,483 | 7,242,135 | 79,801 | 363 |
+| GUNW-010 (descending) | P05023 / uint32 | 6,487,623 | 3,739,028 | 146,004 | 1,444 |
+| GUNW-011 | P05023 / uint32 | 7,153,109 | 7,141,049 | 80,156 | 154 |
+| GUNW-012 (descending) | P05023 / uint32 | 7,455,180 | 7,445,169 | 71,379 | 387 |
+| GUNW-013 | P05023 / uint32 | 7,183,273 | 7,173,834 | 112,518 | 389 |
 
-The frame IDs differ (016_010, 016_024, 016_025) so whole-product counts are not a controlled same-footprint comparison and do not prove a maturity-specific mask defect. The sudden gate reduction is still a warning that warrants raw-data diagnosis. Do not remove/relax masks to make more pixels survive.
+The source AOI denominator is small compared with the native GUNW grid; its final counts are AOI coverage, not global product validity. P05023's bit-24 interpolation gate removes about 96.1–99.0% of pixels remaining after the prior gates. This is confirmed as the stage of greatest attrition, but **not** proof that the bit should be ignored: the flag marks pixels for which the correction screen was interpolated, and the conservative current policy excludes them. Changing this policy requires an uncertainty/residual study.
+
+The seven products are not a matched same-footprint maturity experiment, so global counts do not prove a CRID-specific defect. At Target 4, four products have zero local support after connected components, one has four cells, one has ten cells before the ionosphere gate (three after it), and one has no finite nonzero phase in the target window. At Target 9, the source polygon masks out the candidate; in Langtang, three ascending P05023 GUNW pairs leave 27, 29 and 33 cells after default gates. Six GOFF products have layer-2 support after finite/correlation/SNR/AOI gates of 100–160 cells for Target 4 and 52–99 for Target 9 in Langtang. These counts show measurement availability, not geophysical accuracy.
+
 
 ## Script-by-script validation register
 
@@ -58,20 +66,22 @@ Status labels distinguish software tests from real scientific validation. Tests 
 | demo.py | Orchestrates demo and outputs. | Demo can imply evidence is empirical even when an input/output is synthetic or stale. | Software role. Print exact input hashes, CRIDs and synthetic/real status. |
 | docs/figures/make_figures.py | Creates charts/illustrations. | Figures can lag source CSV and imply unvalidated values. | Presentation only. Tie figure generation to output manifests and hashes. |
 | docs/site/build_data.py and docs/site/render.py | Populate and render static site. | Site may misrepresent stale data, maturity, uncertainty or missing observations. | Presentation only. Surface no-data vs zero, CRID and last verified output hash. |
-| tests/*.py | Synthetic/software regression tests. | Synthetic tests do not prove physical interpretation of real NISAR products. | Latest CI [run 39706771204](https://github.com/moshiour0/SARGuardian/actions/runs/39706771204) passed 196 tests with 17 warnings at code commit `a2e1e009`; it includes the AOI/floor guard regression tests. CI tests software behavior, not physical truth against in-situ displacement. |
-| tools/target49_gate_diagnostic.py (new) | Chunked raw-HDF5 per-stage counts, dataset paths/shapes, CRS/grid extents, mask histogram, local target windows and SHA-256. | Reports current-reader mask plus a diagnostic alternative; does not assert either mask is scientifically correct. | Completed raw HDF5 run [39693169804](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39693169804): 12/12 selected exact files, SHA/size verified, source and Langtang AOIs plus GUNW no-ionosphere sensitivity; raw files not retained. A broader reproducibility workflow is running on the isolated backend branch. |
-| tools/download_target49_products.py (new) | Downloads exact Run #55 basenames via ASF search, records bytes and SHA-256. | Requires authenticated network, disk and Earthdata login. | Dry-run checked only. No HDF5 was downloaded in this environment. |
+| tests/*.py | Synthetic/software regression tests. | Synthetic tests do not prove physical interpretation of real NISAR products. | Latest completed CI [run 39714565560](https://github.com/moshiour0/SARGuardian/actions/runs/39714565560) passed 203 tests with 21 warnings at commit `f30a0bff`, including exact AOI, common-reference grid and site-bundle checks. CI tests software behavior, not geophysical truth. |
+| tools/target49_gate_diagnostic.py | Chunked raw-HDF5 per-stage counts, dataset paths/shapes, CRS/grid extent, mask histogram, local target windows and SHA-256. | Diagnostic no-ionosphere mode is sensitivity analysis, not an alternative production measurement. | Completed [follow-up run #5](https://github.com/moshiour0/SARGuardian-backend/actions/runs/39712719257): 13/13 files, 40/40 reports, 128/128 rows and 0 validation errors. |
+| tools/download_target49_products.py | Downloads exact Run #55 basenames through a canonical HTTPS URL with timeout, content-length and SHA-256 checks. | Requires authenticated network, disk and Earthdata login; no signed URL or credentials may be retained. | Used successfully by backend workflow; raw HDF5 was removed after each diagnostic and never entered the artifact. |
+| tools/refresh_site_polygon_guard.py and site-polygon-refresh.yml | Exact-mask the browser PNG; regenerate scene cloud statistics and cluster classification; filter source-bound candidates; rewrite and validate static HTML/data atomically. | Scene asset and SRTM service availability is external; a failed refresh must not publish a partially updated bundle. | [Site refresh run](https://github.com/moshiour0/SARGuardian/actions/runs/39714388544) passed; committed static bundle has polygon metadata/mask, no out-of-AOI source candidates, and HTML matches JSON. |
 
-## Reproducible Target 4/9 experiment
+## Remaining scientific validation
 
-Seven exact basenames from Run #55 are pinned in tools/download_target49_products.py: one X05010 GUNW control (GUNW-006), two P05023 GUNW granules (GUNW-007/009), one X05010 GOFF control (GOFF-023) and three P05023 GOFF granules (GOFF-025/027/029). GOFF-026 is a descending track and must not be substituted into the ascending track series.
+1. **Ionosphere-screen uncertainty:** quantify interpolation uncertainty/residuals and compare the corrected/current gate against the no-ionosphere diagnostic without treating them as equivalent measurements. Do not disable bit 24 solely to increase Target 4 pixel count.
+2. **Target 4:** maintain `MIN_PX=6`; do not publish a local GUNW floor when 0–4 cells survive. Check reference pixels against the same connected component and run a known-displacement LOS sign/scale test.
+3. **Target 9:** do not compute a source-zone floor/bound for this point. If analyzing the Langtang corridor, state that the AOI is event/runout affected and is not automatically a stable control.
+4. **GOFF estimator:** add per-axis range/azimuth outlier tests and validate offset sign, units, correlations/SNR and residuals with matched-scene or independent references.
+5. **Impoundment outputs:** four live-generated GeoJSONs still differ materially from committed baselines; pin DEM/API sample coordinates, save source responses/provenance, and independently review all 12 sites before acceptance.
+6. **Unmatched controls:** compare BETA and P05023 only on overlapping/matched frames; current product-wide counts cannot isolate maturity effects.
+7. **Static site:** bundle [refresh run](https://github.com/moshiour0/SARGuardian/actions/runs/39714388544) regenerated from the exact polygon; re-run the refresh workflow whenever AOI geometry, scene data or classifier thresholds change.
 
-On an internet-enabled host with Earthdata Login configured by the ASF-supported .netrc or ASFSession mechanism, run:
-- python tools/download_target49_products.py --profile target4-9 --outdir data/target49_raw
-- python tools/target49_gate_diagnostic.py data/target49_raw/*.h5 --aoi source --out outputs/target49_source_aoi.json
-- python tools/target49_gate_diagnostic.py data/target49_raw/*.h5 --aoi langtang --out outputs/target49_langtang_aoi.json
-
-Inspect each raw mask's dataset path, dtype, shape, attributes and value histogram. Compare gates in order: native-grid support, finite nonzero phase, coherence, connected components, mask, AOI. For GOFF, report range/azimuth finite values separately plus correlation and SNR gates. Do not remove a gate or lower thresholds merely to get a floor.
+The evidence establishes software behavior and exact NISAR pixel-gate counts. It does **not** settle whether interpolated ionosphere-screen samples should be hard-excluded, nor certify physical deformation against in-situ measurements.
 
 ## Official references checked 2026-10-22
 
@@ -83,4 +93,4 @@ Inspect each raw mask's dataset path, dtype, shape, attributes and value histogr
 - ISRO/NISAR L1/L2 product format document, GUNW three-digit mask definition: https://bhoonidhi.nrsc.gov.in/NISAR/NISAR_Data_Product_Format_Document_V1.2.1_digisigned.pdf
 - ASF authenticated downloader documentation: https://docs.asf.alaska.edu/asf_search/downloading/
 
-This audit separates software behavior, product documentation and physical validation. Raw HDF5 inspection is complete for 12 selected products. The main unresolved physical question is whether interpolated ionosphere-screen pixels should be excluded or represented with a defensible uncertainty model; GOFF axis/outlier calibration and changed impoundment GeoJSONs remain scientifically unresolved.
+This audit separates software behavior, product documentation and physical validation. Raw HDF5 inspection is complete for 13 exact products. The main unresolved physical question is whether interpolated ionosphere-screen pixels should be excluded or represented with a defensible uncertainty model; GOFF axis/outlier calibration and changed impoundment GeoJSONs remain scientifically unresolved.
