@@ -880,10 +880,10 @@ def aoi_grid(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None,
     because the only ways forward from there are to resample - which invents
     values - or to stop. Stopping, loudly, is the better one.
     """
-    if epsg is None:
-        raise ValueError("Cannot place an AOI grid without source EPSG/CRS metadata.")
     if xs is None or ys is None or len(xs) < 2 or len(ys) < 2:
         return None
+    if epsg is None:
+        raise ValueError("Cannot place an AOI grid without source EPSG/CRS metadata.")
     res_x = abs(float(xs[1] - xs[0]))
     res_y = abs(float(ys[1] - ys[0]))
     if res_x <= 0 or res_y <= 0:
