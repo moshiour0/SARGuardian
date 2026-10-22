@@ -539,3 +539,41 @@ def test_flow_accumulation_refuses_cycles_and_receivers_into_nodata():
     points_into_nodata = np.array([3, -1, -1, -1], dtype=np.int64).reshape(2, 2)
     with pytest.raises(ValueError, match="nodata cell"):
         impoundment.flow_accumulation(filled, points_into_nodata)
+
+
+def test_ponding_stops_at_a_dry_saddle_and_excludes_low_ground_behind_it():
+    from impoundment import connected_flooded_upstream
+
+    # The upstream receiver tree branches from dam cell 0. Cells 2, 5 and 7
+    # sit above a 110 m water surface; their lower downstream descendants must
+    # not be counted because the pool cannot pass those dry saddles.
+    elevation = np.array([
+        100.0, 105.0, 120.0,
+         90.0, 109.0, 111.0,
+         80.0, 115.0,  90.0,
+    ]).reshape(3, 3)
+    children = {
+        0: [1, 4, 7],
+        1: [2],
+        2: [3],
+        4: [5],
+        5: [6],
+        7: [8],
+    }
+    indices = connected_flooded_upstream(0, elevation, children, water_level=110.0)
+    assert set(indices.tolist()) == {0, 1, 4}
+    depths = 110.0 - elevation.ravel()[indices]
+    assert depths.tolist() == [10.0, 5.0, 1.0]
+    assert float(depths.sum()) == pytest.approx(16.0)
+
+
+def test_ponding_refuses_invalid_site_or_nonfinite_water_level():
+    from impoundment import connected_flooded_upstream
+
+    elevation = np.array([100.0, 90.0])
+    children = {0: [1]}
+    with pytest.raises(ValueError, match="outside the elevation grid"):
+        connected_flooded_upstream(2, elevation, children, 110.0)
+    with pytest.raises(ValueError, match="water level must be finite"):
+        connected_flooded_upstream(0, elevation, children, float("nan"))
+    assert connected_flooded_upstream(0, elevation, children, 100.0).size == 0
