@@ -126,3 +126,37 @@ def test_exact_mask_bit_summary_comes_from_the_complete_global_histogram(tmp_pat
     assert exact["bit_set_counts_lsb0"]["8"] == 1
     assert exact["low_byte_histogram_decimal"]["12"] == 2
     assert result["targets"]["4"]["has_current_reader_mask_support"] is True
+
+
+def test_raw_diagnostic_mask_gate_matches_the_production_reader_for_fill_and_packed_bits():
+    """The diagnostic must never drift from the exact production quality gate."""
+    cases = [
+        np.array([[0, 11, 12, 111, 255]], dtype=np.uint8),
+        np.array([[
+            11, 12, 111, 255, 0x0100000C, 0x0000010C,
+            0x0001000C, 0x0200000C,
+        ]], dtype=np.uint32),
+    ]
+    pairs = [
+        ("water_flag_nonzero", "water_flag_nonzero"),
+        ("ref_subswath_zero", "reference_subswath_zero"),
+        ("secondary_subswath_zero", "secondary_subswath_zero"),
+        ("both_subswaths_valid_ignoring_water", "both_subswaths_valid_ignoring_water"),
+        ("land_valid_subswaths_low_byte", "land_valid_subswaths_low_byte"),
+        ("anomaly_flags_nonzero", "anomaly_flags_nonzero"),
+        ("ionosphere_interpolated_mask", "ionosphere_interpolated_mask"),
+        ("reserved_bits_nonzero", "reserved_bits_nonzero"),
+        ("current_reader_mask_gate", "current_reader_mask_gate"),
+    ]
+    for raw in cases:
+        for apply_iono in (True, False):
+            production = decode_gunw_mask(raw, apply_iono=apply_iono)
+            diagnostic = decode_wrs_mask(raw, apply_iono=apply_iono)
+            for diagnostic_key, production_key in pairs:
+                assert np.array_equal(
+                    diagnostic[diagnostic_key], production[production_key]
+                ), (
+                    f"{raw.dtype} mask decoder drift in {diagnostic_key}; "
+                    f"diagnostic={diagnostic[diagnostic_key]}, "
+                    f"production={production[production_key]}"
+                )
