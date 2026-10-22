@@ -25,6 +25,10 @@ def parse_polygon_wkt(value: str, *, max_vertices: int = 500) -> List[Point]:
     if not match:
         raise ValueError("AOI_WKT_MUST_BE_SINGLE_RING_POLYGON_WGS84_NO_HOLES")
     body = match.group(1).strip()
+    # Reject interior rings before tokenizing; never flatten multiple rings into
+    # one accidental exterior boundary.
+    if re.search(r"\\)\\s*,\\s*\\(", body):
+        raise ValueError("AOI_WKT_MUST_BE_SINGLE_RING_POLYGON_WGS84_NO_HOLES")
     chunks = body.split(",")
     if len(chunks) > max_vertices:
         raise ValueError(f"AOI_WKT_TOO_MANY_VERTICES_MAX_{max_vertices}")
@@ -51,12 +55,6 @@ def parse_polygon_wkt(value: str, *, max_vertices: int = 500) -> List[Point]:
         ring.append(ring[0])
     if len(set(ring[:-1])) < 3:
         raise ValueError("AOI_WKT_NEEDS_AT_LEAST_THREE_DISTINCT_VERTICES")
-    twice_area = sum(
-        ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]
-        for i in range(len(ring) - 1)
-    )
-    if not math.isfinite(twice_area) or abs(twice_area) < 1e-12:
-        raise ValueError("AOI_WKT_POLYGON_AREA_IS_ZERO")
     # Reject self-intersecting rings. Adjacent edges may share their endpoint.
     def orient(a: Point, b: Point, c: Point) -> float:
         return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
@@ -81,4 +79,10 @@ def parse_polygon_wkt(value: str, *, max_vertices: int = 500) -> List[Point]:
                        (abs(o4) <= 1e-12 and on_segment(c,d,b)))
             if crosses or touches:
                 raise ValueError("AOI_WKT_SELF_INTERSECTING_RING")
+    twice_area = sum(
+        ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]
+        for i in range(len(ring) - 1)
+    )
+    if not math.isfinite(twice_area) or abs(twice_area) < 1e-12:
+        raise ValueError("AOI_WKT_POLYGON_AREA_IS_ZERO")
     return ring
