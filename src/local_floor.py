@@ -281,15 +281,16 @@ def point_in_aoi(lon: float, lat: float, aoi_name: str) -> bool:
 
 
 def infer_aoi_from_dir(directory: str | Path) -> str | None:
-    """Infer only unambiguous export folder names; otherwise require --aoi."""
-    name = Path(directory).name.lower()
-    if "langtang" in name:
-        return "langtang"
-    if "lhende" in name:
-        return "lhende"
-    if "source" in name or re.search(r"(^|[_-])src($|[_-])", name):
-        return "source"
-    return None
+    """Infer AOI from exact path tokens; ambiguous folder names require --aoi."""
+    tokens = set(filter(None, re.split(r"[^a-z0-9]+", Path(directory).name.lower())))
+    found = set()
+    if "source" in tokens or "src" in tokens:
+        found.add("source")
+    if "langtang" in tokens:
+        found.add("langtang")
+    if "lhende" in tokens:
+        found.add("lhende")
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def skipped_row(file: Path, target_id: str, lat: float, lon: float,
@@ -327,6 +328,8 @@ def main() -> int:
     ap.add_argument("--reading", default=None,
                     help="with --targets, keep only rows whose 'reading' "
                          "column equals this, e.g. DETACHMENT-like")
+    ap.add_argument("--allow-event-affected-aoi", action="store_true",
+                    help="explicitly allow noise-floor calculation inside the LHENDE runout/impoundment corridor; this is not a stable-ground control.")
     ap.add_argument("--band", type=int, default=1)
     ap.add_argument("--radius", type=int, default=6,
                     help="window half-width in pixels; 6 is about 1 km at 80 m")
@@ -382,8 +385,10 @@ def main() -> int:
     aoi_name = args.aoi or infer_aoi_from_dir(args.dir)
     if aoi_name is None:
         ap.error("could not infer AOI from --dir; pass --aoi source|langtang|lhende explicitly")
+    if aoi_name == "lhende" and not args.allow_event_affected_aoi:
+        ap.error("LHENDE is an event-affected runout/impoundment corridor, not a stable-ground control; pass --allow-event-affected-aoi only for an explicitly justified analysis.")
     if aoi_name == "lhende":
-        logger.warning("LHENDE IS AN EVENT-AFFECTED RUNOUT/IMPOUNDMENT CORRIDOR; it is not a stable-ground control.")
+        logger.warning("LHENDE IS AN EVENT-AFFECTED RUNOUT/IMPOUNDMENT CORRIDOR; do not interpret its scatter as a stable-ground control.")
 
     radii = args.sweep or [args.radius]
     rows = []
