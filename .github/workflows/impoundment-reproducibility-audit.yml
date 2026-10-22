@@ -102,16 +102,21 @@ jobs:
                         f"- Exact semantic matches: {match}",
                         f"- AOIs requiring review: {review}",
                         f"- Status: {'ALL_MATCH' if len(values) == 4 and review == 0 else 'REVIEW_REQUIRED'}", "",
-                        "| AOI | Baseline sites | New sites | Exact coordinate matches | Sites with H=10 result: baseline | Sites with H=10 result: candidate | Status |",
-                        "|---|---:|---:|---:|---:|---:|---|"]
+                        "| AOI | Baseline sites | Candidate sites | Exact coordinate matches | H=10 result baseline/candidate | H=10 truncated baseline/candidate | Nearest baseline→candidate median/max (m) | Status |",
+                        "|---|---:|---:|---:|---:|---:|---:|---|"]
               for item in values:
                   aoi = Path(item["candidate_path"]).stem.removeprefix("dam_sites_")
                   h10 = item["response_counts_by_threshold_height_m"]
+                  t10 = item["truncated_response_counts_by_threshold_height_m"]
+                  nearest = item["nearest_neighbour_review_only"]["baseline_unmatched_to_candidate"]
                   lines.append(
                       f"| {aoi} | {item['baseline_site_count']} | {item['candidate_site_count']} | "
-                      f"{item['exact_coordinate_matches']} | {h10['baseline'].get('10', 0)} | "
-                      f"{h10['candidate'].get('10', 0)} | {item['status']} |"
+                      f"{item['exact_coordinate_matches']} | {h10['baseline'].get('10', 0)}/{h10['candidate'].get('10', 0)} | "
+                      f"{t10['baseline'].get('10', 0)}/{t10['candidate'].get('10', 0)} | "
+                      f"{nearest.get('median_m')}/{nearest.get('max_m')} | {item['status']} |"
                   )
+              lines += ["", "Nearest neighbours are inspection hints only, not matched site identities. "
+                         "Truncated pools are lower-bound volumes; see per-site changes and provenance in the artifact."]
               lines += ["", "Artifact contains exact sampled elevation grids/caches, SHA-256 provenance sidecars, regenerated GeoJSONs, baseline GeoJSONs, exact-coordinate-only semantic diffs, and logs. No result is auto-committed."]
           summary_path.parent.mkdir(parents=True, exist_ok=True)
           summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
