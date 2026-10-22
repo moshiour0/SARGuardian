@@ -388,6 +388,14 @@ def main() -> int:
     else:
         ap.error("give --lat and --lon, or --targets")
 
+    target_ids = [str(t[0]) for t in targets]
+    if len(target_ids) != len(set(target_ids)):
+        ap.error("candidate IDs in --targets must be unique; duplicate IDs could mix floors across locations")
+    for target_id, lat, lon in targets:
+        if not (np.isfinite(lat) and np.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
+            ap.error(f"target {target_id or '(single)'} has invalid WGS84 coordinates ({lat}, {lon})")
+
     folder_aois = aoi_tokens_from_dir(args.dir)
     if len(folder_aois) > 1:
         ap.error(f"--dir name contains conflicting AOI markers {sorted(folder_aois)}; use a dedicated export directory.")
@@ -403,6 +411,8 @@ def main() -> int:
         logger.warning("LHENDE IS AN EVENT-AFFECTED RUNOUT/IMPOUNDMENT CORRIDOR; do not interpret its scatter as a stable-ground control.")
 
     radii = args.sweep or [args.radius]
+    if any(radius < 1 for radius in radii):
+        ap.error("--radius and every --sweep radius must be at least 1 pixel")
     rows = []
     for tid, lat, lon in targets:
         if not point_in_aoi(lon, lat, aoi_name):
@@ -456,8 +466,14 @@ def write_as_floors(rows: list[dict], path: Path, layer: str) -> int:
     describes, so mixing targets would gate one slope on another's noise.
     """
     usable = [r for r in rows if r["usable"]]
-    if len({r.get("target_id", "") for r in usable}) > 1:
+    if len({str(r.get("target_id", "")) for r in usable}) > 1:
         raise ValueError("--as-floors needs a single target")
+    coordinates = {
+        (round(float(r["lat"]), 8), round(float(r["lon"]), 8))
+        for r in usable if r.get("lat") is not None and r.get("lon") is not None
+    }
+    if len(coordinates) > 1:
+        raise ValueError("--as-floors rows contain one target ID at multiple coordinates")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["reference", "secondary", "layer",
