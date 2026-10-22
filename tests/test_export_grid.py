@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gunw_reader import aoi_grid, place_on_grid
+from gunw_reader import aoi_grid, export_clipped, place_on_grid
 
 RES = 0.0008
 RING = [(85.40, 28.20), (85.80, 28.20), (85.80, 28.60), (85.40, 28.60)]
@@ -70,3 +70,69 @@ def test_a_valid_grid_requires_an_explicit_crs():
     xs, ys = _centres(85.5588, 28.4812, 3, 3)
     with pytest.raises(ValueError, match="without source EPSG/CRS"):
         aoi_grid(xs, ys, RING, None)
+
+
+def _projected_source_grid():
+    from pyproj import Transformer
+
+    tf = Transformer.from_crs(4326, 32645, always_xy=True)
+    cx, cy = tf.transform(85.52983, 28.27799)
+    # UTM posting centres are aligned to the absolute 80 m lattice; this lets
+    # the exporter use the deterministic common AOI grid without resampling.
+    x_start = np.floor((cx - 8_000.0 - RES) / 80.0) * 80.0 + 40.0
+    y_start = np.floor((cy + 8_000.0 - RES) / 80.0) * 80.0 + 40.0
+    xs = x_start + 80.0 * np.arange(201)
+    ys = y_start - 80.0 * np.arange(201)
+    return xs, ys
+
+
+def test_all_invalid_gunw_product_writes_an_explicit_nodata_aoi_raster(tmp_path):
+    import rasterio
+
+    xs, ys = _projected_source_grid()
+    shape = (len(ys), len(xs))
+    result = {
+        "file": "NISAR_L2_PR_GUNW_024_098_A_016_025_4000_SH_"
+                "20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001.h5",
+        "reference_date": "20260702",
+        "secondary_date": "20260714",
+        "valid": np.zeros(shape, dtype=bool),
+        "displacement_mm": np.full(shape, np.nan, dtype=np.float32),
+        "coherence": np.full(shape, np.nan, dtype=np.float32),
+        "xs": xs, "ys": ys, "epsg": 32645,
+        "aoi_name": "source", "aoi_mask_applied": True,
+        "wavelength_m": 0.2384, "ionosphere_correction_applied": True,
+    }
+    result_meta = export_clipped(result, tmp_path)
+    assert result_meta["export_status"] == "NO_VALID_PIXELS"
+    assert result_meta["export_valid_px"] == 0
+    assert result_meta["export_file"]
+
+    with rasterio.open(tmp_path / result_meta["export_file"]) as src:
+        assert src.count == 2
+        assert src.crs.to_epsg() == 32645
+        assert src.tags()["aoi_name"] == "source"
+        assert src.tags()["aoi_mask_applied"] == "true"
+        assert src.tags()["export_status"] == "NO_VALID_PIXELS"
+        assert int(src.tags()["valid_pixel_count"]) == 0
+        assert np.isnan(src.read(1)).all()
+        assert np.isnan(src.read(2)).all()
+
+
+def test_gunw_export_refuses_to_claim_aoi_provenance_without_a_mask(tmp_path):
+    xs, ys = _projected_source_grid()
+    shape = (len(ys), len(xs))
+    result = {
+        "file": "NISAR_L2_PR_GUNW_024_098_A_016_025_4000_SH_"
+                "20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001.h5",
+        "reference_date": "20260702", "secondary_date": "20260714",
+        "valid": np.ones(shape, dtype=bool),
+        "displacement_mm": np.ones(shape, dtype=np.float32),
+        "coherence": np.ones(shape, dtype=np.float32),
+        "xs": xs, "ys": ys, "epsg": 32645,
+        "aoi_name": "source", "aoi_mask_applied": False,
+        "wavelength_m": 0.2384, "ionosphere_correction_applied": True,
+    }
+    with pytest.raises(RuntimeError, match="did not apply the AOI mask"):
+        export_clipped(result, tmp_path)
+    assert not list(tmp_path.glob("*.tif"))
