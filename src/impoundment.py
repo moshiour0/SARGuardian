@@ -54,6 +54,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import hashlib
 import heapq
 import json
 import logging
@@ -61,6 +62,7 @@ import math
 import sys
 import time
 import urllib.parse
+from datetime import datetime, timezone
 import urllib.request
 from pathlib import Path
 
@@ -93,61 +95,253 @@ NB = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
 # ---------------------------------------------------------------------------
 # DEM loading
 # ---------------------------------------------------------------------------
-def dem_from_api(bbox, target_cells: int = 12000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Sample SRTM 30 m from OpenTopoData over the bbox."""
-    lon0, lat0, lon1, lat1 = bbox
+API_ENDPOINT = "https://api.opentopodata.org/v1/srtm30m"
+API_CACHE_SCHEMA = 1
+
+
+def api_grid_shape(bbox, target_cells: int = 12000) -> tuple[int, int, float]:
+    """Return the deterministic north-to-south grid dimensions for an API AOI."""
+    if len(bbox) != 4:
+        raise ValueError("AOI bbox must be [west, south, east, north].")
+    lon0, lat0, lon1, lat1 = map(float, bbox)
+    if not (all(math.isfinite(v) for v in (lon0, lat0, lon1, lat1))
+            and -180 <= lon0 < lon1 <= 180 and -90 <= lat0 < lat1 <= 90):
+        raise ValueError(f"Invalid WGS84 bbox: {bbox!r}")
+    if int(target_cells) != target_cells or target_cells < 4:
+        raise ValueError("--cells must be an integer >= 4 so both grid axes contain at least two samples.")
     midlat = (lat0 + lat1) / 2
     w_km = (lon1 - lon0) * 111.32 * math.cos(math.radians(midlat))
     h_km = (lat1 - lat0) * 110.57
     aspect = w_km / h_km
-    ny = int(round(math.sqrt(target_cells / aspect)))
-    nx = int(round(target_cells / ny))
+    if not (math.isfinite(aspect) and aspect > 0):
+        raise ValueError("AOI grid aspect ratio is invalid.")
+    ny = max(2, int(round(math.sqrt(target_cells / aspect))))
+    nx = max(2, int(round(target_cells / ny)))
+    return ny, nx, w_km
 
-    lats = np.linspace(lat1, lat0, ny)          # north -> south, image order
+
+def elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint=API_ENDPOINT) -> str:
+    """Stable digest of the exact elevation array, axes and request geometry."""
+    digest = hashlib.sha256()
+    descriptor = {
+        "schema_version": API_CACHE_SCHEMA,
+        "endpoint": endpoint,
+        "bbox": [float(v) for v in bbox],
+        "target_cells": int(target_cells),
+        "shape": list(np.asarray(z).shape),
+    }
+    digest.update(json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    for value in (z, lats, lons):
+        array = np.ascontiguousarray(np.asarray(value, dtype="<f8"))
+        digest.update(json.dumps(list(array.shape), separators=(",", ":")).encode("ascii"))
+        digest.update(array.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _validate_elevation_grid(z, lats, lons, bbox) -> None:
+    z = np.asarray(z)
+    lats = np.asarray(lats)
+    lons = np.asarray(lons)
+    if z.ndim != 2 or lats.ndim != 1 or lons.ndim != 1:
+        raise ValueError("DEM cache must contain a 2-D elevation grid and 1-D axes.")
+    if z.shape != (lats.size, lons.size) or min(z.shape) < 2:
+        raise ValueError(f"DEM shape {z.shape} does not match coordinate axes ({lats.size}, {lons.size}).")
+    if not (np.all(np.isfinite(lats)) and np.all(np.isfinite(lons)) and np.isfinite(z).any()):
+        raise ValueError("DEM grid has invalid coordinate axes or no finite elevation samples.")
+    if not (np.all(np.diff(lats) < 0) and np.all(np.diff(lons) > 0)):
+        raise ValueError("DEM axes must be strictly north-to-south in latitude and west-to-east in longitude.")
+    west, south, east, north = map(float, bbox)
+    eps = 1e-9
+    if (lons.min() < west - eps or lons.max() > east + eps
+            or lats.min() < south - eps or lats.max() > north + eps):
+        raise ValueError("DEM coordinate axes extend outside the requested WGS84 bbox.")
+
+
+def _load_api_cache(path: Path, bbox, target_cells: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            metadata = json.loads(str(data["metadata_json"].item()))
+            z = np.asarray(data["z"], dtype=np.float64)
+            lats = np.asarray(data["lats"], dtype=np.float64)
+            lons = np.asarray(data["lons"], dtype=np.float64)
+    except Exception as exc:
+        raise ValueError(f"DEM cache {path} is unreadable; refusing to fall back silently to live API data.") from exc
+
+    if metadata.get("schema_version") != API_CACHE_SCHEMA:
+        raise ValueError(f"DEM cache schema mismatch in {path}.")
+    if metadata.get("endpoint") != API_ENDPOINT:
+        raise ValueError(f"DEM cache endpoint mismatch in {path}.")
+    if metadata.get("bbox") != [float(v) for v in bbox]:
+        raise ValueError(f"DEM cache AOI bbox does not match the requested AOI in {path}.")
+    if metadata.get("target_cells") != int(target_cells):
+        raise ValueError(f"DEM cache target-cell request does not match --cells in {path}.")
+    ny, nx, _ = api_grid_shape(bbox, target_cells)
+    if z.shape != (ny, nx):
+        raise ValueError(f"DEM cache shape mismatch: expected {(ny, nx)}, got {z.shape}.")
+    _validate_elevation_grid(z, lats, lons, bbox)
+    fingerprint = elevation_grid_sha256(z, lats, lons, bbox, target_cells)
+    if metadata.get("grid_sha256") != fingerprint:
+        raise ValueError(f"DEM cache fingerprint mismatch in {path}; the cached grid may be incomplete or modified.")
+    logger.info("Loaded fixed DEM grid %s sha256=%s", path, fingerprint)
+    return z, lats, lons
+
+
+def _save_api_cache(path: Path, z, lats, lons, bbox, target_cells: int) -> None:
+    _validate_elevation_grid(z, lats, lons, bbox)
+    metadata = {
+        "schema_version": API_CACHE_SCHEMA,
+        "source": "OpenTopoData SRTM 30m",
+        "endpoint": API_ENDPOINT,
+        "bbox": [float(v) for v in bbox],
+        "target_cells": int(target_cells),
+        "shape": list(np.asarray(z).shape),
+        "nodata_cells": int(np.count_nonzero(~np.isfinite(z))),
+        "grid_sha256": elevation_grid_sha256(z, lats, lons, bbox, target_cells),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    with temp.open("wb") as stream:
+        np.savez_compressed(
+            stream, z=np.asarray(z, dtype=np.float64),
+            lats=np.asarray(lats, dtype=np.float64),
+            lons=np.asarray(lons, dtype=np.float64),
+            metadata_json=np.array(json.dumps(metadata, sort_keys=True, separators=(",", ":"))),
+        )
+    temp.replace(path)
+    logger.info("Saved fixed DEM grid %s sha256=%s", path, metadata["grid_sha256"])
+
+
+def dem_from_api(bbox, target_cells: int = 12000, cache_path: Path | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sample SRTM 30 m through OpenTopoData, optionally pinning the exact grid.
+
+    When cache_path exists it is verified and reused without a network request.
+    A malformed/mismatched cache is an error, never an implicit cache miss.
+    """
+    ny, nx, w_km = api_grid_shape(bbox, target_cells)
+    if cache_path is not None and cache_path.exists():
+        return _load_api_cache(cache_path, bbox, target_cells)
+
+    lon0, lat0, lon1, lat1 = map(float, bbox)
+    h_km = (lat1 - lat0) * 110.57
+    lats = np.linspace(lat1, lat0, ny)
     lons = np.linspace(lon0, lon1, nx)
     pts = [(la, lo) for la in lats for lo in lons]
-
     n_calls = (len(pts) + 99) // 100
     logger.info("Sampling %d x %d = %d cells (~%.0f m) via OpenTopoData: %d calls, ~%.0f s",
                 ny, nx, len(pts), w_km * 1000 / nx, n_calls, n_calls * 1.15)
 
-    z = []
+    elevations = []
     for k in range(0, len(pts), 100):
         chunk = pts[k:k + 100]
-        loc = "|".join(f"{a:.5f},{b:.5f}" for a, b in chunk)
-        url = "https://api.opentopodata.org/v1/srtm30m?locations=" + urllib.parse.quote(loc)
+        locations = "|".join(f"{lat:.5f},{lon:.5f}" for lat, lon in chunk)
+        url = API_ENDPOINT + "?locations=" + urllib.parse.quote(locations)
         for attempt in range(4):
             try:
-                d = json.loads(urllib.request.urlopen(url, timeout=120).read().decode())
-                z += [r.get("elevation") for r in d["results"]]
+                response = urllib.request.urlopen(url, timeout=120)
+                payload = json.loads(response.read().decode("utf-8"))
+                results = payload.get("results")
+                if not isinstance(results, list) or len(results) != len(chunk):
+                    raise ValueError(f"OpenTopoData returned {len(results) if isinstance(results, list) else 'no'} results for {len(chunk)} requested cells.")
+                elevations.extend(item.get("elevation") for item in results)
                 break
             except Exception as exc:
                 if attempt == 3:
-                    raise
-                logger.warning("retry (%s)", exc)
+                    raise RuntimeError(f"OpenTopoData failed for request batch {k//100 + 1}/{n_calls}: {type(exc).__name__}: {exc}") from exc
+                logger.warning("retrying OpenTopoData batch %d/%d after %s", k//100 + 1, n_calls, type(exc).__name__)
                 time.sleep(3)
-        time.sleep(1.1)
-        if (k // 100) % 20 == 0 and k:
-            logger.info("  %d/%d", k, len(pts))
+        if k + len(chunk) < len(pts):
+            time.sleep(1.1)
 
-    arr = np.array([np.nan if v is None else v for v in z], dtype=float).reshape(ny, nx)
-    return arr, lats, lons
+    z = np.array([np.nan if value is None else value for value in elevations], dtype=np.float64).reshape(ny, nx)
+    _validate_elevation_grid(z, lats, lons, bbox)
+    if cache_path is not None:
+        _save_api_cache(cache_path, z, lats, lons, bbox, target_cells)
+    return z, lats, lons
 
 
 def dem_from_file(path: Path, bbox=None):
+    """Load only an axis-aligned north-up EPSG:4326 GeoTIFF for this grid solver.
+
+    The solver computes metric postings from degree axes. Treating a projected
+    UTM GeoTIFF as longitude/latitude would silently corrupt flow slopes,
+    cell areas, and output site coordinates, so unsupported CRS/affines fail
+    closed instead of being interpreted by assumption.
+    """
     try:
         import rasterio
     except ImportError:
-        logger.error("rasterio required for --dem:  pip install rasterio")
+        logger.error("rasterio required for --dem: pip install rasterio")
         raise SystemExit(1)
     with rasterio.open(path) as src:
+        if src.crs is None or src.crs.to_epsg() != 4326:
+            raise ValueError("The impoundment solver currently requires a WGS84/EPSG:4326 DEM; reproject the GeoTIFF before analysis.")
+        transform = src.transform
+        if (abs(transform.b) > 1e-10 or abs(transform.d) > 1e-10
+                or transform.a <= 0 or transform.e >= 0):
+            raise ValueError("DEM must be an unrotated north-up EPSG:4326 grid (positive x posting, negative y posting).")
         arr = src.read(1).astype(float)
         if src.nodata is not None:
             arr[arr == src.nodata] = np.nan
         h, w = arr.shape
-        xs = np.array([src.xy(0, c)[0] for c in range(w)])
-        ys = np.array([src.xy(r, 0)[1] for r in range(h)])
+        if min(h, w) < 2:
+            raise ValueError("DEM must contain at least two rows and columns.")
+        xs = np.array([src.xy(0, col)[0] for col in range(w)], dtype=float)
+        ys = np.array([src.xy(row, 0)[1] for row in range(h)], dtype=float)
+    _validate_elevation_grid(arr, ys, xs, bbox or (float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())))
     return arr, ys, xs
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def dem_provenance(z, lats, lons, *, bbox, source: str,
+                   target_cells: int, source_file: Path | None = None,
+                   cache_path: Path | None = None) -> dict:
+    """Machine-readable provenance for the exact elevation grid used."""
+    _validate_elevation_grid(z, lats, lons, bbox)
+    data = {
+        "schema_version": 1,
+        "source": source,
+        "endpoint": API_ENDPOINT if source == "OpenTopoData SRTM 30m" else None,
+        "bbox_wgs84": [float(v) for v in bbox],
+        "shape_rows_cols": list(np.asarray(z).shape),
+        "latitude_north_south": [float(np.max(lats)), float(np.min(lats))],
+        "longitude_west_east": [float(np.min(lons)), float(np.max(lons))],
+        "latitude_posting_deg": float(np.median(-np.diff(lats))),
+        "longitude_posting_deg": float(np.median(np.diff(lons))),
+        "elevation_nodata_cells": int(np.count_nonzero(~np.isfinite(z))),
+        "elevation_min_m": float(np.nanmin(z)),
+        "elevation_max_m": float(np.nanmax(z)),
+        "grid_sha256": elevation_grid_sha256(z, lats, lons, bbox, target_cells),
+    }
+    if source_file is not None:
+        data["source_file"] = str(source_file)
+        data["source_file_sha256"] = file_sha256(source_file)
+    if cache_path is not None:
+        data["api_cache_file"] = str(cache_path)
+    return data
+
+
+def write_provenance(out: Path, provenance: dict, parameters: dict, rows: list[dict]) -> Path:
+    """Write an atomic sidecar binding a GeoJSON result to input grid and parameters."""
+    rows_payload = json.dumps(rows, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    result = dict(provenance)
+    result["analysis_parameters"] = parameters
+    result["result_features"] = len(rows)
+    result["result_rows_sha256"] = hashlib.sha256(rows_payload).hexdigest()
+    if out.is_file():
+        result["geojson_sha256"] = file_sha256(out)
+    path = out.with_suffix(out.suffix + ".provenance.json")
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    temp.replace(path)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +621,8 @@ def main() -> int:
     ap.add_argument("--aoi", choices=sorted(AOIS), default="source",
                     help="terrain AOI. 'lhende' is the valley the 26 Aug 2026 avalanche dammed and breached, so its map is a testable prediction")
     ap.add_argument("--cells", type=int, default=12000, help="approx grid cells for --api")
+    ap.add_argument("--api-cache", type=Path, default=None,
+                    help="save/reuse the exact API elevation grid (.npz); existing cache is validated, not silently refreshed")
     ap.add_argument("--heights", type=float, nargs="+", default=[25, 50, 100, 150])
     ap.add_argument("--min-accum", type=int, default=40,
                     help="upstream cells needed to count as channel")
@@ -439,21 +635,59 @@ def main() -> int:
     ap.add_argument("--geojson", metavar="OUT.geojson")
     args = ap.parse_args()
 
+    if args.cells < 4:
+        ap.error("--cells must be at least 4")
+    if args.api_cache is not None and not args.api:
+        ap.error("--api-cache is only valid together with --api")
+    if args.api and args.geojson and args.api_cache is None:
+        ap.error("for reproducible GeoJSON output, pass --api-cache PATH so the exact API elevation grid is retained and can be reused")
+    if (not args.heights or any(not math.isfinite(h) or h <= 0 for h in args.heights)
+            or len(set(args.heights)) != len(args.heights)):
+        ap.error("--heights must be unique, finite, positive blockage heights")
+    if args.min_accum < 1:
+        ap.error("--min-accum must be a positive integer")
+    if args.top < 1:
+        ap.error("--top must be at least 1")
+    if not math.isfinite(args.min_separation) or args.min_separation < 0:
+        ap.error("--min-separation must be a finite non-negative number")
+
     bbox = AOIS[args.aoi]
     print(f"\nAOI {args.aoi}: {bbox}")
     print(f"Dam heights tested: {', '.join(f'{h:g} m' for h in args.heights)}")
 
+    source_file = None
     if args.api:
-        z, lats, lons = dem_from_api(bbox, args.cells)
+        z, lats, lons = dem_from_api(bbox, args.cells, args.api_cache)
+        source = "OpenTopoData SRTM 30m"
+        target_cells = args.cells
     else:
-        z, lats, lons = dem_from_file(Path(args.dem))
+        source_file = Path(args.dem).resolve()
+        z, lats, lons = dem_from_file(source_file, bbox=bbox)
+        source = "local GeoTIFF"
+        target_cells = int(z.size)
+    provenance = dem_provenance(z, lats, lons, bbox=bbox, source=source,
+                                target_cells=target_cells, source_file=source_file,
+                                cache_path=args.api_cache)
+    logger.info("DEM_GRID_SHA256=%s shape=%s nodata_cells=%d",
+                provenance["grid_sha256"], provenance["shape_rows_cols"],
+                provenance["elevation_nodata_cells"])
+    logger.info("DEM_PROVENANCE: %s", json.dumps(provenance, sort_keys=True))
 
     rows = analyse(z, lats, lons, args.heights, args.min_accum, args.top,
                    args.min_separation, args.rank_by)
     report(rows, args.heights, args.rank_by)
 
-    if args.geojson and rows:
-        write_geojson(rows, Path(args.geojson))
+    if args.geojson:
+        output = Path(args.geojson)
+        write_geojson(rows, output)
+        sidecar = write_provenance(
+            output, provenance,
+            {"aoi": args.aoi, "heights_m": args.heights,
+             "min_accum_cells": args.min_accum, "top": args.top,
+             "min_separation_km": args.min_separation, "rank_by": args.rank_by},
+            rows,
+        )
+        logger.info("DEM_AND_OUTPUT_PROVENANCE=%s", sidecar)
 
     print("\nCaveats: pools are not tested for spilling over cols, so volumes are")
     print("upper bounds near divides. Dam height is imposed, not predicted -")
