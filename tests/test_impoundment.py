@@ -432,7 +432,7 @@ def test_impoundment_analysis_rejects_mismatched_axes_and_duplicate_heights():
     lons = np.array([85.4, 85.5, 85.6, 85.7])
     with pytest.raises(ValueError, match="does not match"):
         impoundment.analyse(z, lats[:-1], lons, [10, 25], 1, 2)
-    with pytest.raises(ValueError, match="unique, finite, positive"):
+    with pytest.raises(ValueError, match=r"unique, finite (?:and )?positive"):
         impoundment.analyse(z, lats, lons, [10, 10], 1, 2)
 
 
