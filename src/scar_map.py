@@ -140,6 +140,7 @@ logger = logging.getLogger("scar_map")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import resolve  # noqa: E402
+from gunw_reader import SOURCE_RING  # noqa: E402
 
 STAC = "https://earth-search.aws.element84.com/v1/search"
 COLLECTION = "sentinel-2-l2a"
@@ -157,6 +158,34 @@ SNOW = 11
 GRID = (602, 457)
 
 EVENT = "2026-08-26"
+
+
+_SOURCE_AOI_MASK: np.ndarray | None = None
+
+
+def source_aoi_mask() -> np.ndarray:
+    """Exact source polygon on the common grid, not just the bounding rectangle.
+
+    The source AOI tuple is used for STAC discovery and raster reads, because
+    those APIs consume rectangular windows. All scientific area statistics,
+    change masks and candidate clusters must additionally use SOURCE_RING.
+    Pixel centres on the polygon boundary are treated as inside.
+    """
+    global _SOURCE_AOI_MASK
+    if _SOURCE_AOI_MASK is None:
+        import rasterio
+        from rasterio.features import geometry_mask
+        from rasterio.warp import transform_geom
+
+        ring = [list(p) for p in SOURCE_RING]
+        ring.append(ring[0])
+        geom = {"type": "Polygon", "coordinates": [ring]}
+        projected = transform_geom("EPSG:4326", "EPSG:32645", geom)
+        _SOURCE_AOI_MASK = geometry_mask(
+            [projected], out_shape=GRID, transform=grid_transform(),
+            all_touched=False, invert=True,
+        )
+    return _SOURCE_AOI_MASK
 
 
 def _stac(body: dict) -> list[dict]:
@@ -180,7 +209,11 @@ def by_id(ids: list[str]) -> dict[str, dict]:
 
 
 def _read(feature: dict, asset: str) -> np.ndarray:
-    """One asset, clipped to the AOI and resampled onto the common grid."""
+    """Read the AOI bounding window, resampled to the common grid.
+
+    This is a rectangular I/O optimisation. Exact polygon eligibility is applied
+    by source_aoi_mask() before any scene coverage or candidate statistics.
+    """
     import rasterio
     from rasterio.enums import Resampling
     from rasterio.warp import transform_bounds
@@ -209,14 +242,18 @@ def grid_transform():
 
 
 def aoi_cloud(feature: dict) -> dict:
-    """Cloud over the AOI, which is not the scene-level figure."""
+    """Cloud/clear/snow percentages inside the exact source polygon."""
     scl = _read(feature, "scl").astype(int)
+    inside = source_aoi_mask()
     bad = np.isin(scl, list(UNUSABLE))
+    denominator = int(inside.sum())
+    if denominator == 0:
+        raise RuntimeError("SOURCE_AOI_HAS_NO_GRID_CELLS")
     return {"id": feature["id"], "date": feature["properties"]["datetime"][:10],
             "scene_cloud": feature["properties"].get("eo:cloud_cover", float("nan")),
-            "aoi_cloud_pct": 100.0 * bad.mean(),
-            "aoi_clear_pct": 100.0 * (~bad).mean(),
-            "snow_pct": 100.0 * (scl == SNOW).mean()}
+            "aoi_cloud_pct": 100.0 * int((bad & inside).sum()) / denominator,
+            "aoi_clear_pct": 100.0 * int((~bad & inside).sum()) / denominator,
+            "snow_pct": 100.0 * int(((scl == SNOW) & inside).sum()) / denominator}
 
 
 def ndsi(feature: dict) -> tuple:
@@ -226,7 +263,9 @@ def ndsi(feature: dict) -> tuple:
     scl = _read(feature, "scl").astype(int)
     den = g + sw
     n = np.where(den > 0, (g - sw) / np.maximum(den, 1.0), np.nan)
-    return n, ~np.isin(scl, list(UNUSABLE))
+    inside = source_aoi_mask()
+    n[~inside] = np.nan
+    return n, (~np.isin(scl, list(UNUSABLE)) & inside)
 
 
 def composite(features: list[dict]) -> tuple:
@@ -494,11 +533,15 @@ def main() -> int:
     logger.info("post-event composite from %d scenes", len(args.post))
     post, post_ok = composite([F[i] for i in args.post])
 
-    both = pre_ok & post_ok & np.isfinite(pre) & np.isfinite(post)
+    exact_aoi = source_aoi_mask()
+    both = pre_ok & post_ok & np.isfinite(pre) & np.isfinite(post) & exact_aoi
     d = np.where(both, post - pre, np.nan)
+    aoi_cells = int(exact_aoi.sum())
+    if aoi_cells == 0:
+        raise SystemExit("ERROR=SOURCE_AOI_HAS_NO_GRID_CELLS")
     print(f"\ncomparable in both epochs: {int(both.sum()):,} px "
-          f"({100*both.mean():.1f}% of the AOI)")
-    base = float(100 * np.mean(d[both] < -0.35))
+          f"({100*int(both.sum())/aoi_cells:.1f}% of exact polygon AOI)")
+    base = float(100 * np.mean(d[both] < -0.35)) if both.any() else float("nan")
     print(f"scar-like across the AOI:  {base:.2f}%  "
           f"(the rate an isolated patch has to beat)")
 
