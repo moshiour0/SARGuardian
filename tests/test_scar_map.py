@@ -21,7 +21,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from scar_map import AOI, GRID, UNUSABLE, grid_transform, grow, measure, probe, source_aoi_mask
+from scar_map import (
+    AOI, GRID, SOURCE_RING, UNUSABLE, grid_transform, grow, measure, probe,
+    source_aoi_mask, point_in_ring, representative_cluster_index,
+)
 
 
 def test_the_grid_transform_comes_from_the_aoi_not_a_band():
@@ -141,3 +144,30 @@ def test_measure_reports_extent_and_a_change_weighted_centroid():
     assert s["was_snow_pct"] == 100.0
     # weighted centroid pulled north of the plain one (north = larger latitude)
     assert s["weighted_lat"] > s["centroid_lat"]
+
+
+def test_representative_sample_stays_inside_concave_aoi_when_centroid_does_not():
+    # A U-shaped polygon: the 4 observed pixels are inside its two arms, but
+    # their arithmetic centroid falls in the excluded notch.
+    ring = [
+        (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (3.0, 4.0),
+        (3.0, 1.0), (1.0, 1.0), (1.0, 4.0), (0.0, 4.0),
+    ]
+    xs = np.array([0.5, 0.5, 3.5, 3.5])
+    ys = np.array([2.5, 3.5, 2.5, 3.5])
+    lons, lats = xs.copy(), ys.copy()
+
+    centroid_lon, centroid_lat = float(lons.mean()), float(lats.mean())
+    assert not point_in_ring(centroid_lon, centroid_lat, ring)
+
+    idx = representative_cluster_index(xs, ys, lons, lats, ring)
+    assert (xs[idx], ys[idx]) in set(zip(xs, ys))
+    assert point_in_ring(float(lons[idx]), float(lats[idx]), ring)
+
+
+def test_representative_sample_refuses_clusters_without_an_in_aoi_pixel():
+    ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    xs = np.array([2.0, 3.0])
+    ys = np.array([2.0, 3.0])
+    with pytest.raises(ValueError, match="no observed pixel centre"):
+        representative_cluster_index(xs, ys, xs, ys, ring)

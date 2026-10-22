@@ -315,6 +315,55 @@ def enumerate_candidates(both, pre, d, drop, was_snow, min_px):
     return out
 
 
+def point_in_ring(lon: float, lat: float, ring) -> bool:
+    """Exact point-in-polygon for a small WGS84 lon/lat ring.
+
+    Points on an edge count as inside. The AOI is local and small enough that
+    ray casting in geographic coordinates is adequate for eligibility; metric
+    ranking and terrain sampling still use the projected grid coordinates.
+    """
+    if len(ring) < 3 or not (math.isfinite(lon) and math.isfinite(lat)):
+        return False
+    inside = False
+    eps = 1e-10
+    for i, (x1, y1) in enumerate(ring):
+        x2, y2 = ring[(i + 1) % len(ring)]
+        cross = (lon - x1) * (y2 - y1) - (lat - y1) * (x2 - x1)
+        if (abs(cross) <= eps
+                and min(x1, x2) - eps <= lon <= max(x1, x2) + eps
+                and min(y1, y2) - eps <= lat <= max(y1, y2) + eps):
+            return True
+        if (y1 > lat) != (y2 > lat):
+            x_cross = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
+            if lon < x_cross:
+                inside = not inside
+    return inside
+
+
+def representative_cluster_index(xs, ys, lons, lats, ring=SOURCE_RING) -> int:
+    """Choose an observed cluster pixel nearest its projected centroid.
+
+    An arithmetic centroid of a non-convex cluster can lie outside both the
+    feature and its source AOI. Terrain slope/aspect must be sampled at an
+    actual in-AOI pixel, not at that invented location. The geometric centroid
+    remains available separately for visualization/reporting.
+    """
+    x = np.asarray(xs, dtype=float).ravel()
+    y = np.asarray(ys, dtype=float).ravel()
+    lon = np.asarray(lons, dtype=float).ravel()
+    lat = np.asarray(lats, dtype=float).ravel()
+    if x.size == 0 or any(arr.size != x.size for arr in (y, lon, lat)):
+        raise ValueError("cluster coordinate arrays must have the same non-zero length")
+    if not all(np.all(np.isfinite(arr)) for arr in (x, y, lon, lat)):
+        raise ValueError("cluster coordinates must all be finite")
+    cx, cy = float(np.mean(x)), float(np.mean(y))
+    order = np.argsort((x - cx) ** 2 + (y - cy) ** 2, kind="stable")
+    for index in order:
+        if point_in_ring(float(lon[index]), float(lat[index]), ring):
+            return int(index)
+    raise ValueError("cluster has no observed pixel centre inside the requested AOI polygon")
+
+
 def classify(clusters, d, pre, tf, limit=12):
     """
     Terrain reading for each cluster.
@@ -339,9 +388,17 @@ def classify(clusters, d, pre, tf, limit=12):
         xs, ys = xy(tf, rr, cc)
         lon, lat = warp_transform("EPSG:32645", "EPSG:4326",
                                   np.atleast_1d(xs), np.atleast_1d(ys))
-        la, lo = float(np.mean(lat)), float(np.mean(lon))
+        centroid_lat, centroid_lon = float(np.mean(lat)), float(np.mean(lon))
         try:
-            sl, asp, el = slope_aspect(la, lo)
+            sample_idx = representative_cluster_index(xs, ys, lon, lat)
+        except ValueError as exc:
+            logger.warning("cluster %d has no eligible terrain-sample pixel: %s", i, exc)
+            continue
+        sample_lat, sample_lon = float(lat[sample_idx]), float(lon[sample_idx])
+        # Classify the terrain at a real observed pixel. A cluster centroid may
+        # fall outside a concave AOI even when every contributing pixel is inside.
+        try:
+            sl, asp, el = slope_aspect(sample_lat, sample_lon)
         except Exception:
             continue
         off_n = min(abs(asp), abs(asp - 360))
@@ -354,9 +411,11 @@ def classify(clusters, d, pre, tf, limit=12):
         else:
             reading = "ambiguous"
         rows.append({"id": i, "n_px": len(cells), "area_km2": len(cells) * 400 / 1e6,
-                     "lat": la, "lon": lo, "elev_m": el, "slope_deg": sl,
-                     "aspect_deg": asp, "reading": reading,
-                     "d_ndsi_median": float(np.nanmedian(d[rr, cc]))})
+                     "lat": sample_lat, "lon": sample_lon,
+                     "centroid_lat": centroid_lat, "centroid_lon": centroid_lon,
+                     "terrain_sample_method": "nearest_in_AOI_pixel_to_projected_cluster_centroid",
+                     "elev_m": el, "slope_deg": sl, "aspect_deg": asp,
+                     "reading": reading, "d_ndsi_median": float(np.nanmedian(d[rr, cc]))})
     return rows
 
 
@@ -442,8 +501,11 @@ def probe(lat, lon, d, both, pre, tf, radius=5) -> dict:
             "scar_like_pct": float(100 * np.mean(dv < -0.35))}
 
 
-CANDIDATE_FIELDS = ["id", "n_px", "area_km2", "lat", "lon", "elev_m",
-                    "slope_deg", "aspect_deg", "reading", "d_ndsi_median"]
+CANDIDATE_FIELDS = [
+    "id", "n_px", "area_km2", "lat", "lon", "centroid_lat", "centroid_lon",
+    "terrain_sample_method", "elev_m", "slope_deg", "aspect_deg", "reading",
+    "d_ndsi_median",
+]
 
 
 def write_candidates(rows: list[dict], path: Path) -> None:
