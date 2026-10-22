@@ -35,11 +35,32 @@ The elevation source is OpenTopoData's SRTM 30 m service, but this experiment sa
 
 The `*.npz` cache records the exact sampled elevations, coordinate axes, requested bounding box, endpoint, grid shape and a SHA-256 fingerprint. The reproducibility claim applies to **these saved point elevations and this analysis grid**, not to a native 30 m raster. A nominal 30 m input model interpolated/sampled onto roughly 90–147 m cells cannot support a blanket claim of 30 m hydrologic resolution.
 
+## Controlled historical-model attribution on the same cached grids
+
+A second experiment, [historical attribution run #6](https://github.com/moshiour0/SARGuardian/actions/runs/39787473430) using the immutable cache set from source run `39777265576`, loaded the pre-baseline implementation from commit `298b6b18c53511821850517822a4a3b7b045a1e2` and compared it with current hydrology on the **same per-AOI elevation arrays and the same height, channel-accumulation, ranking and spacing parameters**.
+
+Coordinate-identity results:
+
+| AOI | Historical algorithm: exact / rounding matches | Historical unmatched baseline / candidate | Current v2 with historical efficiency ranking: rounding matches; unmatched baseline / candidate | Current v2 threshold-first ranking: rounding matches; unmatched baseline / candidate |
+|---|---:|---:|---:|---:|
+| source | 0 exact / 12 rounding | 0 / 0 | 1; 11 / 11 | 1; 11 / 11 |
+| langtang | 0 exact / 10 rounding | 2 / 2 | 1; 11 / 11 | 0; 12 / 12 |
+| lhende | 1 exact / 10 rounding | 1 / 1 | 0; 12 / 12 | 0; 12 / 12 |
+| blatten | 0 exact / 12 rounding | 0 / 0 | 5; 7 / 7 | 2; 10 / 10 |
+
+This same-grid experiment changes the interpretation of the original mismatch:
+
+- **The hydrology algorithm change is the primary explanation for the large location/site-list shift on the tested grids.** The historical algorithm reproduced all 12 site identities within coordinate-rounding tolerance in source and Blatten, 10/12 in Langtang and 11/12 in Lhende. Current v2 threshold-first ranking retained only 1 rounding-tolerant site in source, none in Langtang/Lhende, and 2 in Blatten.
+- **Ranking policy is a separate effect.** Holding the current v2 hydrology fixed but restoring historical efficiency ranking improves identity matching in Langtang and Blatten. It does not materially improve site identity in source or Lhende. The ranking change is therefore not the only cause.
+- For imposed height **10 m**, the historical algorithm produced complete scenarios for 4 source, 3 Langtang, 1 Lhende and 6 Blatten sites. Current v2 threshold-first ranking produces 12 for every AOI. Current v2 with historical ranking produces 9, 10, 12 and 9 respectively. This is a large model/selection change, not a harmless serialization difference.
+- **The historical algorithm is only an attribution control, not an endorsed scientific model.** More similar coordinates do not prove physically correct dam sites or volumes.
+- The remaining numerical-property differences are still confounded by the lack of original baseline DEM cache files. The historical algorithm on the new grids retained site identity far better, but its `sill_m`, `volume_Mm3`, `area_km2` and `backwater_km` values still differ at many matched coordinates. The original exact elevation samples are needed to separate changed algorithm effects from historical sample-grid changes.
+
 ## What the result does—and does not—prove
 
 **Proved:** the current algorithm is deterministic for a fixed saved DEM sample grid and fixed parameters. The four regenerated files were byte-identical to their repeated runs, including provenance. The exact sampled grid hashes and implementation hashes are in the artifact.
 
-**Not proved:** why the regenerated sites differ from the committed reference. The committed reference GeoJSONs do not carry the old elevation-grid samples or a comparable DEM-grid hash, so this experiment cannot distinguish among a change in the original elevation sample locations, changes in hydrology implementation/ranking, and differences in earlier execution inputs. The current provenance captures the *new* sample; it cannot retroactively recover the old one. That missing baseline is an important reproducibility gap.
+**Partly attributed, but not fully resolved:** the controlled same-grid historical comparison identifies the hydrology implementation change as the primary explanation for the *site identity/location* shift; the ranking-policy change independently changes selected site identities in Langtang and Blatten. However, matched historical-model coordinates still have numerical-property differences. Since committed reference GeoJSONs do not carry the old elevation-grid samples or a comparable old DEM-grid hash, these residual sill/volume/area/backwater differences cannot be allocated reliably between old input-grid sampling and other historical execution differences. The current provenance captures the *new* sample; it cannot retroactively recover the old one. That missing baseline is still a reproducibility gap.
 
 The current recorded algorithm is `priority-flood-d8-flat-routing-tree-connected-ponding-v2`; it uses depression filling for routing, acyclic equal-height routing, Kahn-ordered flow accumulation, and an upstream receiver-tree-connected ponding model. The provenance records no lateral-spill solver and describes backwater extent using axis-aligned grid bounds. Thus the output is a **screening/scenario model**, not a validated hydraulic inundation simulation. The algorithm and assumptions should be compared against hydrology literature and independent terrain/control cases before interpreting volumes as realistic.
 
