@@ -61,6 +61,9 @@ def test_source_aoi_reports_target9_outside_without_relabeling_it_as_raw_no_data
     assert "mask_numeric_layout_exact" in result
     assert not any(key.startswith(" ") for key in result)
     assert t4["inside_grid_extent"] is False
+    assert t4["nearest_grid_cell_support"] == {}
+    assert t4["has_aoi_gated_support"] is False
+    assert t4["has_target_point_support"] is False
     assert any("TARGET_9_OUTSIDE_REQUESTED_AOI" in warning for warning in result["warnings"])
 
 def test_target4_is_explicitly_inside_source_polygon():
