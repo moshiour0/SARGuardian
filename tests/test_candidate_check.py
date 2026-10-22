@@ -23,7 +23,8 @@ guard the two ways the test can be honest about not knowing.
 from __future__ import annotations
 
 import csv
-from candidate_check import classify_geometry, geometry_test, read_aoi, read_target
+from candidate_check import (classify_geometry, exceeds_single_fringe, geometry_test,
+                             read_aoi, read_target)
 
 
 # The measured Langtang candidate: 28.27484 N, 85.47405 E.
@@ -180,3 +181,14 @@ def test_legacy_date_only_target_log_cannot_silently_join_to_wrong_track(tmp_pat
     key = ("20260702", "20260714", None)
     assert key in targets
     assert key[2] is None
+
+
+def test_phase_aliasing_screen_uses_per_pair_mm_not_aggregated_mm_per_day():
+    from gunw_reader import NISAR_LAMBDA_M
+
+    limit_mm = NISAR_LAMBDA_M * 1000.0 / 4.0
+    assert exceeds_single_fringe(limit_mm + 0.1)
+    assert exceeds_single_fringe(-(limit_mm + 0.1))
+    assert not exceeds_single_fringe(limit_mm)
+    assert not exceeds_single_fringe(float("nan"))
+    assert not exceeds_single_fringe(float("inf"))
