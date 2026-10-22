@@ -34,7 +34,8 @@ import pytest
 
 from impoundment import (AOIS, API_ENDPOINT, dem_from_api, dem_from_file,
                          dem_provenance, d8_receivers, elevation_grid_sha256,
-                         fill_depressions, flow_accumulation, rank_sites)
+                         fill_depressions, flow_accumulation, rank_sites,
+                         file_sha256, write_geojson, write_provenance)
 
 
 def site(lat, lon, by_height, name=""):
@@ -364,3 +365,54 @@ def test_dem_provenance_identifies_local_input_without_claiming_api_source(tmp_p
     assert provenance["endpoint"] is None
     assert provenance["source"] == "local GeoTIFF"
     assert len(provenance["grid_sha256"]) == 64
+
+
+def test_geojson_output_and_provenance_sidecar_are_atomic_and_bound_to_the_grid(tmp_path):
+    output = tmp_path / "nested" / "dams.geojson"
+    row = site(28.30, 85.50, {10: 0.2, 25: 0.7}, "fixture site")
+    write_geojson([row], output)
+    parsed = json.loads(output.read_text(encoding="utf-8"))
+    assert parsed["type"] == "FeatureCollection"
+    assert len(parsed["features"]) == 1
+    assert parsed["features"][0]["geometry"]["coordinates"] == [85.50, 28.30]
+    assert output.read_text(encoding="utf-8").endswith("\n")
+
+    z = np.arange(12, dtype=float).reshape(3, 4)
+    lats = np.array([28.3, 28.2, 28.1])
+    lons = np.array([85.4, 85.5, 85.6, 85.7])
+    bbox = [85.4, 28.1, 85.7, 28.3]
+    provenance = dem_provenance(
+        z, lats, lons, bbox=bbox, source="local GeoTIFF", target_cells=z.size
+    )
+    sidecar = write_provenance(
+        output, provenance, {"aoi": "fixture", "heights_m": [10, 25]}, [row]
+    )
+    saved = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert saved["grid_sha256"] == provenance["grid_sha256"]
+    assert saved["geojson_sha256"] == file_sha256(output)
+    assert len(saved["result_rows_sha256"]) == 64
+    assert saved["result_features"] == 1
+
+
+def test_geojson_refuses_nonfinite_site_coordinates_without_creating_output(tmp_path):
+    output = tmp_path / "invalid.geojson"
+    bad = site(float("nan"), 85.5, {10: 0.2}, "bad coordinate")
+    with pytest.raises(ValueError, match="invalid WGS84 site coordinates"):
+        write_geojson([bad], output)
+    assert not output.exists()
+
+
+def test_api_geojson_cli_requires_an_explicit_reusable_dem_cache(
+    tmp_path, monkeypatch, capsys
+):
+    import impoundment
+    import sys
+
+    monkeypatch.setattr(sys, "argv", [
+        "impoundment.py", "--api", "--aoi", "source",
+        "--geojson", str(tmp_path / "dams.geojson"),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        impoundment.main()
+    assert exc.value.code == 2
+    assert "--api-cache" in capsys.readouterr().err
