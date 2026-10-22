@@ -97,21 +97,29 @@ jobs:
           else:
               values = [json.loads(path.read_text(encoding="utf-8")) for path in reports]
               match = sum(item.get("status") == "EXACT_SEMANTIC_MATCH" for item in values)
+              rounded = sum(item.get("status") == "SEMANTIC_MATCH_WITH_COORDINATE_ROUNDING" for item in values)
               review = sum(item.get("status") == "REVIEW_REQUIRED" for item in values)
+              aggregate = ("ALL_EXACT_MATCH" if len(values) == 4 and match == 4
+                           else "REVIEW_REQUIRED" if review or rounded or len(values) != 4
+                           else "INCOMPLETE")
               lines += ["", f"- AOIs compared: {len(values)}/4",
                         f"- Exact semantic matches: {match}",
-                        f"- AOIs requiring review: {review}",
-                        f"- Status: {'ALL_MATCH' if len(values) == 4 and review == 0 else 'REVIEW_REQUIRED'}", "",
-                        "| AOI | Baseline sites | Candidate sites | Exact coordinate matches | H=10 result baseline/candidate | H=10 truncated baseline/candidate | Nearest baseline→candidate median/max (m) | Status |",
-                        "|---|---:|---:|---:|---:|---:|---:|---|"]
+                        f"- Coordinate-rounding-only semantic matches: {rounded}",
+                        f"- AOIs with substantive differences requiring review: {review}",
+                        f"- Aggregate status: {aggregate}",
+                        "- No generated output is automatically accepted or committed.", "",
+                        "| AOI | Baseline/candidate sites | Exact coord matches | Rounding-tolerant pairs | Unmatched baseline/candidate | H=10 result baseline/candidate | H=10 truncated baseline/candidate | Nearest remaining baseline→candidate median/max (m) | Status |",
+                        "|---|---:|---:|---:|---:|---:|---:|---:|---|"]
               for item in values:
                   aoi = Path(item["candidate_path"]).stem.removeprefix("dam_sites_")
                   h10 = item["response_counts_by_threshold_height_m"]
                   t10 = item["truncated_response_counts_by_threshold_height_m"]
                   nearest = item["nearest_neighbour_review_only"]["baseline_unmatched_to_candidate"]
                   lines.append(
-                      f"| {aoi} | {item['baseline_site_count']} | {item['candidate_site_count']} | "
-                      f"{item['exact_coordinate_matches']} | {h10['baseline'].get('10', 0)}/{h10['candidate'].get('10', 0)} | "
+                      f"| {aoi} | {item['baseline_site_count']}/{item['candidate_site_count']} | "
+                      f"{item['exact_coordinate_matches']} | {item['coordinate_rounding_matches']} | "
+                      f"{item['baseline_sites_unmatched_after_coordinate_tolerance']}/{item['candidate_sites_unmatched_after_coordinate_tolerance']} | "
+                      f"{h10['baseline'].get('10', 0)}/{h10['candidate'].get('10', 0)} | "
                       f"{t10['baseline'].get('10', 0)}/{t10['candidate'].get('10', 0)} | "
                       f"{nearest.get('median_m')}/{nearest.get('max_m')} | {item['status']} |"
                   )
