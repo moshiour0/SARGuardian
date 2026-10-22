@@ -151,9 +151,12 @@ def pairs_from_granule_names(names: list[str], paths: list, directions: list) ->
         if len(stamps) < 4:
             continue
         metadata = granule_metadata(name)
+        if metadata is None:
+            logger.warning("Skipping catalogue item without complete NISAR footprint identity: %s", name)
+            continue
         out.append(Pair(
-            path=(metadata or {}).get("path", path),
-            direction=(metadata or {}).get("direction", direction or "?")[0],
+            path=metadata["path"],
+            direction=metadata["direction"],
             ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
             sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
             source=name, metadata=metadata,
@@ -441,15 +444,17 @@ def pairs_from_dir(directory: Path, product: str = "GUNW") -> list[Pair]:
     out = []
     for fp in files:
         stamps = re.findall(r"_(\d{8})T\d{6}", fp.name)
-        m = re.search(rf"_{product}_\d+_(\d+)_([AD])_", fp.name)
-        if len(stamps) < 4 or not m:
-            logger.warning("Cannot parse %s", fp.name)
-            continue
         metadata = granule_metadata(fp.name)
+        if len(stamps) < 4 or metadata is None:
+            logger.warning("Cannot parse full NISAR footprint/release identity from %s", fp.name)
+            continue
+        if metadata["product"] != product:
+            logger.warning("Product filename does not match requested %s: %s", product, fp.name)
+            continue
         out.append(
             Pair(
-                path=int(m.group(1)),
-                direction=m.group(2),
+                path=metadata["path"],
+                direction=metadata["direction"],
                 ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
                 sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
                 source=str(fp),
