@@ -32,8 +32,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements.txt
 
       - name: Install pinned dependencies
         run: python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r requirements.txt
@@ -88,18 +86,20 @@ jobs:
             "## Historical impoundment attribution",
             "",
             f"- Result: **{d.get('attribution_result','UNKNOWN')}**",
-            f"- AOIs where historical algorithm is closer to baseline: {d.get('historical_model_closer_to_baseline_aois')}/4",
+            f"- AOIs where the historical algorithm is closer to baseline: {d.get('historical_model_closer_to_baseline_aois')}/4",
+            f"- AOIs where current hydrology with historical ranking is closer to baseline than current threshold-first ranking: {d.get('current_hydrology_historical_ranking_closer_to_baseline_aois')}/4",
             "- Same immutable DEM samples, exact same candidate parameters, and the historical model used to create the committed output snapshot were tested.",
             "- This attributes the numerical/source of change; it does not endorse the old model or certify either model as physically accurate.",
             "",
-            "| AOI | Old model sites vs baseline (unmatched) | Current model sites vs baseline (unmatched) | Old H=10 complete scenarios | Current H=10 complete scenarios | Old closer? |",
-            "|---|---:|---:|---:|---:|---|",
+            "| AOI | Historical model unmatched | Current hydrology + old ranking unmatched | Current threshold-first unmatched | H=10 historical | H=10 current+old ranking | H=10 current threshold-first | Ranking materially changes site list? |",
+            "|---|---:|---:|---:|---:|---:|---:|---|",
           ]
           for aoi,item in d.get("historical_model_closeness_by_aoi",{}).items():
             sub=d["aois"][aoi]
             old=sub["historical_model"]["scenario_site_counts_by_height_m"].get("10")
-            new=sub["current_model"]["scenario_site_counts_by_height_m"].get("10")
-            lines.append(f"| {aoi} | {item['historical_unmatched_site_total']} | {item['current_unmatched_site_total']} | {old} | {new} | {item['historical_model_closer_to_baseline']} |")
+            legacy=sub["current_hydrology_historical_ranking"]["scenario_site_counts_by_height_m"].get("10")
+            new=sub["current_threshold_first_ranking"]["scenario_site_counts_by_height_m"].get("10")
+            lines.append(f"| {aoi} | {item['historical_unmatched_site_total']} | {item['current_legacy_ranking_unmatched_site_total']} | {item['current_threshold_first_ranking_unmatched_site_total']} | {old} | {legacy} | {new} | {item['ranking_policy_effect_is_material_for_site_identity']} |")
           lines += ["","Semantic mismatches remain REVIEW_REQUIRED. No committed GeoJSON is overwritten."]
           with summary.open("a",encoding="utf-8") as f:f.write("\n".join(lines)+"\n")
           PY
