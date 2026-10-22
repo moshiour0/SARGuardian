@@ -971,9 +971,10 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         return {}
 
     valid = result["valid"]
-    if not valid.any():
-        logger.warning("Nothing valid to export for %s", result["file"][:44])
-        return {}
+    if valid.shape != result["displacement_mm"].shape:
+        raise RuntimeError("GUNW validity mask and displacement array shapes do not match.")
+    if result.get("coherence") is not None and result["coherence"].shape != valid.shape:
+        raise RuntimeError("GUNW validity mask and coherence array shapes do not match.")
 
     full_disp = np.where(valid, result["displacement_mm"], np.nan)
     full_coh = (np.where(valid, result["coherence"], np.nan)
@@ -987,10 +988,18 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         coh = place_on_grid(full_coh, grid) if full_coh is not None else None
         transform = grid["transform"]
     else:
-        # Fall back to the old per-product clip, and the caller has already been
-        # warned that this file will not align with the others.
-        rows = np.any(valid, axis=1)
-        cols = np.any(valid, axis=0)
+        # If the product grid cannot be placed on the common lattice, keep an
+        # explicit per-product AOI window. Bound this window by AOI cells, not
+        # valid signal pixels: an all-invalid product must still be represented
+        # as a no-data raster when its grid covers the AOI.
+        aoi_mask = build_aoi_mask(xs, ys, globals()["AOI_RING"], result["epsg"])
+        if not aoi_mask.any():
+            logger.warning("%s has no source-grid cells inside AOI; no GeoTIFF can represent that AOI.",
+                           result["file"][:44])
+            return {"export_status": "NO_AOI_GRID_COVERAGE", "export_valid_px": 0,
+                    "export_rows": 0, "export_cols": 0}
+        rows = np.any(aoi_mask, axis=1)
+        cols = np.any(aoi_mask, axis=0)
         r0, r1 = int(np.argmax(rows)), int(len(rows) - np.argmax(rows[::-1]))
         c0, c1 = int(np.argmax(cols)), int(len(cols) - np.argmax(cols[::-1]))
         disp = full_disp[r0:r1, c0:c1].astype("float32")
@@ -1003,6 +1012,7 @@ def export_clipped(result: dict, outdir: Path) -> dict:
             disp = np.flipud(disp)
             if coh is not None:
                 coh = np.flipud(coh)
+        export_grid_policy = "per_product_aoi_window_not_common_lattice"
 
     outdir.mkdir(parents=True, exist_ok=True)
     # Include the processing type. NASA publishes a routine (PR) and an urgent
@@ -1014,6 +1024,8 @@ def export_clipped(result: dict, outdir: Path) -> dict:
     stem = f"{result['reference_date']}_{result['secondary_date']}{tag}"
     target = outdir / f"GUNW_{stem}.tif"
     count = 2 if coh is not None else 1
+    valid_export_px = int(np.isfinite(disp).sum())
+    export_status = "WRITTEN" if valid_export_px else "NO_VALID_PIXELS"
     with rasterio.open(target, "w", driver="GTiff", height=disp.shape[0],
                        width=disp.shape[1], count=count, dtype="float32",
                        crs=f"EPSG:{result['epsg'] or 4326}", transform=transform,
@@ -1026,14 +1038,20 @@ def export_clipped(result: dict, outdir: Path) -> dict:
                         wavelength_m=str(result["wavelength_m"]),
                         aoi_name=str(result["aoi_name"]),
                         aoi_mask_applied="true",
+                        export_status=export_status,
+                        valid_pixel_count=str(valid_export_px),
+                        grid_policy=("common_aoi_lattice" if grid is not None else export_grid_policy),
                         source=result["file"],
                         crid=crid_of(result["file"]),
                         maturity=product_maturity(result["file"]),
                         ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable")
     mb = target.stat().st_size / 1024 / 1024
-    logger.info("Exported %s  %dx%d  %.2f MB", target.name, disp.shape[0], disp.shape[1], mb)
+    logger.info("Exported %s  %dx%d  %.2f MB  status=%s valid_px=%d",
+                target.name, disp.shape[0], disp.shape[1], mb, export_status, valid_export_px)
     return {"export_file": target.name, "export_mb": round(mb, 3),
-            "export_rows": disp.shape[0], "export_cols": disp.shape[1]}
+            "export_rows": disp.shape[0], "export_cols": disp.shape[1],
+            "export_valid_px": valid_export_px, "export_status": export_status,
+            "export_grid_policy": "common_aoi_lattice" if grid is not None else export_grid_policy}
 
 
 def find_common_reference(files: list[Path], coherence_threshold: float,
