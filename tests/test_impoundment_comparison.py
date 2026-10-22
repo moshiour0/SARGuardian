@@ -168,9 +168,9 @@ def test_truncated_height_results_are_reported_separately_as_lower_bounds():
     assert truncated_response_counts(rows, [10]) == {"10": 1}
 
 
-def test_coordinate_rounding_is_separate_from_exact_identity():
-    baseline = _write(tmp_path := Path(tempfile.mkdtemp()) / "baseline.geojson", [_feature(85.500005, 28.3)])
-    candidate = _write(tmp_path.parent / "candidate.geojson", [_feature(85.5, 28.3)])
+def test_coordinate_rounding_is_separate_from_exact_identity(tmp_path):
+    baseline = _write(tmp_path / "baseline.geojson", [_feature(85.500005, 28.3)])
+    candidate = _write(tmp_path / "candidate.geojson", [_feature(85.5, 28.3)])
     summary, changes = compare_geojson(baseline, candidate)
     assert summary["exact_coordinate_matches"] == 0
     assert summary["coordinate_rounding_matches"] == 1
