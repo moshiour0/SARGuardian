@@ -417,8 +417,9 @@ def compare_geojson(
             "not_a_census": True,
             "warning": (
                 "These counts describe complete modelled scenario records among the "
-                "returned features only. They are not a count/fraction of all "
-                "candidate channel sites in the AOI, not evidence that an actual "
+                "returned features only. They are not an AOI-wide site census or a "
+                "count/fraction of all candidate channel sites in the AOI, not evidence "
+                "that an actual "
                 "landslide can form the imposed blockage, and not physical validation. "
                 "Different ranking/NMS policies can change which sites appear in the "
                 "GeoJSON and therefore change the count without changing the underlying "
