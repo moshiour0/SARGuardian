@@ -181,8 +181,12 @@ def test_the_committed_bound_table_matches_what_bound_computes():
     """The table the demo and the site read must be the one this code writes."""
     import csv
     rows = {r["id"]: r for r in csv.DictReader(open(bound.OUT / "bound_source.csv"))}
-    cands = [c for c in bound.load("scar_candidates_source.csv")
-             if c["reading"] == "DETACHMENT-like"]
+    all_cands = [c for c in bound.load("scar_candidates_source.csv")
+                 if c["reading"] == "DETACHMENT-like"]
+    cands, excluded = bound.eligible_source_candidates(all_cands)
+    assert any(str(c["id"]) == "9" for c in excluded)
+    assert all(str(c["id"]) != "9" for c in cands)
+    assert set(rows) == {str(c["id"]) for c in cands}
     goff = bound.load("local_floor_candidates.csv")
     phase = bound.load("local_floor_phase_candidates.csv")
     cref = bound.load("common_ref_summer.csv")
@@ -190,3 +194,16 @@ def test_the_committed_bound_table_matches_what_bound_computes():
         fresh = bound.assess(c, goff, phase, cref)
         assert str(fresh["ratio_los_pixel"]) == rows[c["id"]]["ratio_los_pixel"]
         assert str(fresh["los_floor_block_mm_day"]) == rows[c["id"]]["los_floor_block_mm_day"]
+
+
+def test_source_bound_refuses_a_candidate_outside_the_source_polygon():
+    candidate = _cand("9", "6099")
+    candidate["lat"] = "28.25460"
+    candidate["lon"] = "85.47591"
+    with pytest.raises(ValueError, match="outside the exact source AOI"):
+        bound.assess(candidate, [], [], [])
+
+
+def test_nonfinite_noise_floor_values_are_not_used_as_bounds():
+    assert math.isnan(bound.worst([{"floor": "inf"}, {"floor": "nan"}], "floor"))
+    assert bound.worst([{"floor": "1.0"}, {"floor": "inf"}], "floor") == 1.0
