@@ -494,6 +494,10 @@ def analyse(z, lats, lons, heights, min_accum_cells, top_n,
     if not (np.isfinite(z).any() and np.all(np.isfinite(lats)) and np.all(np.isfinite(lons))
             and np.all(np.diff(lats) < 0) and np.all(np.diff(lons) > 0)):
         raise ValueError("DEM must have finite north-to-south latitude and west-to-east longitude axes and finite elevation samples.")
+    # Capture the validated raster dimensions before reporting or reshaping.
+    # Without this, a real DEM run reaches a NameError in the first log line;
+    # the previous unit tests did not execute analyse() end to end.
+    ny, nx = z.shape
     heights = list(heights)
     if (not heights or any(not math.isfinite(float(h)) or float(h) <= 0 for h in heights)
             or len(set(float(h) for h in heights)) != len(heights)):
