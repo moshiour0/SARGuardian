@@ -965,6 +965,12 @@ def main() -> int:
     ap.add_argument("--invert", action="store_true", help="run the inversion (needs --dir)")
     ap.add_argument("--product", choices=("GUNW", "GOFF"), default="GUNW",
                     help="which product to build the series from")
+    ap.add_argument("--processing", choices=("PR", "UR"),
+                    help="with --from-stats, explicitly select routine (PR) or urgent (UR) products")
+    ap.add_argument("--crid", metavar="CRID",
+                    help="with --from-stats, select one exact release (e.g. X05010 or P05023); prevents mixed-release duplicate selection")
+    ap.add_argument("--min-valid-pixels", type=int, default=6,
+                    help="with --from-stats, skip rows with fewer usable pixels (default: 6)")
     ap.add_argument("--goff-layer", default="layer2",
                     help="GOFF correlation-window layer (layer3 is usually quietest)")
     ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
@@ -1009,9 +1015,21 @@ def main() -> int:
         ap.error("--buffer-km must be non-negative")
 
     if args.from_stats:
-        pairs = pairs_from_stats(resolve(args.from_stats),
-                                 layer=args.goff_layer
-                                 if args.product == "GOFF" else None)
+        if args.min_valid_pixels < 1:
+            ap.error("--min-valid-pixels must be positive")
+        if (args.processing or args.crid) and not args.from_stats:
+            ap.error("--processing/--crid are supported only with --from-stats")
+        try:
+            pairs = pairs_from_stats(
+                resolve(args.from_stats),
+                layer=args.goff_layer if args.product == "GOFF" else None,
+                product=args.product,
+                processing=args.processing,
+                crid=args.crid,
+                min_valid_pixels=args.min_valid_pixels,
+            )
+        except ValueError as exc:
+            ap.error(str(exc))
         args.invert = True          # the values are already in the CSV
     elif args.from_catalogue:
         pairs = pairs_from_catalogue()
