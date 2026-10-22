@@ -55,6 +55,7 @@ import argparse
 import csv
 import logging
 import math
+import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -84,57 +85,108 @@ def load_series(path: Path) -> dict[tuple[str, int], list[dict]]:
     return dict(series)
 
 
-def load_floors(path: Path, layer: str | None = None) -> dict[tuple[date, date], float]:
+def normalize_series_id(value: str) -> str:
+    """Normalize Pair.network_label and detector-floor series identities."""
+    text = str(value or "").strip().upper()
+    text = re.sub(r"\bASCENDING\b", "ASC", text)
+    text = re.sub(r"\bDESCENDING\b", "DESC", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_NISAR_SOURCE_RE = re.compile(
+    r"NISAR_L2_(?:PR|UR)_(?P<product>GUNW|GOFF)_"
+    r"(?P<cycle>\d+)_(?P<path>\d+)_"
+    r"(?P<direction>[AD])_(?P<frame>\d+)_(?P<subswath>\d+)_"
+    r"(?P<bandwidth>\d+)_(?P<polarisation>[A-Z]{2})_",
+    re.IGNORECASE,
+)
+_NISAR_CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}(?:\.h5)?$", re.IGNORECASE)
+
+
+def series_id_from_granule(value: str) -> str:
+    """Map an exact NISAR granule basename to the timeseries network label."""
+    basename = Path(str(value or "")).name
+    match = _NISAR_SOURCE_RE.match(basename)
+    crid_match = _NISAR_CRID_RE.search(basename)
+    if not match or not crid_match:
+        return ""
+    meta = match.groupdict()
+    direction = "ASC" if meta["direction"].upper() == "A" else "DESC"
+    return normalize_series_id(
+        f"{direction} path {int(meta['path'])} frame {int(meta['frame'])} "
+        f"subswath {int(meta['subswath'])} bandwidth {int(meta['bandwidth'])} "
+        f"pol {meta['polarisation']} CRID {crid_match.group(1)} {meta['product']}"
+    )
+
+
+def load_floor_catalogue(
+    path: Path, layer: str | None = None
+) -> tuple[dict[tuple[date, date], float], dict[str, dict[tuple[date, date], float]]]:
+    """Load either legacy global floors or geometry/CRID-scoped floors, never a mixture.
+
+    Identity is read from an explicit `series_id` column, or inferred from
+    the original NISAR granule basename in `source_product`/`file`. Old
+    raster-name-only CSVs lack enough provenance and remain global/legacy.
+    Duplicate same-series processing variants retain the largest floor.
     """
-    Per-pair detection floors from a goff_reader --csv summary.
-
-    Why this exists
-    ---------------
-    One scalar floor across a stack whose per-pair floors vary twelvefold is not
-    a threshold, it is an average of thresholds, and it is wrong in both
-    directions at once. Measured over the source zone, layer2 floors run from
-    8.5 to 117.9 mm/day. Gating every interval against the median manufactures
-    excursions on the noisy geometry and hides real ones on the quiet geometry.
-
-    The concrete failure: descending 2026-06-29 -> 2026-07-11 reads +19.60
-    mm/day and clears a global 18.6 mm/day gate at 1.05x - while that pair's own
-    3-sigma floor is 114.3 mm/day, against which the same velocity is 0.17x and
-    plainly inside the noise.
-
-    Keyed by (reference, secondary) so it joins straight onto a velocity
-    interval, whose endpoints are the two acquisition dates.
-    """
-    floors: dict[tuple[date, date], float] = {}
+    global_floors: dict[tuple[date, date], float] = {}
+    scoped: dict[str, dict[tuple[date, date], float]] = defaultdict(dict)
     with open(path, newline="") as fh:
-        for row in csv.DictReader(fh):
-            if layer and row.get("layer") and layer not in row["layer"]:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            layer_value = str(row.get("layer") or "")
+            if layer and layer not in layer_value:
                 continue
             raw = row.get("detect_floor_mm_day")
             if not raw:
                 continue
-            # A string comparison against ("nan", "inf") misses "NaN", "-inf",
-            # "1e400" and anything else that parses to a non-finite float. An
-            # infinite floor would put every velocity below the gate and
-            # manufacture a non-detection silently - the one direction of error
-            # this project cannot afford, since it is the direction of the
-            # published conclusion.
             try:
-                probe = float(raw)
-            except ValueError:
+                floor = float(raw)
+            except (TypeError, ValueError, OverflowError):
                 continue
-            if not math.isfinite(probe) or probe <= 0:
+            if not math.isfinite(floor) or floor <= 0:
                 continue
             try:
                 a = datetime.strptime(row["reference"], "%Y%m%d").date()
                 b = datetime.strptime(row["secondary"], "%Y%m%d").date()
-            except (KeyError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 continue
-            f = float(raw)
-            # A pair can appear twice - routine and urgent processing of the
-            # same acquisitions. Keep the larger floor: a bound must not be
-            # improved by reprocessing the same data.
-            floors[(a, b)] = max(f, floors.get((a, b), 0.0))
-    return floors
+            if b <= a:
+                continue
+
+            explicit = normalize_series_id(row.get("series_id", ""))
+            source = row.get("source_product") or row.get("file") or ""
+            series_id = explicit or series_id_from_granule(source)
+            key = (a, b)
+            dest = scoped[series_id] if series_id else global_floors
+            dest[key] = max(floor, dest.get(key, 0.0))
+
+    # Do not combine scoped and unidentified rows: that makes the scope of a
+    # given pair ambiguous and can silently leak one track's floor to another.
+    if scoped and global_floors:
+        raise ValueError(
+            "Floor CSV mixes geometry-scoped and identity-free rows; split it into "
+            "homogeneous files or add exact NISAR source identity to every row."
+        )
+    return global_floors, dict(scoped)
+
+
+def load_floors(
+    path: Path, layer: str | None = None, series_id: str | None = None
+) -> dict[tuple[date, date], float]:
+    """Load floors for one series; legacy identity-free files remain explicit global inputs."""
+    global_floors, scoped = load_floor_catalogue(path, layer)
+    if scoped:
+        if not series_id:
+            raise ValueError(
+                "Floor CSV contains geometry/CRID-scoped rows; supply series_id or use "
+                "load_floor_catalogue() to select a matching timeseries geometry."
+            )
+        key = normalize_series_id(series_id)
+        if key not in scoped:
+            raise ValueError(f"No floors in {path} match time-series geometry {key!r}.")
+        return scoped[key]
+    return global_floors
 
 
 def velocities(rows: list[dict], floors: dict | None = None) -> list[dict]:
