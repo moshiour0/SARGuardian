@@ -80,11 +80,25 @@ def q(a: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+AOI_POLYGON_VERSION = "source-ring-v1"
+CACHE_SCHEMA_VERSION = 2
+
+
 def scenes_block(cache: Path) -> list[dict]:
-    """Every Sentinel-2 scene with cloud measured over the AOI, not the tile."""
+    """Every Sentinel-2 scene with cloud measured inside the exact source polygon."""
     if cache.exists():
-        logger.info("scenes from cache %s", cache.name)
-        return json.loads(cache.read_text())
+        try:
+            saved = json.loads(cache.read_text(encoding="utf-8"))
+            if (isinstance(saved, dict)
+                    and saved.get("schema_version") == CACHE_SCHEMA_VERSION
+                    and saved.get("aoi_geometry") == AOI_POLYGON_VERSION
+                    and isinstance(saved.get("rows"), list)):
+                logger.info("scenes from polygon-aware cache %s", cache.name)
+                return saved["rows"]
+            logger.info("ignoring legacy/bbox-only scenes cache %s", cache.name)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("ignoring invalid scenes cache %s: %s", cache.name, exc)
+
     from scar_map import search, aoi_cloud
     out = []
     for f in search("2026-05-01", "2026-09-30"):
@@ -93,37 +107,69 @@ def scenes_block(cache: Path) -> list[dict]:
                     "tile_cloud": round(float(c["scene_cloud"]), 1),
                     "aoi_cloud": round(float(c["aoi_cloud_pct"]), 1),
                     "aoi_clear": round(float(c["aoi_clear_pct"]), 1)})
-        logger.info("  %s tile %5.1f%%  AOI %5.1f%%", c["date"],
-                    c["scene_cloud"], c["aoi_cloud_pct"])
-    cache.write_text(json.dumps(out))
+        logger.info("  %s tile %5.1f%%  exact polygon cloud %5.1f%%",
+                    c["date"], c["scene_cloud"], c["aoi_cloud_pct"])
+    cache.write_text(json.dumps({
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "aoi_geometry": AOI_POLYGON_VERSION,
+        "rows": out,
+    }, separators=(",", ":")), encoding="utf-8")
     return out
 
 
 def grid_block(cache: Path) -> tuple[str, dict]:
-    """The change grid as one RGB PNG, plus the numbers needed to read it back."""
+    """The change grid as one RGB PNG, masked to the exact source polygon."""
     from PIL import Image
+    from scar_map import by_id, ndsi, composite, source_aoi_mask
+
+    d = pre = both = None
     if cache.exists():
-        logger.info("change grid from cache %s", cache.name)
-        z = np.load(cache)
-        d, pre, both = z["d"], z["pre"], z["both"]
-    else:
-        from scar_map import by_id, ndsi, composite
+        try:
+            with np.load(cache) as z:
+                has_version = ("aoi_polygon_version" in z.files
+                               and str(np.asarray(z["aoi_polygon_version"]).item()) == AOI_POLYGON_VERSION)
+                if has_version and {"d", "pre", "both"}.issubset(z.files):
+                    d, pre, both = z["d"], z["pre"], z["both"].astype(bool)
+                    logger.info("change grid from polygon-aware cache %s", cache.name)
+                else:
+                    logger.info("ignoring legacy/bbox-only change-grid cache %s", cache.name)
+        except (OSError, ValueError, KeyError) as exc:
+            logger.warning("ignoring invalid change-grid cache %s: %s", cache.name, exc)
+
+    if d is None or pre is None or both is None:
         F = by_id([PRE_SCENE] + POST_SCENES)
         pre, pre_ok = ndsi(F[PRE_SCENE])
         post, post_ok = composite([F[i] for i in POST_SCENES])
         both = pre_ok & post_ok & np.isfinite(pre) & np.isfinite(post)
         d = np.where(both, post - pre, np.nan)
-        np.savez_compressed(cache, d=d, pre=pre, both=both)
+
+    exact_aoi = np.asarray(source_aoi_mask(), dtype=bool)
+    if d.shape != GRID or pre.shape != GRID or both.shape != GRID or exact_aoi.shape != GRID:
+        raise ValueError(f"Expected the fixed 20 m grid {GRID}; got d={d.shape}, pre={pre.shape}, both={both.shape}, AOI={exact_aoi.shape}")
+    # Apply after loading the cache too; older caches were generated using the
+    # rectangle used for COG/STAC window reads, not the actual SOURCE_RING.
+    both = both & exact_aoi & np.isfinite(d) & np.isfinite(pre)
+    d = np.where(both, d, np.nan)
+    pre = np.where(exact_aoi, pre, np.nan)
+    np.savez_compressed(cache, d=d, pre=pre, both=both,
+                        aoi_polygon_version=np.array(AOI_POLYGON_VERSION))
 
     rgb = np.dstack([q(d), q(pre), np.where(both, 255, 0).astype(np.uint8)])
     buf = io.BytesIO()
     Image.fromarray(rgb, "RGB").save(buf, format="PNG", optimize=True)
     png = base64.b64encode(buf.getvalue()).decode()
+    aoi_px = int(exact_aoi.sum())
+    usable_px = int(both.sum())
+    logger.info("exact source polygon contains %s grid cells; %s usable in both epochs (%.1f%%)",
+                f"{aoi_px:,}", f"{usable_px:,}",
+                100.0 * usable_px / aoi_px if aoi_px else 0.0)
     logger.info("change grid PNG %.0f KB", len(png) / 1024)
     return png, {
         "w": GRID[1], "h": GRID[0], "scale": 127.5, "offset": -1.0,
-        "usable_px": int(both.sum()),
-        "usable_pct": round(100 * float(both.mean()), 1),
+        "usable_px": usable_px,
+        "aoi_px": aoi_px,
+        "usable_pct": round(100.0 * usable_px / aoi_px, 1) if aoi_px else 0.0,
+        "aoi_geometry": AOI_POLYGON_VERSION,
         "aoi": [85.4645, 28.2453, 85.5562, 28.3529],
     }
 
@@ -188,27 +234,46 @@ def series_block() -> dict:
 
 
 def clusters_block(cache: Path, grid_cache: Path) -> list[dict]:
-    """
-    The change clusters and their terrain reading.
-
-    The browser re-derives the clusters itself from the PNG - that is the whole
-    point of station 3 - but it cannot query a DEM, so the terrain that
-    separates a detachment from a deposit is resolved here and carried.
-    """
+    """Classify change clusters from a polygon-masked grid; reject stale bbox caches."""
     if cache.exists():
-        logger.info("clusters from cache %s", cache.name)
-        return json.loads(cache.read_text())
-    from scar_map import enumerate_candidates, classify, grid_transform
-    z = np.load(grid_cache)
-    d, pre, both = z["d"], z["pre"], z["both"]
+        try:
+            saved = json.loads(cache.read_text(encoding="utf-8"))
+            if (isinstance(saved, dict)
+                    and saved.get("schema_version") == CACHE_SCHEMA_VERSION
+                    and saved.get("aoi_geometry") == AOI_POLYGON_VERSION
+                    and isinstance(saved.get("rows"), list)):
+                logger.info("clusters from polygon-aware cache %s", cache.name)
+                return saved["rows"]
+            logger.info("ignoring legacy/bbox-only cluster cache %s", cache.name)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("ignoring invalid cluster cache %s: %s", cache.name, exc)
+
+    from scar_map import enumerate_candidates, classify, grid_transform, source_aoi_mask
+    with np.load(grid_cache) as z:
+        d, pre, both = z["d"], z["pre"], z["both"].astype(bool)
+        cache_versioned = ("aoi_polygon_version" in z.files
+                           and str(np.asarray(z["aoi_polygon_version"]).item()) == AOI_POLYGON_VERSION)
+    if not cache_versioned:
+        raise RuntimeError("grid cache is not polygon-aware; call grid_block() before clusters_block().")
+    exact_aoi = np.asarray(source_aoi_mask(), dtype=bool)
+    both = both & exact_aoi & np.isfinite(d) & np.isfinite(pre)
+    d = np.where(both, d, np.nan)
     cl = enumerate_candidates(both, pre, d, -0.25, 0.35, 40)
     rows = classify(cl, d, pre, grid_transform(), limit=12)
+    # Centroids are checked against the exact polygon as a final defence against
+    # raster-edge/rounding leakage; cluster masks themselves were already clipped.
+    from local_floor import point_in_aoi
+    rows = [r for r in rows if point_in_aoi(float(r["lon"]), float(r["lat"]), "source")]
     for r in rows:
         for k in ("area_km2", "lat", "lon", "d_ndsi_median", "elev_m",
                   "slope_deg", "aspect_deg"):
             r[k] = round(float(r[k]), 5)
-    cache.write_text(json.dumps(rows))
-    logger.info("classified %d clusters, %d detachment-like", len(rows),
+    cache.write_text(json.dumps({
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "aoi_geometry": AOI_POLYGON_VERSION,
+        "rows": rows,
+    }, separators=(",", ":")), encoding="utf-8")
+    logger.info("classified %d source-polygon clusters, %d detachment-like", len(rows),
                 sum(1 for r in rows if r["reading"] == "DETACHMENT-like"))
     return rows
 
@@ -266,11 +331,24 @@ def scar_floor_block() -> dict:
 
 
 def bound_block() -> dict:
-    """The like-for-like headline, per candidate, exactly as bound.py wrote it."""
+    """Like-for-like headline, excluding any stale source-AOI-ineligible row."""
     from bound import PRECURSOR_MM_DAY
+    from local_floor import point_in_aoi
+
     p = ROOT / "outputs" / "bound_source.csv"
-    rows = list(csv.DictReader(open(p))) if p.exists() else []
-    return {"precursor_mm_day": round(PRECURSOR_MM_DAY, 4), "candidates": rows}
+    rows = list(csv.DictReader(open(p, newline="", encoding="utf-8"))) if p.exists() else []
+    eligible = []
+    for row in rows:
+        try:
+            lat, lon = float(row["lat"]), float(row["lon"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            logger.warning("omitting malformed bound row: %s", row.get("id", "(unknown id)"))
+            continue
+        if not point_in_aoi(lon, lat, "source"):
+            logger.warning("omitting source bound for candidate %s outside the exact source polygon", row.get("id"))
+            continue
+        eligible.append(row)
+    return {"precursor_mm_day": round(PRECURSOR_MM_DAY, 4), "candidates": eligible}
 
 
 def reference_block(offsets: list[dict], series: dict) -> dict:
