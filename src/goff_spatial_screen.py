@@ -547,11 +547,11 @@ def score_pair_arrays(
         & np.isfinite(coherence) & (coherence >= coherence_min)
     )
     return {
-        "valid": valid,
+        # Retain only the fields consumed by the streaming accumulator. The
+        # intermediate magnitude/z/residual arrays are intentionally released
+        # when this function returns; returning them would multiply peak RAM.
         "candidate": hit,
-        "magnitude_m": magnitude,
         "anomaly_m": anomaly,
-        "z_score": z_score,
         "directional_coherence": coherence,
         "valid_aoi_pixels": int((valid & aoi_mask).sum()),
         "candidate_pixels": int(hit.sum()),
@@ -560,38 +560,64 @@ def score_pair_arrays(
     }
 
 
-def _grid_compatible(first: RawPair, other: RawPair) -> bool:
-    return (
-        first.crs == other.crs
-        and first.east_offsets_m.shape == other.east_offsets_m.shape
-        and np.allclose(first.xs, other.xs, rtol=0, atol=1e-3)
-        and np.allclose(first.ys, other.ys, rtol=0, atol=1e-3)
-        and np.allclose(tuple(first.transform), tuple(other.transform), rtol=0, atol=1e-6)
-        and np.array_equal(first.grid_mask, other.grid_mask)
-    )
-
-
-def validate_series(pairs: list[RawPair]) -> None:
-    if not pairs:
+def validate_identity_series(identities: list[GranuleIdentity]) -> list[GranuleIdentity]:
+    """Validate series metadata before reading large source rasters into memory."""
+    if not identities:
         raise ScreenError("NO_INPUT_PAIRS")
-    key = pairs[0].identity.series_key
-    for pair in pairs:
-        if pair.identity.series_key != key:
+    key = identities[0].series_key
+    for identity in identities:
+        if identity.series_key != key:
             raise ScreenError(
                 "MIXED_SERIES_IDENTITY: refusing to merge tracks, directions, frames, "
                 "bandwidths, polarizations, processing types or CRIDs; got "
-                + pair.identity.identity_string
+                + identity.identity_string
             )
-    if len({p.identity.pair_key for p in pairs}) != len(pairs):
+        if identity.secondary <= identity.reference:
+            raise ScreenError("INVALID_ACQUISITION_INTERVAL:" + repr(identity.pair_key))
+    if len({identity.pair_key for identity in identities}) != len(identities):
         raise ScreenError("DUPLICATE_ACQUISITION_INTERVALS")
+    return sorted(identities, key=lambda item: (item.secondary, item.reference))
+
+
+def _grid_signature(pair: RawPair) -> dict[str, Any]:
+    """Keep only small grid metadata plus AOI mask; never retain pair displacement arrays."""
+    return {
+        "crs": pair.crs,
+        "shape": pair.east_offsets_m.shape,
+        "xs": pair.xs,
+        "ys": pair.ys,
+        "transform": pair.transform,
+        "grid_mask": pair.grid_mask,
+    }
+
+
+def _grid_compatible_signature(reference: dict[str, Any], other: RawPair) -> bool:
+    return (
+        reference["crs"] == other.crs
+        and reference["shape"] == other.east_offsets_m.shape
+        and np.allclose(reference["xs"], other.xs, rtol=0, atol=1e-3)
+        and np.allclose(reference["ys"], other.ys, rtol=0, atol=1e-3)
+        and np.allclose(tuple(reference["transform"]), tuple(other.transform), rtol=0, atol=1e-6)
+        and np.array_equal(reference["grid_mask"], other.grid_mask)
+    )
+
+
+def _grid_compatible(first: RawPair, other: RawPair) -> bool:
+    return _grid_compatible_signature(_grid_signature(first), other)
+
+
+def validate_series(pairs: list[RawPair]) -> None:
+    """Compatibility helper for tests; production screening uses streaming validation."""
+    if not pairs:
+        raise ScreenError("NO_INPUT_PAIRS")
+    sorted_ids = validate_identity_series([pair.identity for pair in pairs])
+    ordered = {identity.path: pair for identity, pair in zip([p.identity for p in pairs], pairs)}
+    pairs[:] = [ordered[identity.path] for identity in sorted_ids]
     reference = pairs[0]
+    signature = _grid_signature(reference)
     for pair in pairs[1:]:
-        if not _grid_compatible(reference, pair):
+        if not _grid_compatible_signature(signature, pair):
             raise ScreenError("INCOMPATIBLE_PIXEL_GRID: no reprojection/resampling is done implicitly")
-    for pair in pairs:
-        if pair.identity.secondary <= pair.identity.reference:
-            raise ScreenError("INVALID_ACQUISITION_INTERVAL:" + pair.identity.pair_key.__repr__())
-    pairs.sort(key=lambda p: (p.identity.secondary, p.identity.reference))
 
 
 def _component_rows(mask: np.ndarray, transform: Affine, crs: CRS, minimum_pixels: int) -> list[dict[str, Any]]:
@@ -693,21 +719,36 @@ def run_screen(
     if len(inputs) != len(set(p.resolve() for p in inputs)):
         raise ScreenError("DUPLICATE_INPUT_PATHS")
     ring = parse_polygon_wkt(aoi_wkt)
-    pairs = [
-        read_raw_pair(path, dem_path, ring, polarization=polarization,
-                      frequency=frequency, layer=layer, snr_min=snr_min,
-                      correlation_min=correlation_min)
-        for path in inputs
-    ]
-    validate_series(pairs)
+    identities = validate_identity_series([parse_identity(path) for path in inputs])
     out_dir.mkdir(parents=True, exist_ok=True)
-    first = pairs[0]
-    hit_count = np.zeros(first.east_offsets_m.shape, dtype=np.uint8)
-    anomaly_sum = np.zeros(first.east_offsets_m.shape, dtype=np.float32)
-    coherence_sum = np.zeros(first.east_offsets_m.shape, dtype=np.float32)
-    reports = []
 
-    for pair in pairs:
+    # Stream one raw HDF5 pair at a time. GOFF granules and derived 80 m arrays
+    # are large; retaining every pair's E/N/SNR/correlation arrays at once is
+    # needlessly memory-hungry and can make a real multi-pair run fail.
+    grid = None
+    hit_count = anomaly_sum = coherence_sum = None
+    reports: list[dict[str, Any]] = []
+
+    for identity in identities:
+        pair = read_raw_pair(
+            identity.path, dem_path, ring, polarization=polarization,
+            frequency=frequency, layer=layer, snr_min=snr_min,
+            correlation_min=correlation_min,
+        )
+        if pair.identity.series_key != identities[0].series_key or pair.identity.pair_key != identity.pair_key:
+            raise ScreenError("INPUT_IDENTITY_CHANGED_DURING_READ:" + identity.path.name)
+
+        if grid is None:
+            grid = _grid_signature(pair)
+            hit_count = np.zeros(pair.east_offsets_m.shape, dtype=np.uint16)
+            anomaly_sum = np.zeros(pair.east_offsets_m.shape, dtype=np.float32)
+            coherence_sum = np.zeros(pair.east_offsets_m.shape, dtype=np.float32)
+        elif not _grid_compatible_signature(grid, pair):
+            raise ScreenError(
+                "INCOMPATIBLE_PIXEL_GRID: no reprojection/resampling is done implicitly: "
+                + identity.path.name
+            )
+
         result = score_pair_arrays(
             pair.east_offsets_m, pair.north_offsets_m, pair.snr, pair.correlation,
             pair.grid_mask, snr_min=snr_min, correlation_min=correlation_min,
@@ -715,18 +756,18 @@ def run_screen(
             z_min=z_min, anomaly_min_m=anomaly_min_m, coherence_min=coherence_min,
         )
         hit = result["candidate"]
-        hit_count += hit.astype(np.uint8)
+        hit_count += hit.astype(np.uint16)
         anomaly_sum += np.where(hit, result["anomaly_m"], 0.0).astype(np.float32)
         coherence_sum += np.where(hit, result["directional_coherence"], 0.0).astype(np.float32)
         reports.append({
-            "granule": pair.identity.path.name,
-            "granule_identity": pair.identity.identity_string,
-            "subswath": pair.identity.subswath,
-            "reference": pair.identity.reference,
-            "secondary": pair.identity.secondary,
+            "granule": identity.path.name,
+            "granule_identity": identity.identity_string,
+            "subswath": identity.subswath,
+            "reference": identity.reference,
+            "secondary": identity.secondary,
             "interval_days": (
-                datetime.strptime(pair.identity.secondary, "%Y%m%dT%H%M%S")
-                - datetime.strptime(pair.identity.reference, "%Y%m%dT%H%M%S")
+                datetime.strptime(identity.secondary, "%Y%m%dT%H%M%S")
+                - datetime.strptime(identity.reference, "%Y%m%dT%H%M%S")
             ).total_seconds() / 86400.0,
             "source_sha256": pair.source_sha256,
             "source_bytes": pair.source_bytes,
@@ -736,31 +777,28 @@ def run_screen(
             "candidate_aoi_fraction": result["candidate_aoi_fraction"],
             "status": "SCREENED_NOT_DETECTION",
         })
+        # Release the per-pair rasters before opening the next raw granule.
+        del result, hit, pair
 
+    if grid is None or hit_count is None or anomaly_sum is None or coherence_sum is None:
+        raise ScreenError("NO_PAIRS_PROCESSED")
+    pair_count = len(reports)
     persistent = hit_count >= minimum_pairs
     anomaly_mean = np.full(hit_count.shape, np.nan, dtype=np.float32)
     coherence_mean = np.full(hit_count.shape, np.nan, dtype=np.float32)
     flagged = hit_count > 0
     anomaly_mean[flagged] = anomaly_sum[flagged] / hit_count[flagged]
     coherence_mean[flagged] = coherence_sum[flagged] / hit_count[flagged]
-    # Retain every pair's count for audit, but the candidate mask is gated by
-    # persistence and minimum connected support. It is not a hazard label.
-    components = _component_rows(persistent, first.transform, first.crs, minimum_component_pixels)
+    components = _component_rows(persistent, grid["transform"], grid["crs"], minimum_component_pixels)
     qualified_mask = np.zeros(persistent.shape, dtype=bool)
     if components:
         polygon_mask = np.zeros(persistent.shape, dtype=np.uint8)
-        # Reconstruct the retained component mask from pixel counts / polygon
-        # shape without using bbox: rasterize actual polygons back to the grid.
         from rasterio.features import rasterize
         burn = [(row["geometry"], 1) for row in components]
-        rasterize(burn, out=polygon_mask, transform=first.transform, fill=0, dtype=np.uint8)
+        rasterize(burn, out=polygon_mask, transform=grid["transform"], fill=0, dtype=np.uint8)
         qualified_mask = polygon_mask.astype(bool)
 
-    status = (
-        "EXPLORATORY_RANKING_ONLY"
-        if len(pairs) >= minimum_pairs
-        else "NO_TEMPORAL_PERSISTENCE_TEST"
-    )
+    status = "EXPLORATORY_RANKING_ONLY" if pair_count >= minimum_pairs else "NO_TEMPORAL_PERSISTENCE_TEST"
     reasons = [
         "Candidate thresholds are adapted from a single published NISAR GOFF case study; not calibrated for arbitrary AOIs.",
         "Correlation>=0.3 is an additional SARGuardian gate; results are not an exact reproduction of the published screen.",
@@ -769,9 +807,9 @@ def run_screen(
         "DEM vertical datum must be checked against radarGrid heightAboveEllipsoid before scientific magnitude interpretation.",
         "No spatial-null/multiple-testing calibration is applied in this prototype; component ranks are exploratory only.",
     ]
-    if len(pairs) < minimum_pairs:
+    if pair_count < minimum_pairs:
         reasons.append(
-            f"Only {len(pairs)} compatible pair(s) were supplied; at least {minimum_pairs} are required "
+            f"Only {pair_count} compatible pair(s) were supplied; at least {minimum_pairs} are required "
             "for even an exploratory persistence screen."
         )
 
@@ -779,26 +817,23 @@ def run_screen(
     anomaly_path = out_dir / "mean_anomaly_m.tif"
     coherence_path = out_dir / "mean_directional_coherence.tif"
     candidates_path = out_dir / "persistent_candidate_mask.tif"
-    _write_raster(hit_count_path, hit_count, first.transform, first.crs, 255,
+    _write_raster(hit_count_path, hit_count, grid["transform"], grid["crs"], 65535,
                   "Number of GOFF pairs with a coherent local anomaly")
-    _write_raster(anomaly_path, anomaly_mean, first.transform, first.crs, np.nan,
+    _write_raster(anomaly_path, anomaly_mean, grid["transform"], grid["crs"], np.nan,
                   "Mean positive local displacement-magnitude anomaly among flagged pairs (m)")
-    _write_raster(coherence_path, coherence_mean, first.transform, first.crs, np.nan,
+    _write_raster(coherence_path, coherence_mean, grid["transform"], grid["crs"], np.nan,
                   "Mean residual directional coherence among flagged pairs")
-    _write_raster(candidates_path, qualified_mask.astype(np.uint8), first.transform, first.crs, 255,
+    _write_raster(candidates_path, qualified_mask.astype(np.uint8), grid["transform"], grid["crs"], 255,
                   "Exploratory persistent-component mask; 1=review candidate, not hazard")
 
     candidate_features = []
     for row in components:
-        # RFC 7946 GeoJSON coordinates are WGS84 longitude/latitude. Rasters
-        # stay in the native projected CRS; polygon coordinates are transformed.
-        geometry_wgs84 = transform_geom(first.crs, "EPSG:4326", row["geometry"])
-        feature = {
+        geometry_wgs84 = transform_geom(grid["crs"], "EPSG:4326", row["geometry"])
+        candidate_features.append({
             "type": "Feature",
             "properties": {k: v for k, v in row.items() if k != "geometry"},
             "geometry": geometry_wgs84,
-        }
-        candidate_features.append(feature)
+        })
     geojson_path = out_dir / "candidates.geojson"
     geojson_path.write_text(json.dumps({
         "type": "FeatureCollection", "features": candidate_features,
@@ -818,16 +853,16 @@ def run_screen(
         "schema_version": SCHEMA,
         "status": status,
         "interpretation": "Exploratory target-free ranking only. No hazard alert, failure prediction or validated detection is issued.",
-        "series_identity": first.identity.identity_string,
-        "processing": first.identity.processing,
-        "crid": first.identity.crid,
-        "pair_count": len(pairs),
+        "series_identity": identities[0].identity_string,
+        "processing": identities[0].processing,
+        "crid": identities[0].crid,
+        "pair_count": pair_count,
         "minimum_pairs_for_persistence": minimum_pairs,
         "aoi_wkt": aoi_wkt,
-        "aoi_grid_pixels": int(first.grid_mask.sum()),
-        "grid_shape": list(first.grid_mask.shape),
-        "grid_crs": first.crs.to_string(),
-        "grid_transform": list(first.transform),
+        "aoi_grid_pixels": int(grid["grid_mask"].sum()),
+        "grid_shape": list(grid["shape"]),
+        "grid_crs": grid["crs"].to_string(),
+        "grid_transform": list(grid["transform"]),
         "dem": {"path": str(dem_path), "sha256": sha256_file(dem_path),
                 "vertical_datum_status": "MUST_BE_VERIFIED_COMPATIBLE_WITH_HEIGHT_ABOVE_ELLIPSOID"},
         "parameters": {
