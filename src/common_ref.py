@@ -83,11 +83,13 @@ def buffer_mask(shape: tuple, centres: list[tuple[int, int]], radius_px: int) ->
 
 def rereference(stack: list[np.ndarray], stable: np.ndarray) -> tuple[list[np.ndarray], list[float]]:
     """
-    Subtract each pair's median over the common stable set.
+    Subtract each pair's median over common support outside target buffers.
 
-    Returns the re-referenced arrays and the constant removed from each. The
-    constants are the result as much as the arrays are: they are the datum
-    error each pair carried under its own private reference.
+    Important limitation: this mask is NOT independently verified stable ground.
+    It is an AOI/export-derived support set used for a relative-datum diagnostic.
+    The constants are returned explicitly, but broad/common real motion or an
+    event-affected region can bias them. Do not call this an absolute/stable
+    reference without independent stability evidence.
     """
     if int(stable.sum()) < MIN_COMMON:
         raise ValueError(f"only {int(stable.sum())} common stable pixels; "
@@ -227,12 +229,15 @@ def main() -> int:
         centres[tid] = (row, col)
 
     common = common_mask(stack) & inside_aoi
-    stable = common & ~buffer_mask(common.shape, list(centres.values()),
-                                   int(round(args.buffer_km * 1000 / px)))
-    fixed, consts = rereference(stack, stable)
+    reference_support = common & ~buffer_mask(common.shape, list(centres.values()),
+                                              int(round(args.buffer_km * 1000 / px)))
+    fixed, consts = rereference(stack, reference_support)
 
-    print(f"\n{'='*78}\nCOMMON DATUM over {len(stack)} pairs: {int(common.sum()):,} cells valid "
-          f"in all, {int(stable.sum()):,} after the {args.buffer_km:g} km target buffer\n{'='*78}")
+    reference_status = "AOI_COMMON_SUPPORT_STABILITY_UNVALIDATED"
+    print(f"\n{'='*78}\nCOMMON-DATUM DIAGNOSTIC over {len(stack)} pairs: {int(common.sum()):,} cells valid "
+          f"in all, {int(reference_support.sum()):,} after the {args.buffer_km:g} km target buffer\n{'='*78}")
+    print("  Reference basis: common AOI support outside target buffers; stable-ground status is UNVALIDATED.")
+    print("  Broad AOI-wide real motion may be absorbed into this relative datum.")
     print(f"  {'PAIR':<20}{'span':>5}{'datum error':>13}{'as velocity':>13}")
     for n, sp, k in zip(names, spans, consts):
         print(f"  {n:<20}{sp:>5.0f}{k:>10.1f} mm{k/sp:>9.2f} mm/d")
@@ -253,10 +258,15 @@ def main() -> int:
                          "target_mm_per_pair_ref": round(m_raw, 3),
                          "target_mm_common_ref": round(m_fix, 3),
                          "target_mm_day_common_ref": round(m_fix / sp, 3),
-                         "window_px": npx, "stable_px": int(stable.sum())})
+                         "window_px": npx,
+                         "stable_px": int(reference_support.sum()),  # legacy field name; not proven stable ground
+                         "reference_support_px": int(reference_support.sum()),
+                         "reference_status": reference_status,
+                         "reference_stability": "UNVALIDATED",
+                         "reference_kind": "AOI_COMMON_SUPPORT_NOT_INDEPENDENTLY_VERIFIED_STABLE_GROUND"})
 
     worst = max(abs(k / sp) for k, sp in zip(consts, spans))
-    print(f"\n  Largest datum error in this stack: {worst:.2f} mm/day.")
+    print(f"\n  Largest datum offset in this common-support diagnostic: {worst:.2f} mm/day.")
 
     if args.csv:
         p = Path(resolve(args.csv))
