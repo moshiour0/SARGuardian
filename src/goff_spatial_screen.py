@@ -914,7 +914,8 @@ def run_screen(
         component["mean_elevation_ellipsoidal_m"] = round(float(np.nanmean(terrain_elevation[component_mask])), 1) if np.isfinite(terrain_elevation[component_mask]).any() else None
         component["downsloping_direction_misfit_deg"] = round(
             angular_difference_degrees(
-                component["mean_residual_azimuth_deg"] or float("nan"),
+                component["mean_residual_azimuth_deg"]
+                if component["mean_residual_azimuth_deg"] is not None else float("nan"),
                 component["mean_downslope_azimuth_deg"],
             ), 2
         )
@@ -925,7 +926,8 @@ def run_screen(
         component["mean_ground_range_azimuth_deg"] = round(range_mean, 2) if math.isfinite(range_mean) else None
         component["range_direction_misfit_deg"] = round(
             angular_difference_degrees(
-                component["mean_residual_azimuth_deg"] or float("nan"),
+                component["mean_residual_azimuth_deg"]
+                if component["mean_residual_azimuth_deg"] is not None else float("nan"),
                 component["mean_ground_range_azimuth_deg"],
             ), 2
         )
@@ -982,7 +984,15 @@ def run_screen(
     with csv_path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(
             stream,
-            fieldnames=["candidate_id", "pixels_approx", "area_km2_approx", "bbox_center_lon", "bbox_center_lat"],
+            fieldnames=[
+                "candidate_id", "pixels_approx", "area_km2_approx",
+                "bbox_center_lon", "bbox_center_lat",
+                "mean_residual_azimuth_deg", "mean_downslope_azimuth_deg",
+                "mean_slope_deg", "mean_elevation_ellipsoidal_m",
+                "downsloping_direction_misfit_deg",
+                "pixel_fraction_within_45deg_downslope",
+                "mean_ground_range_azimuth_deg", "range_direction_misfit_deg",
+            ],
         )
         writer.writeheader()
         for row in components:
