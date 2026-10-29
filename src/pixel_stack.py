@@ -42,6 +42,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -197,14 +198,16 @@ def stack(run: list[dict], remove_common_mode: bool = True):
     n_ep = len(run) + 1
     H, W = geo["shape"]
 
-    if remove_common_mode:
-        # One number per epoch: the scene median. Whatever is common to the
-        # whole AOI is atmosphere or an unresolved reference offset; whatever
-        # survives is local, which is the only thing a landslide can be.
-        for k in range(cube.shape[0]):
-            med = np.nanmedian(cube[k])
-            if np.isfinite(med):
-                cube[k] -= med
+    common_mode_pair_medians_mm: list[float | None] = []
+    for k in range(cube.shape[0]):
+        finite_values = cube[k][np.isfinite(cube[k])]
+        med = float(np.median(finite_values)) if finite_values.size else float("nan")
+        common_mode_pair_medians_mm.append(med if np.isfinite(med) else None)
+        if remove_common_mode and np.isfinite(med):
+            # Removing each pair's spatial median can also remove true broad
+            # AOI-wide motion. Its exact applied value is retained for audit,
+            # and the pipeline also runs a no-removal sensitivity diagnostic.
+            cube[k] -= med
 
     cum = np.full((n_ep, H, W), np.nan, dtype="float32")
     # The first epoch is a relative zero only where at least one actual
@@ -263,7 +266,10 @@ def stack(run: list[dict], remove_common_mode: bool = True):
         "complete_series_pixels": valid_pair_count,
         "total_grid_pixels": int(complete.size),
         "minimum_pairs_for_velocity": 2,
-        "uncertainty_status": "ESTIMABLE_FROM_RESIDUAL_DOF" if dof > 0 else "WITHHELD_NO_DOF",
+        "uncertainty_status": "RESIDUAL_BASED_DIAGNOSTIC_NOT_INDEPENDENTLY_VALIDATED" if dof > 0 else "WITHHELD_NO_DOF",
+        "common_mode_removed": bool(remove_common_mode),
+        "common_mode_policy": "PAIRWISE_MEDIAN_REMOVED" if remove_common_mode else "PAIRWISE_MEDIAN_RETAINED",
+        "common_mode_pair_medians_mm": common_mode_pair_medians_mm,
     }
 
 
@@ -276,6 +282,8 @@ def report(res: dict, label: str) -> None:
     total = int(ok.size)
     partial = int(((res["observed_pair_count"] > 0) & ~ok).sum())
     never = int((res["observed_pair_count"] == 0).sum())
+    print(f"  common-mode policy            : {res['common_mode_policy']}")
+    print(f"  residual uncertainty status   : {res['uncertainty_status']}")
     print(f"  pixels with a complete series : {n:,} of {total:,} "
           f"({100*n/max(total, 1):.1f}%)")
     print(f"  partial temporal support      : {partial:,} px "
@@ -512,12 +520,13 @@ def write_geotiff(res: dict, out: Path) -> None:
     # Bands 1-2 hold only complete-chain velocity and its uncertainty.
     # Bands 3-4 preserve partial support explicitly; they are not displacement
     # measurements and must not be interpreted as zero velocity.
+    out.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out, "w", driver="GTiff", height=v.shape[0], width=v.shape[1],
                        count=4, dtype="float32", crs=res["geo"]["crs"],
                        transform=res["geo"]["transform"], nodata=np.nan,
                        compress="deflate", predictor=3) as dst:
         dst.write(v, 1); dst.set_band_description(1, "LOS velocity (mm/day; complete connected chain only)")
-        dst.write(s, 2); dst.set_band_description(2, "1-sigma (mm/day; withheld if unavailable)")
+        dst.write(s, 2); dst.set_band_description(2, "Residual-based OLS sigma (mm/day; diagnostic only)")
         dst.write(res["observed_pair_count"].astype("float32"), 3)
         dst.set_band_description(3, "Observed valid pair count (support diagnostic; not motion)")
         dst.write(res["longest_contiguous_pair_count"].astype("float32"), 4)
@@ -529,6 +538,10 @@ def write_geotiff(res: dict, out: Path) -> None:
             no_pair_support_pixels=str(int((res["observed_pair_count"] == 0).sum())),
             degrees_of_freedom=str(max(len(res["days"]) - 2, 0)),
             uncertainty_status=str(res["uncertainty_status"]),
+            common_mode_removed=str(res["common_mode_removed"]).lower(),
+            common_mode_policy=str(res["common_mode_policy"]),
+            common_mode_pair_medians_mm_json=json.dumps(res["common_mode_pair_medians_mm"], separators=(",", ":")),
+            scientific_claim_limit="Relative LOS trend diagnostic; not independent geophysical validation or a hazard finding.",
         )
     logger.info("Wrote %s", out)
 
@@ -575,8 +588,15 @@ def main() -> int:
         elif fp:
             logger.info("%s cluster did not beat its own noise null - excluded "
                         "from the cross-geometry check.", run[0]["geom"])
-        if args.geotiff and len(runs) == 1:
-            write_geotiff(res, Path(args.geotiff))
+        if args.geotiff:
+            base = Path(args.geotiff)
+            if len(runs) == 1:
+                output_path = base
+            else:
+                geometry = re.sub(r"[^A-Za-z0-9_-]+", "_", str(run[0]["geom"]))
+                output_path = base.with_name(f"{base.stem}_{geometry}_chain{k:02d}{base.suffix or '.tif'}")
+            write_geotiff(res, output_path)
+            logger.info("Wrote target-free per-pixel stack diagnostic: %s", output_path)
 
     cross_geometry_check(found)
     return 0
