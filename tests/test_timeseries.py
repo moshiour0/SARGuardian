@@ -365,3 +365,6 @@ def test_exactly_determined_inversion_has_no_formal_residual_uncertainty():
     assert result["network_status"] == "EXACTLY_DETERMINED_NO_RESIDUAL_DOF"
     assert np.isnan(result["sigma_mm"])
     assert not np.isfinite(result["error_mm"][1:]).any()
+    assert not np.isfinite(result["velocity_err_mm_per_day"]), (
+        "slope residuals must not be presented as uncertainty for a zero-redundancy pair network"
+    )
