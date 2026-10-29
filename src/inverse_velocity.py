@@ -362,11 +362,35 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
     # depends entirely on the look geometry - so 1/v built from the signed
     # value is negative for half the world's slopes, rises toward zero instead
     # of falling to it, and is rejected by the slope test below.
-    v = np.abs(np.array([w["v_mm_day"] for w in win], dtype=float))
-    inv = 1.0 / v
-
+    raw_velocity = np.array([w["v_mm_day"] for w in win], dtype=float)
+    speed = np.abs(raw_velocity)
     n = len(t)
+
+    def withheld(reason: str) -> dict:
+        return {
+            "slope": float("nan"), "intercept": float("nan"), "r2": float("nan"),
+            "t_fail_days_from_window_start": float("nan"), "t_fail_date": None,
+            "sigma_days": float("nan"), "n": n, "ci_bounded": False,
+            "ci_low_date": None, "ci_high_date": None, "ci_width_days": float("nan"),
+            "status": "WITHHELD_" + reason, "withheld_reason": reason,
+        }
+
+    if n < 3:
+        return withheld("INSUFFICIENT_INDEPENDENT_VELOCITY_POINTS")
+    if not np.isfinite(t).all() or not np.isfinite(speed).all():
+        return withheld("NONFINITE_TIME_OR_VELOCITY")
+    if np.any(speed <= np.finfo(float).eps):
+        return withheld("ZERO_OR_NEAR_ZERO_SPEED_MAKES_INVERSE_UNDEFINED")
+    if np.any(np.diff(t) <= 0):
+        return withheld("NONMONOTONIC_OR_DUPLICATE_INTERVAL_MIDPOINTS")
+
+    inv = 1.0 / speed
     A = np.vstack([t, np.ones_like(t)]).T
+    if np.linalg.matrix_rank(A) < 2:
+        return withheld("RANK_DEFICIENT_TIME_DESIGN")
+    design_condition = float(np.linalg.cond(A))
+    if not np.isfinite(design_condition) or design_condition > 1e10:
+        return withheld("ILL_CONDITIONED_TIME_DESIGN")
     coef, *_ = np.linalg.lstsq(A, inv, rcond=None)
     a, b = float(coef[0]), float(coef[1])
 
@@ -396,6 +420,8 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
                            if np.isfinite(t_fail_rel) else None,
             "sigma_days": sigma_tf, "n": n,
             "ci_bounded": bounded,
+            "status": "FIT_AVAILABLE" if bounded else "POINT_ESTIMATE_ONLY_CI_UNBOUNDED",
+            "withheld_reason": None if bounded else "FAILURE_DATE_CI_UNBOUNDED",
             "ci_low_date": d0 + timedelta(days=ci_lo) if bounded else None,
             "ci_high_date": d0 + timedelta(days=ci_hi) if bounded else None,
             "ci_width_days": (ci_hi - ci_lo) if bounded else float("nan")}
@@ -422,6 +448,40 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
         return {"alarm": False, "reason": "no intervals",
                 "dropped": [], "intervals": []}
 
+    if not np.isfinite(sig_multiple) or sig_multiple <= 0:
+        print("  WITHHELD - significance multiplier must be finite and positive")
+        return {"alarm": False, "reason": "invalid significance multiplier", "dropped": [],
+                "intervals": _spans(vs), "usable": []}
+
+    dropped: list[tuple] = []
+    invalid_floor_spans = []
+    invalid_velocity_spans = []
+    retained = []
+    for interval in vs:
+        speed_value = interval.get("v_mm_day")
+        if speed_value is None or not np.isfinite(speed_value):
+            invalid_velocity_spans.append((interval["t0"], interval["t1"]))
+            continue
+        floor = interval.get("floor")
+        if floor is not None and (not np.isfinite(floor) or float(floor) <= 0):
+            invalid_floor_spans.append((interval["t0"], interval["t1"]))
+            continue
+        if floor is None and (not np.isfinite(noise_floor) or noise_floor <= 0):
+            invalid_floor_spans.append((interval["t0"], interval["t1"]))
+            continue
+        retained.append(interval)
+    if invalid_velocity_spans:
+        dropped.extend(invalid_velocity_spans)
+        print(f"  dropped {len(invalid_velocity_spans)} interval(s) with non-finite velocity")
+    if invalid_floor_spans:
+        dropped.extend(invalid_floor_spans)
+        print(f"  dropped {len(invalid_floor_spans)} interval(s) with missing/invalid floor support")
+    vs = retained
+    if not vs:
+        print("  WITHHELD - no intervals have finite velocities and valid positive floor support")
+        return {"alarm": False, "reason": "no finite intervals with valid noise-floor support",
+                "dropped": dropped, "intervals": [], "usable": []}
+
     # A forecast may only use data that existed before the thing it forecasts.
     #
     # This is not a hypothetical. `--event-date` used to score the prediction
@@ -437,10 +497,9 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     # The midpoint labelling hid it. The fit reported "ending 2026-08-25",
     # which is the midpoint of an interval running to 08-31, so the output
     # looked pre-event while resting on post-event data.
-    dropped: list[tuple] = []
     if cutoff is not None:
         leaked = [w for w in vs if w["t1"] >= cutoff]
-        dropped = [(w["t0"], w["t1"]) for w in leaked]
+        dropped.extend((w["t0"], w["t1"]) for w in leaked)
         if leaked:
             vs = [w for w in vs if w["t1"] < cutoff]
             print(f"\n  FORECAST CUTOFF {cutoff}: dropped {len(leaked)} interval(s)")
@@ -538,12 +597,16 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     # here because the two give different lead times and the difference is not
     # visible in the output.
     best = None
+    unbounded_failure_date_windows = 0
     for k in range(window, len(usable) + 1):
         win = usable[k - window:k]
         fit = fit_inverse_velocity(win)
         if fit["slope"] >= 0:
             continue                      # 1/v must be falling
-        if fit["r2"] < r2_min:
+        if not np.isfinite(fit["r2"]) or fit["r2"] < r2_min:
+            continue
+        if not fit.get("ci_bounded", False):
+            unbounded_failure_date_windows += 1
             continue
         if fit["t_fail_date"] is None:
             continue
@@ -561,6 +624,13 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
         break
 
     if best is None:
+        if unbounded_failure_date_windows:
+            print(f"\n  FORECAST WITHHELD - {unbounded_failure_date_windows} accelerating fit window(s) "
+                  "had an unbounded Fieller 95% failure-date interval.")
+            print("  The fitted point estimate is not a bounded forecast; no alarm is issued.")
+            return {"alarm": False, "reason": "failure-date confidence interval unbounded; forecast withheld",
+                    "dropped": dropped, "intervals": _spans(vs), "usable": _spans(usable),
+                    "unbounded_failure_date_windows": unbounded_failure_date_windows}
         print(f"\n  NO ALARM - {len(usable)} usable velocities, but no window of "
               f"{window} met all of:")
         print(f"    1/v decreasing (acceleration), R2 >= {r2_min}, "
