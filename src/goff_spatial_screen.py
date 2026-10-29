@@ -122,6 +122,8 @@ class RawPair:
     source_sha256: str
     source_bytes: int
     geometry_note: str
+    elevation_ellipsoid_m: np.ndarray | None = None
+    range_azimuth_deg: np.ndarray | None = None
 
 
 def parse_identity(path: Path) -> GranuleIdentity:
@@ -439,6 +441,7 @@ def read_raw_pair(
     h, w = arrays["range"].shape
     east = np.full((h, w), np.nan, dtype=np.float32)
     north = np.full((h, w), np.nan, dtype=np.float32)
+    range_azimuth = np.full((h, w), np.nan, dtype=np.float32)
     block_rows = 96
     for r0 in range(0, h, block_rows):
         r1 = min(h, r0 + block_rows)
@@ -473,12 +476,17 @@ def read_raw_pair(
         north[r0:r1] = np.where(
             block_good, arrays["along"][r0:r1] * ay + arrays["range"][r0:r1] * ky, np.nan
         )
+        range_azimuth[r0:r1] = np.where(
+            block_good, np.degrees(np.arctan2(kx, ky)) % 360.0, np.nan
+        ).astype(np.float32)
 
     return RawPair(
         identity=identity, east_offsets_m=east, north_offsets_m=north,
         snr=arrays["snr"], correlation=arrays["correlation"],
         xs=x, ys=y, crs=crs, transform=transform, grid_mask=aoi_mask,
         source_sha256=sha256_file(path), source_bytes=path.stat().st_size,
+        elevation_ellipsoid_m=elevation.astype(np.float32, copy=False),
+        range_azimuth_deg=range_azimuth,
         geometry_note=(
             "Per-pixel projection interpolated from this product's radarGrid at DEM elevations converted "
             "to the WGS84 ellipsoid; vertical_conversion=" + vertical_conversion
@@ -591,6 +599,9 @@ def score_pair_arrays(
         "candidate": hit,
         "anomaly_m": anomaly,
         "directional_coherence": coherence,
+        "residual_east_m": residual_east.astype(np.float32, copy=False),
+        "residual_north_m": residual_north.astype(np.float32, copy=False),
+        "valid": valid & np.asarray(aoi_mask, dtype=bool),
         "valid_aoi_pixels": int((valid & aoi_mask).sum()),
         "candidate_pixels": int(hit.sum()),
         "aoi_grid_pixels": int(np.asarray(aoi_mask, dtype=bool).sum()),
@@ -656,6 +667,41 @@ def validate_series(pairs: list[RawPair]) -> None:
     for pair in pairs[1:]:
         if not _grid_compatible_signature(signature, pair):
             raise ScreenError("INCOMPATIBLE_PIXEL_GRID: no reprojection/resampling is done implicitly")
+
+
+def terrain_slope_and_downslope(
+    elevation_m: np.ndarray, pixel_size_m: float = 80.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Horn-like 3x3 slope and downslope azimuth on a north-up projected DEM grid."""
+    z = np.asarray(elevation_m, dtype=np.float32)
+    if z.ndim != 2 or not np.isfinite(pixel_size_m) or pixel_size_m <= 0:
+        raise ScreenError("TERRAIN_GRID_OR_RESOLUTION_INVALID")
+    # A central gradient is stable on the regular grid and preserves NoData
+    # near missing terrain instead of filling it with an arbitrary elevation.
+    dz_north = np.gradient(z, -pixel_size_m, axis=0)
+    dz_east = np.gradient(z, pixel_size_m, axis=1)
+    slope = np.degrees(np.arctan(np.hypot(dz_east, dz_north))).astype(np.float32)
+    # Downslope vector points along negative gradient. Azimuth is clockwise
+    # from north; x=east, y=north.
+    downslope = (np.degrees(np.arctan2(-dz_east, -dz_north)) % 360.0).astype(np.float32)
+    valid = np.isfinite(z) & np.isfinite(dz_east) & np.isfinite(dz_north)
+    slope[~valid] = np.nan
+    downslope[(~valid) | (slope < 1.0)] = np.nan
+    return slope, downslope
+
+
+def circular_mean_degrees(values: np.ndarray) -> float:
+    a = np.radians(np.asarray(values, dtype=np.float64))
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan")
+    return float(np.degrees(np.arctan2(np.sin(a).mean(), np.cos(a).mean())) % 360.0)
+
+
+def angular_difference_degrees(first: float, second: float) -> float:
+    if not (math.isfinite(first) and math.isfinite(second)):
+        return float("nan")
+    return float(abs((first - second + 180.0) % 360.0 - 180.0))
 
 
 def _component_rows(mask: np.ndarray, transform: Affine, crs: CRS, minimum_pixels: int) -> list[dict[str, Any]]:
@@ -768,6 +814,8 @@ def run_screen(
     # needlessly memory-hungry and can make a real multi-pair run fail.
     grid = None
     hit_count = anomaly_sum = coherence_sum = None
+    hit_east_sum = hit_north_sum = None
+    terrain_elevation = terrain_range_azimuth = None
     reports: list[dict[str, Any]] = []
 
     for identity in identities:
@@ -784,6 +832,10 @@ def run_screen(
             hit_count = np.zeros(pair.east_offsets_m.shape, dtype=np.uint16)
             anomaly_sum = np.zeros(pair.east_offsets_m.shape, dtype=np.float32)
             coherence_sum = np.zeros(pair.east_offsets_m.shape, dtype=np.float32)
+            hit_east_sum = np.zeros(pair.east_offsets_m.shape, dtype=np.float32)
+            hit_north_sum = np.zeros(pair.east_offsets_m.shape, dtype=np.float32)
+            terrain_elevation = pair.elevation_ellipsoid_m
+            terrain_range_azimuth = pair.range_azimuth_deg
         elif not _grid_compatible_signature(grid, pair):
             raise ScreenError(
                 "INCOMPATIBLE_PIXEL_GRID: no reprojection/resampling is done implicitly: "
@@ -800,6 +852,8 @@ def run_screen(
         hit_count += hit.astype(np.uint16)
         anomaly_sum += np.where(hit, result["anomaly_m"], 0.0).astype(np.float32)
         coherence_sum += np.where(hit, result["directional_coherence"], 0.0).astype(np.float32)
+        hit_east_sum += np.where(hit, result["residual_east_m"], 0.0).astype(np.float32)
+        hit_north_sum += np.where(hit, result["residual_north_m"], 0.0).astype(np.float32)
         reports.append({
             "granule": identity.path.name,
             "granule_identity": identity.identity_string,
@@ -821,7 +875,9 @@ def run_screen(
         # Release the per-pair rasters before opening the next raw granule.
         del result, hit, pair
 
-    if grid is None or hit_count is None or anomaly_sum is None or coherence_sum is None:
+    if (grid is None or hit_count is None or anomaly_sum is None or coherence_sum is None
+            or hit_east_sum is None or hit_north_sum is None
+            or terrain_elevation is None or terrain_range_azimuth is None):
         raise ScreenError("NO_PAIRS_PROCESSED")
     pair_count = len(reports)
     persistent = hit_count >= minimum_pairs
@@ -831,6 +887,48 @@ def run_screen(
     anomaly_mean[flagged] = anomaly_sum[flagged] / hit_count[flagged]
     coherence_mean[flagged] = coherence_sum[flagged] / hit_count[flagged]
     components = _component_rows(persistent, grid["transform"], grid["crs"], minimum_component_pixels)
+    terrain_slope, terrain_downslope = terrain_slope_and_downslope(
+        terrain_elevation, pixel_size_m=abs(float(grid["transform"].a))
+    )
+    # Independent post-hoc directional attribution. It does NOT gate the
+    # candidate mask: terrain-following motion is evidence for review, not proof.
+    candidate_hit = (hit_count > 0) & persistent
+    pixel_disp_az = (np.degrees(np.arctan2(hit_east_sum, hit_north_sum)) % 360.0).astype(np.float32)
+    valid_direction = candidate_hit & np.isfinite(pixel_disp_az) & np.isfinite(terrain_downslope)
+    pixel_misfit = np.full(hit_count.shape, np.nan, dtype=np.float32)
+    pixel_misfit[valid_direction] = np.abs(
+        (pixel_disp_az[valid_direction] - terrain_downslope[valid_direction] + 180.0) % 360.0 - 180.0
+    )
+    for component in components:
+        from rasterio.features import rasterize
+        component_mask = rasterize(
+            [(component["geometry"], 1)], out_shape=persistent.shape,
+            transform=grid["transform"], fill=0, dtype=np.uint8,
+        ).astype(bool)
+        pixels = component_mask & candidate_hit
+        component["mean_residual_azimuth_deg"] = round(
+            float(np.degrees(np.arctan2(hit_east_sum[pixels].sum(), hit_north_sum[pixels].sum())) % 360.0), 2
+        ) if pixels.any() else None
+        component["mean_downslope_azimuth_deg"] = round(circular_mean_degrees(terrain_downslope[component_mask]), 2)
+        component["mean_slope_deg"] = round(float(np.nanmean(terrain_slope[component_mask])), 2) if np.isfinite(terrain_slope[component_mask]).any() else None
+        component["mean_elevation_ellipsoidal_m"] = round(float(np.nanmean(terrain_elevation[component_mask])), 1) if np.isfinite(terrain_elevation[component_mask]).any() else None
+        component["downsloping_direction_misfit_deg"] = round(
+            angular_difference_degrees(
+                component["mean_residual_azimuth_deg"] or float("nan"),
+                component["mean_downslope_azimuth_deg"],
+            ), 2
+        )
+        component["pixel_fraction_within_45deg_downslope"] = round(
+            float(np.mean(pixel_misfit[pixels & valid_direction] <= 45.0)), 3
+        ) if (pixels & valid_direction).any() else None
+        range_mean = circular_mean_degrees(terrain_range_azimuth[component_mask])
+        component["mean_ground_range_azimuth_deg"] = round(range_mean, 2) if math.isfinite(range_mean) else None
+        component["range_direction_misfit_deg"] = round(
+            angular_difference_degrees(
+                component["mean_residual_azimuth_deg"] or float("nan"),
+                component["mean_ground_range_azimuth_deg"],
+            ), 2
+        )
     qualified_mask = np.zeros(persistent.shape, dtype=bool)
     if components:
         polygon_mask = np.zeros(persistent.shape, dtype=np.uint8)
@@ -930,6 +1028,17 @@ def run_screen(
         "persistent_pixels_before_component_size_filter": int(persistent.sum()),
         "review_candidate_components": len(components),
         "qualified_candidate_pixels": int(qualified_mask.sum()),
+        "terrain_directional_review": {
+            "status": "POST_HOC_ONLY_NO_ALERT",
+            "definition": "Angle between mean residual displacement azimuth and DEM-derived downslope azimuth; ground-range alignment is reported as an artefact comparator.",
+            "pixels_with_terrain_and_motion_direction": int(valid_direction.sum()),
+            "fraction_of_review_pixels_within_45deg_downslope": (
+                round(float(np.mean(pixel_misfit[valid_direction] <= 45.0)), 4)
+                if valid_direction.any() else None
+            ),
+            "method": "Central DEM gradient on the native projected grid; flat (<1 degree) or invalid terrain has no aspect.",
+            "limitations": "No matched spatial-null p-value, Rayleigh/V-test, glacier inventory join or false-alarm calibration is implemented.",
+        },
         "reasons_and_limitations": reasons,
         "outputs": {
             "pair_persistence_count": hit_count_path.name,
