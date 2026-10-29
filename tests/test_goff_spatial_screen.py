@@ -304,3 +304,14 @@ def test_target_free_screen_requires_explicit_dem_vertical_datum(tmp_path: Path)
             "POLYGON ((85.0 28.0, 85.1 28.0, 85.1 28.1, 85.0 28.0))",
             tmp_path / "out",
         )
+
+
+def test_terrain_aspect_uses_clockwise_from_north_azimuth() -> None:
+    from src.goff_spatial_screen import terrain_slope_and_downslope
+
+    rows, cols = np.indices((31, 31), dtype=np.float32)
+    # Elevation increases eastward, therefore the downslope direction is west (270 degrees).
+    elevation = 4500.0 + cols * 2.0 + rows * 0.0
+    slope, aspect = terrain_slope_and_downslope(elevation, pixel_size_m=80.0)
+    assert np.nanmedian(slope) > 0.5
+    assert abs((float(np.nanmedian(aspect)) - 270.0 + 180.0) % 360.0 - 180.0) < 2.0
