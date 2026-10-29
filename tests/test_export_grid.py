@@ -7,6 +7,7 @@ passing epsg=None for projected coordinates.
 """
 from __future__ import annotations
 
+import json
 import numpy as np
 import pytest
 
@@ -116,6 +117,9 @@ def test_all_invalid_gunw_product_writes_an_explicit_nodata_aoi_raster(tmp_path)
         assert src.tags()["aoi_mask_applied"] == "true"
         assert src.tags()["export_status"] == "NO_VALID_PIXELS"
         assert int(src.tags()["valid_pixel_count"]) == 0
+        assert int(src.tags()["source_total_pixels"]) == shape[0] * shape[1]
+        assert json.loads(src.tags()["gate_counts_json"]) == {}
+        assert json.loads(src.tags()["gate_rejections_json"]) == {}
         assert np.isnan(src.read(1)).all()
         assert np.isnan(src.read(2)).all()
 
