@@ -439,12 +439,26 @@ def read_gunw(
         p_coh = sibling("coherenceMagnitude", "coherence")
         p_conn = sibling("connectedComponents")
         p_mask = sibling("mask", "layoverShadowMask")
-        p_iono_any = find(datasets, "ionospherePhaseScreen", ndim=2)
-        if p_iono_any and datasets[p_iono_any][0] != shape:
-            raise RuntimeError(
-                f"Ionosphere-screen grid {datasets[p_iono_any][0]} does not match phase grid {shape}."
-            )
         p_iono = sibling("ionospherePhaseScreen")
+        # Check only an ionosphere screen belonging to this unwrapped grid.
+        # A same-named layer on another product grid must not shadow or
+        # invalidate the correct screen for this phase array.
+        iono_candidates = [
+            (key, shp) for key, (shp, _dtype) in datasets.items()
+            if key.lower().endswith("/ionospherephasescreen")
+            and (key.lower().startswith(parent.lower() + "/")
+                 or key.lower().startswith(grp.lower() + "/"))
+        ]
+        if p_iono is None and iono_candidates:
+            wrong = [(key, shp) for key, shp in iono_candidates if shp != shape]
+            if wrong:
+                raise RuntimeError(
+                    f"Ionosphere-screen grid {wrong[0][1]} does not match phase grid {shape}: {wrong[0][0]}."
+                )
+        elif p_iono is not None and datasets[p_iono][0] != shape:
+            raise RuntimeError(
+                f"Ionosphere-screen grid {datasets[p_iono][0]} does not match phase grid {shape}."
+            )
         p_x = sibling("xCoordinates", ndim=1)
         p_y = sibling("yCoordinates", ndim=1)
         required = {
@@ -454,6 +468,8 @@ def read_gunw(
             "xCoordinates": p_x,
             "yCoordinates": p_y,
         }
+        if apply_iono:
+            required["ionospherePhaseScreen"] = p_iono
         missing = [name for name, hit in required.items() if hit is None]
         if missing:
             raise RuntimeError(
@@ -496,13 +512,11 @@ def read_gunw(
     if flip_sign:
         scale = -scale
 
-    # Which pixels carry no phase, decided on the RAW array. GUNW fills nodata
-    # with exact zeros, and the ionosphere screen is not zero there - so
-    # subtracting the screen first turns every nodata pixel into a small
-    # non-zero number and the `phase != 0` test below stops finding any of
-    # them. That was survivable only because connectedComponents happens to
-    # reject the same pixels, and that layer is optional.
-    has_phase = phase != 0
+    # A zero phase is a valid relative measurement when the independent
+    # product validity layers say the pixel is usable. Do not drop zero-valued
+    # phase solely because a common fill convention also uses zero; the
+    # connected-component and packed mask gates below decide source validity.
+    has_phase = np.isfinite(phase)
 
     if iono is not None and apply_iono and iono.shape == phase.shape:
         good = np.isfinite(iono)
@@ -518,7 +532,7 @@ def read_gunw(
     disp = phase * scale
 
     valid = np.isfinite(disp) & has_phase
-    gates = {"finite_and_nonfill_phase": int(valid.sum())}
+    gates = {"finite_phase": int(valid.sum())}
     gate_rejections: dict[str, int] = {}
 
     def apply_gate(label: str, keep: np.ndarray) -> None:
@@ -539,6 +553,10 @@ def read_gunw(
                    np.isfinite(coherence) & (coherence >= coherence_threshold))
     if components is not None:
         apply_gate("connected_component>0", components > 0)
+    if apply_iono:
+        if iono is None or iono.shape != phase.shape:
+            raise RuntimeError("Ionosphere correction was requested but a shape-compatible screen is unavailable.")
+        apply_gate("finite ionosphere screen", np.isfinite(iono))
 
     # The selected product schema requires an explicit mask. A missing or
     # incompatible mask must never bypass water/subswath/quality filtering.
