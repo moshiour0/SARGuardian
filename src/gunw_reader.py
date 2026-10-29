@@ -1199,6 +1199,13 @@ def export_clipped(result: dict, outdir: Path) -> dict:
                         valid_pixel_count=str(valid_export_px),
                         grid_policy=("common_aoi_lattice" if grid is not None else export_grid_policy),
                         source=result["file"],
+                        source_total_pixels=str(int(result.get("source_cells_total") or result["displacement_mm"].size)),
+                        gate_counts_json=json.dumps(result.get("gates", {}), sort_keys=True, separators=(",", ":")),
+                        gate_rejections_json=json.dumps(result.get("gate_rejections", {}), sort_keys=True, separators=(",", ":")),
+                        reference_validation_status=str(result.get("validation_status") or "REFERENCE_UNVALIDATED"),
+                        reference_component_id=str(result.get("reference_component_id") if result.get("reference_component_id") is not None else ""),
+                        reference_in_aoi=str(result.get("reference_in_aoi") if result.get("reference_in_aoi") is not None else "unknown").lower(),
+                        component_rejected_pixels=str(int(result.get("component_rejected_pixels") or 0)),
                         crid=crid_of(result["file"]),
                         maturity=product_maturity(result["file"]),
                         ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable")
