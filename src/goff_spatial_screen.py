@@ -780,6 +780,142 @@ def _write_raster(path: Path, data: np.ndarray, transform: Affine, crs: CRS,
         )
 
 
+def measure_candidate_pair_series(
+    identities: list[GranuleIdentity],
+    dem_path: Path,
+    ring: list[tuple[float, float]],
+    dem_vertical_crs: str,
+    components: list[dict[str, Any]],
+    grid: dict[str, Any],
+    *,
+    polarization: str,
+    frequency: str,
+    layer: str,
+    snr_min: float,
+    correlation_min: float | None,
+    local_window_px: int,
+    direction_window_px: int,
+    z_min: float,
+    anomaly_min_m: float,
+    coherence_min: float,
+) -> list[dict[str, Any]]:
+    """Post-hoc pairwise measurements inside discovered components, never cumulative LOS/3-D velocity."""
+    if not components:
+        return []
+    from rasterio.features import rasterize
+
+    zone_masks = [
+        rasterize(
+            [(component["geometry"], 1)],
+            out_shape=grid["shape"],
+            transform=grid["transform"],
+            fill=0,
+            dtype=np.uint8,
+        ).astype(bool)
+        for component in components
+    ]
+    all_zone_mask = np.zeros(grid["shape"], dtype=bool)
+    for mask in zone_masks:
+        all_zone_mask |= mask
+    rows: list[dict[str, Any]] = []
+
+    for identity in identities:
+        pair = read_raw_pair(
+            identity.path, dem_path, ring, dem_vertical_crs=dem_vertical_crs,
+            polarization=polarization, frequency=frequency, layer=layer,
+            snr_min=snr_min, correlation_min=correlation_min,
+        )
+        if pair.identity.series_key != identities[0].series_key:
+            raise ScreenError("PAIR_SERIES_IDENTITY_CHANGED_DURING_MEASUREMENT")
+        if not _grid_compatible_signature(grid, pair):
+            raise ScreenError("INCOMPATIBLE_PIXEL_GRID_DURING_MEASUREMENT:" + identity.path.name)
+
+        result = score_pair_arrays(
+            pair.east_offsets_m, pair.north_offsets_m, pair.snr, pair.correlation,
+            pair.grid_mask, snr_min=snr_min, correlation_min=correlation_min,
+            local_window_px=local_window_px, direction_window_px=direction_window_px,
+            z_min=z_min, anomaly_min_m=anomaly_min_m, coherence_min=coherence_min,
+        )
+        residual_e = result["residual_east_m"]
+        residual_n = result["residual_north_m"]
+        residual_mag = np.hypot(residual_e, residual_n)
+        control = (
+            result["valid"] & ~result["candidate"] & ~all_zone_mask
+            & np.isfinite(residual_mag)
+        )
+        control_values = residual_mag[control]
+        control_median = float(np.median(control_values)) if control_values.size else None
+        control_p95 = float(np.percentile(control_values, 95)) if control_values.size else None
+        interval_days = (
+            datetime.strptime(identity.secondary, "%Y%m%dT%H%M%S")
+            - datetime.strptime(identity.reference, "%Y%m%dT%H%M%S")
+        ).total_seconds() / 86400.0
+
+        for component, zone_mask in zip(components, zone_masks):
+            zone_pixels = int(zone_mask.sum())
+            zone_valid = zone_mask & result["valid"]
+            zone_hits = zone_mask & result["candidate"]
+            n_valid = int(zone_valid.sum())
+            n_hits = int(zone_hits.sum())
+            zone_residual_values = residual_mag[zone_valid]
+            zone_anomaly_values = result["anomaly_m"][zone_valid]
+            hit_e = residual_e[zone_hits]
+            hit_n = residual_n[zone_hits]
+            hit_coherence = result["directional_coherence"][zone_hits]
+            hit_anomaly = result["anomaly_m"][zone_hits]
+
+            mean_e = float(np.mean(hit_e)) if hit_e.size else None
+            mean_n = float(np.mean(hit_n)) if hit_n.size else None
+            mean_vec = float(math.hypot(mean_e, mean_n)) if mean_e is not None and mean_n is not None else None
+            azimuth = (
+                float(np.degrees(np.arctan2(mean_e, mean_n)) % 360.0)
+                if mean_e is not None and mean_n is not None else None
+            )
+            rows.append({
+                "candidate_id": component["candidate_id"],
+                "reference_date": identity.reference[:8],
+                "secondary_date": identity.secondary[:8],
+                "interval_days": round(interval_days, 6),
+                "series_identity": identity.identity_string,
+                "crid": identity.crid,
+                "zone_pixels": zone_pixels,
+                "valid_zone_pixels": n_valid,
+                "valid_zone_fraction": round(n_valid / max(1, zone_pixels), 6),
+                "screen_hit_pixels_in_zone": n_hits,
+                "screen_hit_fraction_of_zone": round(n_hits / max(1, zone_pixels), 6),
+                "zone_median_local_residual_magnitude_m": (
+                    round(float(np.median(zone_residual_values)), 6) if zone_residual_values.size else None
+                ),
+                "zone_median_local_anomaly_m": (
+                    round(float(np.median(zone_anomaly_values)), 6) if zone_anomaly_values.size else None
+                ),
+                "median_anomaly_on_screen_hits_m": (
+                    round(float(np.median(hit_anomaly)), 6) if hit_anomaly.size else None
+                ),
+                "screen_hit_mean_residual_east_m": round(mean_e, 6) if mean_e is not None else None,
+                "screen_hit_mean_residual_north_m": round(mean_n, 6) if mean_n is not None else None,
+                "screen_hit_mean_residual_vector_m": round(mean_vec, 6) if mean_vec is not None else None,
+                "screen_hit_relative_rate_m_per_day": (
+                    round(mean_vec / interval_days, 8) if mean_vec is not None and interval_days > 0 else None
+                ),
+                "screen_hit_mean_vector_azimuth_deg": round(azimuth, 3) if azimuth is not None else None,
+                "screen_hit_median_directional_coherence": (
+                    round(float(np.median(hit_coherence)), 6) if hit_coherence.size else None
+                ),
+                "control_pixels": int(control_values.size),
+                "control_median_local_residual_magnitude_m": round(control_median, 6) if control_median is not None else None,
+                "control_p95_local_residual_magnitude_m": round(control_p95, 6) if control_p95 is not None else None,
+                "zone_minus_control_median_residual_m": (
+                    round(float(np.median(zone_residual_values)) - control_median, 6)
+                    if zone_residual_values.size and control_median is not None else None
+                ),
+                "interpretation": "PAIRWISE_RELATIVE_DIAGNOSTIC_NOT_CUMULATIVE_VELOCITY",
+            })
+        del pair, result, residual_e, residual_n, residual_mag
+
+    return rows
+
+
 def run_screen(
     inputs: list[Path],
     dem_path: Path,
@@ -890,6 +1026,13 @@ def run_screen(
     anomaly_mean[flagged] = anomaly_sum[flagged] / hit_count[flagged]
     coherence_mean[flagged] = coherence_sum[flagged] / hit_count[flagged]
     components = _component_rows(persistent, grid["transform"], grid["crs"], minimum_component_pixels)
+    pair_series_rows = measure_candidate_pair_series(
+        identities, dem_path, ring, dem_vertical_crs, components, grid,
+        polarization=polarization, frequency=frequency, layer=layer,
+        snr_min=snr_min, correlation_min=correlation_min,
+        local_window_px=local_window_px, direction_window_px=direction_window_px,
+        z_min=z_min, anomaly_min_m=anomaly_min_m, coherence_min=coherence_min,
+    )
     terrain_slope, terrain_downslope = terrain_slope_and_downslope(
         terrain_elevation, pixel_size_m=abs(float(grid["transform"].a))
     )
@@ -944,12 +1087,16 @@ def run_screen(
 
     status = "EXPLORATORY_RANKING_ONLY" if pair_count >= minimum_pairs else "NO_TEMPORAL_PERSISTENCE_TEST"
     reasons = [
-        "Candidate thresholds are adapted from a single published NISAR GOFF case study; not calibrated for arbitrary AOIs.",
-        "Correlation>=0.3 is an additional SARGuardian gate; results are not an exact reproduction of the published screen.",
-        "A candidate is a repeatable coherent offset anomaly for manual review, not proof of landslide or glacier-collapse motion.",
-        "No slope-direction validation is performed without a separate terrain-derived downslope/aspect assessment.",
-        "DEM vertical datum must be checked against radarGrid heightAboveEllipsoid before scientific magnitude interpretation.",
-        "No spatial-null/multiple-testing calibration is applied in this prototype; component ranks are exploratory only.",
+        "Candidate thresholds are adapted from one published NISAR GOFF case study and are not calibrated for arbitrary AOIs.",
+        (
+            "Correlation quality gate is disabled to match the author's SNR-only screen; this remains an implementation comparison, not proof of physical movement."
+            if correlation_min is None else
+            f"Correlation >= {correlation_min:g} is an added SARGuardian gate, so this run differs from the author's SNR-only screen."
+        ),
+        "Candidate-zone pair metrics are local, pairwise relative diagnostics; they are not cumulative displacement or validated velocity.",
+        "Terrain downslope/range alignment is reported post hoc, but no matched terrain/surface-type spatial-null significance or glacier attribution is calculated here.",
+        "The declared DEM vertical datum is converted to ellipsoidal height using the recorded EGM2008 grid; DEM/geoid uncertainty is not quantified in this prototype.",
+        "No spatial-null/multiple-testing correction or held-out positive/negative-control benchmark is applied; candidate ranks are exploratory only.",
     ]
     if pair_count < minimum_pairs:
         reasons.append(
@@ -984,6 +1131,22 @@ def run_screen(
         "properties": {"status": status, "interpretation": "Exploratory review candidates; not hazard detections."},
     }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     csv_path = out_dir / "candidates.csv"
+    pair_series_path = out_dir / "candidate_pair_series.csv"
+    pair_series_fields = [
+        "candidate_id", "reference_date", "secondary_date", "interval_days", "series_identity", "crid",
+        "zone_pixels", "valid_zone_pixels", "valid_zone_fraction", "screen_hit_pixels_in_zone",
+        "screen_hit_fraction_of_zone", "zone_median_local_residual_magnitude_m",
+        "zone_median_local_anomaly_m", "median_anomaly_on_screen_hits_m",
+        "screen_hit_mean_residual_east_m", "screen_hit_mean_residual_north_m",
+        "screen_hit_mean_residual_vector_m", "screen_hit_relative_rate_m_per_day",
+        "screen_hit_mean_vector_azimuth_deg", "screen_hit_median_directional_coherence",
+        "control_pixels", "control_median_local_residual_magnitude_m",
+        "control_p95_local_residual_magnitude_m", "zone_minus_control_median_residual_m", "interpretation",
+    ]
+    with pair_series_path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=pair_series_fields)
+        writer.writeheader()
+        writer.writerows(pair_series_rows)
     with csv_path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(
             stream,
@@ -1041,6 +1204,12 @@ def run_screen(
         "persistent_pixels_before_component_size_filter": int(persistent.sum()),
         "review_candidate_components": len(components),
         "qualified_candidate_pixels": int(qualified_mask.sum()),
+        "candidate_pair_series": {
+            "path": pair_series_path.name,
+            "rows": len(pair_series_rows),
+            "status": "PAIRWISE_RELATIVE_DIAGNOSTICS_NOT_CUMULATIVE_VELOCITY",
+            "control_reference": "AOI-valid pixels outside all candidate zones and non-hit in that pair; descriptive comparator, NOT a calibrated detection floor.",
+        },
         "terrain_directional_review": {
             "status": "POST_HOC_ONLY_NO_ALERT",
             "definition": "Angle between mean residual displacement azimuth and DEM-derived downslope azimuth; ground-range alignment is reported as an artefact comparator.",
@@ -1060,6 +1229,7 @@ def run_screen(
             "persistent_candidate_mask": candidates_path.name,
             "candidates_geojson": geojson_path.name,
             "candidates_csv": csv_path.name,
+            "candidate_pair_series_csv": pair_series_path.name,
         },
     }
     summary["output_sha256"] = {
