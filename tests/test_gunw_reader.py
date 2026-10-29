@@ -41,7 +41,6 @@ def test_known_displacement_round_trips(tmp_path):
     assert result["gates"]["finite_phase"] <= result["source_cells_total"]
 
 
-@pytest.mark.parametrize("truth_mm", [-120.0, -7.5, 0.0, 7.5, 120.0])
 def test_aoi_scoped_gate_ledger_reconciles_with_final_pixels(tmp_path):
     """Every dropped in-AOI pixel is assigned to one sequential quality gate."""
     f = tmp_path / synth.granule_name()
@@ -63,6 +62,7 @@ def test_aoi_scoped_gate_ledger_reconciles_with_final_pixels(tmp_path):
     assert all(left >= right for left, right in zip(values, values[1:])), values
 
 
+@pytest.mark.parametrize("truth_mm", [-120.0, -7.5, 0.0, 7.5, 120.0])
 def test_round_trip_holds_across_sign_and_magnitude(tmp_path, truth_mm):
     """A sign error passes a single positive case; it does not pass this one."""
     f = tmp_path / synth.granule_name()
