@@ -6,6 +6,8 @@ import h5py
 import numpy as np
 import pytest
 
+import synth
+
 import goff_reader as goff
 from goff_reader import layer_groups, mad_inlier_mask, read_goff, robust_sigma
 
@@ -136,3 +138,55 @@ def test_read_goff_refuses_an_unknown_explicit_layer(tmp_path):
     path = _write_minimal_goff(tmp_path / "layer2_only.h5")
     with pytest.raises(RuntimeError, match="Requested GOFF layer 'layer3' not found"):
         read_goff(path, layer="layer3", deramp=False)
+
+
+def test_coherent_high_offset_patch_survives_for_spatial_review(tmp_path):
+    """A real compact offset anomaly may be a global MAD outlier, but remains map-reviewable."""
+    import rasterio
+
+    path = tmp_path / synth.granule_name(product="GOFF")
+    xs, ys = synth.make_grid(120)
+    shape = (len(ys), len(xs))
+    rng = np.random.default_rng(20261029)
+    range_m = rng.normal(0.0, 0.01, size=shape)
+    azimuth_m = rng.normal(0.0, 0.015, size=shape)
+    corr = np.full(shape, 0.9, dtype=np.float32)
+    snr = np.full(shape, 10.0, dtype=np.float32)
+    lon, lat = synth.LHENDE_INSIDE
+    col = int(np.argmin(np.abs(xs - lon)))
+    row = int(np.argmin(np.abs(ys - lat)))
+    patch = np.zeros(shape, dtype=bool)
+    patch[row - 1:row + 2, col - 1:col + 2] = True
+    range_m[patch] += 0.8
+    azimuth_m[patch] += 0.5
+
+    base = f"{synth.GOFF_GRID}/HH/layer2"
+    with h5py.File(path, "w") as h5:
+        group = h5.create_group(base)
+        group.create_dataset("slantRangeOffset", data=range_m)
+        group.create_dataset("alongTrackOffset", data=azimuth_m)
+        group.create_dataset("correlationSurfacePeak", data=corr)
+        group.create_dataset("snr", data=snr)
+        group.create_dataset("xCoordinates", data=xs)
+        group.create_dataset("yCoordinates", data=ys)
+        projection = group.create_dataset("projection", data=np.uint32(4326))
+        projection.attrs["epsg_code"] = 4326
+
+    result = read_goff(
+        path, layer="layer2", clip_aoi=True, auto_ref=False, deramp=False, cull_sigma=4.0
+    )
+    layer = result["layers"]["HH/layer2"]
+    assert layer["screen_valid"][row, col]
+    assert layer["outlier_mask"][row, col], "the truth patch must exercise the global MAD gate"
+    assert not layer["valid"][row, col], "conservative pairwise stats still exclude the outlier"
+
+    exported = export_clipped(result, tmp_path / "exports")
+    assert exported and exported[0]["export_status"] == "WRITTEN"
+    raster_path = tmp_path / "exports" / exported[0]["export_file"]
+    with rasterio.open(raster_path) as src:
+        assert src.count == 4
+        rr, cc = src.index(lon, lat)
+        assert np.isfinite(src.read(1)[rr, cc]), "screen raster must retain the high range offset"
+        assert np.isfinite(src.read(2)[rr, cc]), "screen raster must retain the paired azimuth offset"
+        assert src.read(4)[rr, cc] == 0.0, "band 4 must identify a global-MAD outlier"
+        assert src.tags()["outliers_preserved_for_screening"] == "true"
