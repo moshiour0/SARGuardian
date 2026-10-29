@@ -45,7 +45,8 @@ GRANULE_RE = re.compile(
     r"NISAR_L2_(?P<processing>PR|UR)_GOFF_(?P<granule>\\d{3})_"
     r"(?P<track>\\d{3})_(?P<direction>[AD])_(?P<frame>\\d{3})_"
     r"(?P<subswath>\\d{3})_(?P<bandwidth>\\d{4})_(?P<polarization>[A-Z]{2})_"
-    r"(?P<reference>\\d{8}T\\d{6})_.*?_(?P<secondary>\\d{8}T\\d{6})_"
+    r"(?P<reference>\\d{8}T\\d{6})_\\d{8}T\\d{6}_"
+    r"(?P<secondary>\\d{8}T\\d{6})_\\d{8}T\\d{6}_"
     r"(?P<crid>[PX]\\d{5})_"
 )
 DEFAULTS = {
@@ -268,7 +269,14 @@ def interpolate_regular_volume(
     Y = np.broadcast_to(y_centres_descending[row_start:row_start + rows, None],
                         (rows, x_centres.size))
     Z = np.asarray(elevation, dtype=np.float64)
-    good = np.isfinite(Z) & np.isfinite(X) & np.isfinite(Y)
+    # Never extrapolate geometry at image edges: missing/out-of-range
+    # radarGrid support becomes NoData, not copied edge coefficients.
+    good = (
+        np.isfinite(Z) & np.isfinite(X) & np.isfinite(Y)
+        & (Z >= h[0]) & (Z <= h[-1])
+        & (Y >= y[0]) & (Y <= y[-1])
+        & (X >= x[0]) & (X <= x[-1])
+    )
     out = np.full(Z.shape, np.nan, dtype=np.float32)
     if not good.any():
         return out
@@ -464,12 +472,20 @@ def box_sum(values: np.ndarray, window: int) -> np.ndarray:
     radius = window // 2
     padded = np.pad(np.asarray(values, dtype=np.float64),
                     ((radius, radius), (radius, radius)), mode="constant")
+    # First pass uses explicit leading-zero cumulative sums, so the output
+    # shape is exactly HxW even for window=1 and at image boundaries.
     c0 = np.cumsum(padded, axis=0, dtype=np.float64)
-    vertical = c0[window:, :] - c0[:-window, :]
+    vertical = np.empty((values.shape[0], padded.shape[1]), dtype=np.float64)
+    vertical[0] = c0[window - 1]
+    if values.shape[0] > 1:
+        vertical[1:] = c0[window:] - c0[:-window]
     del c0, padded
     c1 = np.cumsum(vertical, axis=1, dtype=np.float64)
-    result = c1[:, window:] - c1[:, :-window]
-    return result.astype(np.float32)
+    result = np.empty(values.shape, dtype=np.float32)
+    result[:, 0] = c1[:, window - 1]
+    if values.shape[1] > 1:
+        result[:, 1:] = c1[:, window:] - c1[:, :-window]
+    return result
 
 
 def local_mean(
