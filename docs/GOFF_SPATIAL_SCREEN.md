@@ -31,6 +31,7 @@ python src/goff_spatial_screen.py \
   --read /path/to/NISAR_L2_PR_GOFF_...P05023_N_F_J_001.h5 \
          /path/to/next-compatible-GOFF-pair.h5 \
   --dem /path/to/verified-dem.tif \
+  --dem-vertical-crs EPSG:3855 \
   --aoi-wkt 'POLYGON ((lon lat, lon lat, lon lat, lon lat))' \
   --out outputs/custom-aoi-goff-screen
 ```
@@ -57,6 +58,8 @@ For each pair, the screen:
 3. Removes the local vector mean and computes a local magnitude anomaly relative to robust local scatter.
 4. Requires a sufficiently large anomaly and high directional coherence of the residual vectors.
 5. Counts spatially coincident hits across independent pairs and retains only persistent connected components.
+
+The vertical conversion uses the public [PROJ EGM2008 geoid grid](https://cdn.proj.org/us_nga_egm08_25.tif). The Copernicus DEM height reference is EGM2008; see the [Copernicus DEM documentation](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM.html). Conversion is applied only when the caller explicitly declares §EPSG:3855§; otherwise the caller must declare that heights are already ellipsoidal.
 
 The initial thresholds are adapted from Meena (2026), *Bhote Koshi 2026 ice–rock avalanche: NISAR L2 GOFF site series and footprint-wide offset-tracking screen — data and code*, Zenodo DOI [10.5281/zenodo.22730419](https://doi.org/10.5281/zenodo.22730419). The prototype adds a correlation threshold to the author's SNR gate, so it is **not an exact paper reproduction**. Those thresholds are not calibrated for arbitrary AOIs. The output includes this limitation explicitly.
 
