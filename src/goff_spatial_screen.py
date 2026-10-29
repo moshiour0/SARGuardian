@@ -34,6 +34,7 @@ from rasterio.features import geometry_mask, shapes
 from rasterio.transform import Affine
 from rasterio.warp import Resampling, reproject, transform_geom
 from pyproj import Transformer
+from pyproj.transformer import TransformerGroup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from aoi_wkt import parse_polygon_wkt  # noqa: E402
@@ -313,6 +314,7 @@ def read_raw_pair(
     path: Path,
     dem_path: Path,
     ring: list[tuple[float, float]],
+    dem_vertical_crs: str,
     polarization: str = "HH",
     frequency: str = "frequencyA",
     layer: str = "layer2",
@@ -320,6 +322,8 @@ def read_raw_pair(
     correlation_min: float = 0.30,
 ) -> RawPair:
     identity = parse_identity(path)
+    if dem_vertical_crs not in {"EPSG:3855", "ELLIPSOIDAL_WGS84"}:
+        raise ScreenError("DEM_VERTICAL_DATUM_REQUIRED: choose EPSG:3855 or ELLIPSOIDAL_WGS84")
     if not path.is_file():
         raise ScreenError("INPUT_HDF5_NOT_FOUND:" + str(path))
     if not dem_path.is_file():
@@ -394,6 +398,40 @@ def read_raw_pair(
             dst_transform=transform, dst_crs=crs, dst_nodata=np.nan,
             resampling=Resampling.bilinear,
         )
+    # GOFF radarGrid heightAboveEllipsoid expects ellipsoidal elevation. Copernicus
+    # DEM and many derivative products store EGM2008 orthometric heights; convert
+    # them explicitly, and refuse to proceed if the official geoid grid is absent.
+    vertical_conversion = "NONE_ALREADY_ELLIPSOIDAL_WGS84"
+    if dem_vertical_crs == "EPSG:3855":
+        group = TransformerGroup(
+            "EPSG:4326+3855", "EPSG:4979", always_xy=True
+        )
+        if not group.best_available or not group.transformers:
+            raise ScreenError(
+                "EGM2008_VERTICAL_GRID_UNAVAILABLE: install PROJ grid "
+                "us_nga_egm08_25.tif; orthometric DEM cannot be used as ellipsoidal height"
+            )
+        vertical_transformer = group.transformers[0]
+        to_lonlat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        xcentres = transform.c + (np.arange(elevation.shape[1], dtype=np.float64) + 0.5) * transform.a
+        rows_per_block = 96
+        for r0 in range(0, elevation.shape[0], rows_per_block):
+            r1 = min(elevation.shape[0], r0 + rows_per_block)
+            block = elevation[r0:r1]
+            good_block = np.isfinite(block)
+            if not good_block.any():
+                continue
+            ycentres = transform.f + (np.arange(r0, r1, dtype=np.float64) + 0.5) * transform.e
+            xx, yy = np.meshgrid(xcentres, ycentres)
+            lon, lat = to_lonlat.transform(xx[good_block], yy[good_block])
+            _, _, h_ellipsoid = vertical_transformer.transform(
+                lon, lat, block[good_block].astype(np.float64)
+            )
+            converted = np.asarray(h_ellipsoid, dtype=np.float64)
+            if not np.isfinite(converted).all():
+                raise ScreenError("DEM_VERTICAL_CONVERSION_RETURNED_NONFINITE_VALUES")
+            elevation[r0:r1][good_block] = converted.astype(np.float32)
+        vertical_conversion = "EGM2008_ORTHOMETRIC_TO_WGS84_ELLIPSOIDAL_US_NGA_EGM08_25"
     dem_valid = np.isfinite(elevation)
     if int((dem_valid & aoi_mask).sum()) < max(10, int(0.5 * aoi_mask.sum())):
         raise ScreenError("DEM_VALID_AOI_COVERAGE_BELOW_50_PERCENT")
@@ -442,8 +480,8 @@ def read_raw_pair(
         xs=x, ys=y, crs=crs, transform=transform, grid_mask=aoi_mask,
         source_sha256=sha256_file(path), source_bytes=path.stat().st_size,
         geometry_note=(
-            "Per-pixel projection interpolated from this product's radarGrid at the supplied DEM elevations. "
-            "DEM vertical datum compatibility with heightAboveEllipsoid must be verified by the operator."
+            "Per-pixel projection interpolated from this product's radarGrid at DEM elevations converted "
+            "to the WGS84 ellipsoid; vertical_conversion=" + vertical_conversion
         ),
     )
 
@@ -711,7 +749,10 @@ def run_screen(
     coherence_min: float = DEFAULTS["directional_coherence_min"],
     minimum_pairs: int = DEFAULTS["minimum_pairs"],
     minimum_component_pixels: int = DEFAULTS["minimum_component_pixels"],
+    dem_vertical_crs: str | None = None,
 ) -> dict[str, Any]:
+    if dem_vertical_crs not in {"EPSG:3855", "ELLIPSOIDAL_WGS84"}:
+        raise ScreenError("DEM_VERTICAL_DATUM_REQUIRED: choose EPSG:3855 or ELLIPSOIDAL_WGS84")
     if minimum_pairs < 2:
         raise ScreenError("MINIMUM_PAIRS_MUST_BE_AT_LEAST_TWO")
     if minimum_component_pixels < 1:
@@ -731,8 +772,8 @@ def run_screen(
 
     for identity in identities:
         pair = read_raw_pair(
-            identity.path, dem_path, ring, polarization=polarization,
-            frequency=frequency, layer=layer, snr_min=snr_min,
+            identity.path, dem_path, ring, dem_vertical_crs=dem_vertical_crs,
+            polarization=polarization, frequency=frequency, layer=layer, snr_min=snr_min,
             correlation_min=correlation_min,
         )
         if pair.identity.series_key != identities[0].series_key or pair.identity.pair_key != identity.pair_key:
@@ -863,8 +904,14 @@ def run_screen(
         "grid_shape": list(grid["shape"]),
         "grid_crs": grid["crs"].to_string(),
         "grid_transform": list(grid["transform"]),
-        "dem": {"path": str(dem_path), "sha256": sha256_file(dem_path),
-                "vertical_datum_status": "MUST_BE_VERIFIED_COMPATIBLE_WITH_HEIGHT_ABOVE_ELLIPSOID"},
+        "dem": {
+            "path": str(dem_path), "sha256": sha256_file(dem_path),
+            "declared_vertical_crs": dem_vertical_crs,
+            "vertical_conversion": (
+                "EGM2008_ORTHOMETRIC_TO_WGS84_ELLIPSOIDAL_US_NGA_EGM08_25"
+                if dem_vertical_crs == "EPSG:3855" else "NONE_ALREADY_ELLIPSOIDAL_WGS84"
+            ),
+        },
         "parameters": {
             "snr_min": snr_min, "correlation_min": correlation_min,
             "magnitude_clip_m": DEFAULTS["magnitude_clip_m"],
@@ -907,7 +954,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--read", nargs="+", required=True, type=Path,
                         help="Raw NISAR L2 GOFF HDF5 products from one compatible series")
     parser.add_argument("--dem", required=True, type=Path,
-                        help="Georeferenced DEM raster with a verified vertical datum")
+                        help="Georeferenced DEM raster")
+    parser.add_argument("--dem-vertical-crs", required=True,
+                        choices=["EPSG:3855", "ELLIPSOIDAL_WGS84"],
+                        help="Explicit DEM height datum; EPSG:3855 is converted with the installed EGM2008 PROJ grid")
     parser.add_argument("--aoi-wkt", required=True,
                         help="One WGS84 POLYGON WKT. Never defaults to the AOI centre.")
     parser.add_argument("--out", required=True, type=Path)
@@ -932,6 +982,7 @@ def main(argv: list[str] | None = None) -> int:
         result = run_screen(
             args.read, args.dem, args.aoi_wkt, args.out,
             polarization=args.polarization, frequency=args.frequency, layer=args.layer,
+            dem_vertical_crs=args.dem_vertical_crs,
             snr_min=args.snr_min, correlation_min=args.correlation_min,
             local_window_px=args.local_window_px, direction_window_px=args.direction_window_px,
             z_min=args.z_min, anomaly_min_m=args.anomaly_min_m,
