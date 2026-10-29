@@ -507,6 +507,29 @@ def read_gunw(
 
         wavelength = read_wavelength(f, datasets)
 
+    # Build the spatial mask before quality gates so each gate can account for
+    # attrition inside the requested AOI as well as across the complete frame.
+    # AOI denominators count pixel centres that fall inside the polygon AND on
+    # this product grid; they do not imply that uncovered AOI ground was observed.
+    aoi_mask = None
+    aoi_cells_total = None
+    if clip_aoi:
+        if xs is None or ys is None:
+            raise RuntimeError("AOI clipping requested but GUNW x/y coordinate vectors are missing.")
+        if epsg is None:
+            raise RuntimeError("AOI clipping requested but GUNW projection/EPSG metadata is missing.")
+        if len(xs) != phase.shape[1] or len(ys) != phase.shape[0]:
+            raise RuntimeError(
+                f"AOI clipping requested but coordinate lengths {(len(ys), len(xs))} "
+                f"do not match raster shape {phase.shape}."
+            )
+        aoi_mask = build_aoi_mask(xs, ys, AOI_RING, epsg)
+        if aoi_mask.shape != phase.shape:
+            raise RuntimeError(
+                f"AOI mask shape {aoi_mask.shape} does not match GUNW raster shape {phase.shape}."
+            )
+        aoi_cells_total = int(aoi_mask.sum())
+
     # Ionospheric correction. L-band phase delay scales as 1/f^2, so NISAR is
     # far more affected than C-band and ships an estimated screen with every
     # GUNW. Subtract it unless explicitly told not to.
@@ -541,8 +564,20 @@ def read_gunw(
         "nonfinite_phase": source_cells_total - int(valid.sum())
     }
 
+    # AOI-scoped ledger mirrors the exact same quality masks but uses only
+    # in-AOI pixel centres as its denominator. It must finish at the same
+    # survivor count as the actual exported validity mask.
+    aoi_valid = (valid & aoi_mask) if aoi_mask is not None else None
+    aoi_gates = (
+        {"finite_phase": int(aoi_valid.sum())} if aoi_valid is not None else None
+    )
+    aoi_gate_rejections = (
+        {"nonfinite_phase": int(aoi_cells_total - int(aoi_valid.sum()))}
+        if aoi_valid is not None else None
+    )
+
     def apply_gate(label: str, keep: np.ndarray) -> None:
-        nonlocal valid
+        nonlocal valid, aoi_valid
         keep = np.asarray(keep, dtype=bool)
         if keep.shape != valid.shape:
             raise RuntimeError(
@@ -553,6 +588,12 @@ def read_gunw(
         after = int(valid.sum())
         gates[label] = after
         gate_rejections[label] = before - after
+        if aoi_valid is not None:
+            aoi_before = int(aoi_valid.sum())
+            aoi_valid &= keep
+            aoi_after = int(aoi_valid.sum())
+            aoi_gates[label] = aoi_after
+            aoi_gate_rejections[label] = aoi_before - aoi_after
 
     if coherence is not None:
         apply_gate(f"coherence>={coherence_threshold}",
@@ -585,22 +626,7 @@ def read_gunw(
     # away before we can use it.
     quality_valid = valid.copy()
 
-    aoi_mask = None
-    if clip_aoi:
-        if xs is None or ys is None:
-            raise RuntimeError("AOI clipping requested but GUNW x/y coordinate vectors are missing.")
-        if epsg is None:
-            raise RuntimeError("AOI clipping requested but GUNW projection/EPSG metadata is missing.")
-        if len(xs) != valid.shape[1] or len(ys) != valid.shape[0]:
-            raise RuntimeError(
-                f"AOI clipping requested but coordinate lengths {(len(ys), len(xs))} "
-                f"do not match raster shape {valid.shape}."
-            )
-        aoi_mask = build_aoi_mask(xs, ys, AOI_RING, epsg)
-        if aoi_mask.shape != valid.shape:
-            raise RuntimeError(
-                f"AOI mask shape {aoi_mask.shape} does not match GUNW raster shape {valid.shape}."
-            )
+    if aoi_mask is not None:
         before_aoi = int(valid.sum())
         valid &= aoi_mask
         gates["inside AOI"] = int(valid.sum())
@@ -789,6 +815,33 @@ def read_gunw(
         valid &= components == reference_component
         gates["same connected component as reference"] = int(valid.sum())
         gate_rejections["different component from reference"] = before_component - int(valid.sum())
+        if aoi_valid is not None:
+            aoi_before_component = int(aoi_valid.sum())
+            aoi_valid &= components == reference_component
+            aoi_after_component = int(aoi_valid.sum())
+            aoi_gates["same connected component as reference"] = aoi_after_component
+            aoi_gate_rejections["different component from reference"] = (
+                aoi_before_component - aoi_after_component
+            )
+
+    aoi_gate_ledger_status = "NOT_APPLICABLE_AOI_CLIP_DISABLED"
+    if aoi_mask is not None:
+        aoi_final_valid = int((valid & aoi_mask).sum())
+        aoi_ledger_final = int(aoi_valid.sum()) if aoi_valid is not None else -1
+        if aoi_final_valid != aoi_ledger_final:
+            raise RuntimeError(
+                "AOI gate ledger does not reconcile with final valid pixels: "
+                f"ledger={aoi_ledger_final}, final={aoi_final_valid}."
+            )
+        aoi_gates["final_valid_pixels"] = aoi_final_valid
+        aoi_gate_rejections["final_valid_pixels_check"] = 0
+        if sum(aoi_gate_rejections.values()) != aoi_cells_total - aoi_final_valid:
+            raise RuntimeError(
+                "AOI gate rejection counts do not reconcile with source AOI-grid cells: "
+                f"rejected={sum(aoi_gate_rejections.values())}, "
+                f"source_minus_final={aoi_cells_total - aoi_final_valid}."
+            )
+        aoi_gate_ledger_status = "PASS_AOI_GATE_RECONCILIATION"
 
     reference_in_aoi = None
     if _auto_grid_ref is not None and aoi_mask is not None:
@@ -813,6 +866,7 @@ def read_gunw(
         "xs": xs, "ys": ys, "epsg": epsg,
         "aoi_name": AOI_NAME,
         "aoi_mask_applied": bool(clip_aoi and aoi_mask is not None),
+        "aoi_mask": aoi_mask,
         "wavelength_m": wavelength,
         "ionosphere_correction_applied": bool(iono is not None and apply_iono and iono.shape == phase.shape),
         # How many grid cells the AOI actually covers. Without this the only
@@ -821,7 +875,10 @@ def read_gunw(
         # computed against a number that has nothing to do with the source
         # zone. It also makes the ascending/descending comparison unfair,
         # because the two frames differ in size by 1.5x.
-        "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
+        "aoi_px": aoi_cells_total,
+        "aoi_gate_cumulative_counts": aoi_gates,
+        "aoi_gate_rejections": aoi_gate_rejections,
+        "aoi_gate_ledger_status": aoi_gate_ledger_status,
         "source_cells_total": source_cells_total,
         "iono_rms_mm": iono_rms_mm,
         "ref_value_mm": ref_value,
@@ -866,6 +923,14 @@ def report(result: dict) -> dict:
     print(f"  reference status  {result.get('validation_status', 'REFERENCE_UNVALIDATED')}")
     print(f"  reference component {result.get('reference_component_id')}")
     print(f"  reference inside AOI {result.get('reference_in_aoi')} (stable-ground status is not inferred)")
+    if result.get("aoi_gate_cumulative_counts") is not None:
+        print("\n  AOI-scoped quality gate ledger (pixel centres on this product grid):")
+        for name, count in result["aoi_gate_cumulative_counts"].items():
+            print(f"    {name:<44} {count:>10,}")
+        print("  AOI-scoped rejected-pixel ledger:")
+        for name, count in result["aoi_gate_rejections"].items():
+            print(f"    {name:<44} {count:>10,}")
+        print(f"  AOI ledger reconciliation: {result.get('aoi_gate_ledger_status')}")
 
     n = int(valid.sum())
     aoi_px = result.get("aoi_px")
@@ -911,7 +976,10 @@ def report(result: dict) -> dict:
              "component_rejected_pixels": result.get("component_rejected_pixels", 0),
              "ionosphere_correction_applied": bool(result.get("ionosphere_correction_applied")),
              "gate_cumulative_counts_json": json.dumps(result.get("gates", {}), sort_keys=True),
-             "gate_rejections_json": json.dumps(result.get("gate_rejections", {}), sort_keys=True)}
+             "gate_rejections_json": json.dumps(result.get("gate_rejections", {}), sort_keys=True),
+             "aoi_gate_cumulative_counts_json": json.dumps(result.get("aoi_gate_cumulative_counts"), sort_keys=True),
+             "aoi_gate_rejections_json": json.dumps(result.get("aoi_gate_rejections"), sort_keys=True),
+             "aoi_gate_ledger_status": result.get("aoi_gate_ledger_status")}
 
     if n == 0:
         print("\n  NO VALID PIXELS. Lower --coh-threshold or check the AOI overlaps the frame.")
@@ -996,6 +1064,11 @@ def write_geotiff(result: dict, out: Path) -> None:
             valid_pixels_after_all_gates=str(int(result["valid"].sum())),
             gate_cumulative_counts_json=json.dumps(result.get("gates", {}), sort_keys=True),
             gate_rejections_json=json.dumps(result.get("gate_rejections", {}), sort_keys=True),
+            aoi_gate_cumulative_counts_json=json.dumps(result.get("aoi_gate_cumulative_counts"), sort_keys=True),
+            aoi_gate_rejections_json=json.dumps(result.get("aoi_gate_rejections"), sort_keys=True),
+            aoi_gate_ledger_status=str(result.get("aoi_gate_ledger_status") or "UNKNOWN"),
+            aoi_source_grid_cells=str(result.get("aoi_px") if result.get("aoi_px") is not None else ""),
+            aoi_final_valid_pixels=str(int((result["valid"] & result.get("aoi_mask", np.ones_like(result["valid"], dtype=bool))).sum())) if result.get("aoi_mask_applied") else "",
             export_scope="full_product_grid",
         )
     logger.info("Wrote %s", out)
@@ -1208,6 +1281,10 @@ def export_clipped(result: dict, outdir: Path) -> dict:
                         reference_component_id=str(result.get("reference_component_id") if result.get("reference_component_id") is not None else ""),
                         reference_in_aoi=str(result.get("reference_in_aoi") if result.get("reference_in_aoi") is not None else "unknown").lower(),
                         component_rejected_pixels=str(int(result.get("component_rejected_pixels") or 0)),
+                        aoi_gate_cumulative_counts_json=json.dumps(result.get("aoi_gate_cumulative_counts"), sort_keys=True),
+                        aoi_gate_rejections_json=json.dumps(result.get("aoi_gate_rejections"), sort_keys=True),
+                        aoi_gate_ledger_status=str(result.get("aoi_gate_ledger_status") or "UNKNOWN"),
+                        aoi_source_grid_cells=str(result.get("aoi_px") if result.get("aoi_px") is not None else ""),
                         crid=crid_of(result["file"]),
                         maturity=product_maturity(result["file"]),
                         ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable")
