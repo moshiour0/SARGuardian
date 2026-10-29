@@ -446,13 +446,6 @@ def read_raw_pair(
             block_good, arrays["along"][r0:r1] * ay + arrays["range"][r0:r1] * ky, np.nan
         )
 
-    quality_mask = (
-        np.isfinite(east) & np.isfinite(north)
-        & np.isfinite(arrays["snr"]) & (arrays["snr"] >= snr_min)
-        & np.isfinite(arrays["correlation"]) & (arrays["correlation"] >= correlation_min)
-        & (np.hypot(east, north) <= DEFAULTS["magnitude_clip_m"])
-    )
-    quality_mask &= dem_valid
     return RawPair(
         identity=identity, east_offsets_m=east, north_offsets_m=north,
         snr=arrays["snr"], correlation=arrays["correlation"],
@@ -807,10 +800,13 @@ def run_screen(
 
     candidate_features = []
     for row in components:
+        # RFC 7946 GeoJSON coordinates are WGS84 longitude/latitude. Rasters
+        # stay in the native projected CRS; polygon coordinates are transformed.
+        geometry_wgs84 = transform_geom(first.crs, "EPSG:4326", row["geometry"])
         feature = {
             "type": "Feature",
             "properties": {k: v for k, v in row.items() if k != "geometry"},
-            "geometry": row["geometry"],
+            "geometry": geometry_wgs84,
         }
         candidate_features.append(feature)
     geojson_path = out_dir / "candidates.geojson"
