@@ -42,6 +42,27 @@ def test_known_displacement_round_trips(tmp_path):
 
 
 @pytest.mark.parametrize("truth_mm", [-120.0, -7.5, 0.0, 7.5, 120.0])
+def test_aoi_scoped_gate_ledger_reconciles_with_final_pixels(tmp_path):
+    """Every dropped in-AOI pixel is assigned to one sequential quality gate."""
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    result = read_gunw(f, auto_ref=True)
+
+    assert result["aoi_gate_ledger_status"] == "PASS_AOI_GATE_RECONCILIATION"
+    assert result["aoi_px"] is not None and result["aoi_px"] > 0
+    cumulative = result["aoi_gate_cumulative_counts"]
+    rejected = result["aoi_gate_rejections"]
+    final = int(result["valid"].sum())
+
+    assert cumulative["final_valid_pixels"] == final
+    assert sum(rejected.values()) == result["aoi_px"] - final
+    assert result["aoi_px"] - sum(rejected.values()) == final
+
+    # A cumulative survivor count may only decrease as sequential gates apply.
+    values = [int(v) for k, v in cumulative.items() if k != "final_valid_pixels"]
+    assert all(left >= right for left, right in zip(values, values[1:])), values
+
+
 def test_round_trip_holds_across_sign_and_magnitude(tmp_path, truth_mm):
     """A sign error passes a single positive case; it does not pass this one."""
     f = tmp_path / synth.granule_name()
