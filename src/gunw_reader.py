@@ -439,7 +439,9 @@ def read_gunw(
 
         p_coh = sibling("coherenceMagnitude", "coherence")
         p_conn = sibling("connectedComponents")
-        p_mask = sibling("mask", "layoverShadowMask")
+        # Do not substitute layoverShadowMask for the encoded GUNW mask:
+        # they are different quality products and have different semantics.
+        p_mask = sibling("mask")
         p_iono = sibling("ionospherePhaseScreen")
         # Check only an ionosphere screen belonging to this unwrapped grid.
         # A same-named layer on another product grid must not shadow or
