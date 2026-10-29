@@ -33,8 +33,12 @@ def test_known_displacement_round_trips(tmp_path):
     """50 mm in, 50 mm out. Sign, wavelength, scaling and gating, in one line."""
     f = tmp_path / synth.granule_name()
     truth = synth.write_gunw(f, truth_mm=50.0)
-    got = _median_in_aoi(read_gunw(f, auto_ref=True))
+    result = read_gunw(f, auto_ref=True)
+    got = _median_in_aoi(result)
     assert got == pytest.approx(truth["truth_mm"], abs=TOL_MM)
+    rejected = sum(int(n) for n in result["gate_rejections"].values())
+    assert result["source_cells_total"] - int(result["valid"].sum()) == rejected
+    assert result["gates"]["finite_phase"] <= result["source_cells_total"]
 
 
 @pytest.mark.parametrize("truth_mm", [-120.0, -7.5, 0.0, 7.5, 120.0])
