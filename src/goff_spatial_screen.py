@@ -400,20 +400,23 @@ def read_raw_pair(
             dst_transform=transform, dst_crs=crs, dst_nodata=np.nan,
             resampling=Resampling.bilinear,
         )
-    # GOFF radarGrid heightAboveEllipsoid expects ellipsoidal elevation. Copernicus
-    # DEM and many derivative products store EGM2008 orthometric heights; convert
-    # them explicitly, and refuse to proceed if the official geoid grid is absent.
+    # GOFF radarGrid heightAboveEllipsoid expects ellipsoidal elevation.
+    # Use the standard vertical CRS operation and record the actual selected
+    # operation. If its required geoid grid is unavailable, fail closed.
     vertical_conversion = "NONE_ALREADY_ELLIPSOIDAL_WGS84"
     if dem_vertical_crs == "EPSG:3855":
-        group = TransformerGroup(
-            "EPSG:4326+3855", "EPSG:4979", always_xy=True
+        group = TransformerGroup("EPSG:4326+3855", "EPSG:4979", always_xy=True)
+        transformer = next(
+            (candidate for candidate in group.transformers
+             if "EGM2008" in candidate.description.upper()
+             or "EGM08" in candidate.description.upper()),
+            None,
         )
-        if not group.best_available or not group.transformers:
+        if transformer is None or not group.best_available:
             raise ScreenError(
-                "EGM2008_VERTICAL_GRID_UNAVAILABLE: install PROJ grid "
-                "us_nga_egm08_25.tif; orthometric DEM cannot be used as ellipsoidal height"
+                "EGM2008_VERTICAL_GRID_UNAVAILABLE: install a current PROJ grid "
+                "covering the AOI; orthometric DEM cannot be used as ellipsoidal height"
             )
-        vertical_transformer = group.transformers[0]
         to_lonlat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
         xcentres = transform.c + (np.arange(elevation.shape[1], dtype=np.float64) + 0.5) * transform.a
         rows_per_block = 96
@@ -426,14 +429,14 @@ def read_raw_pair(
             ycentres = transform.f + (np.arange(r0, r1, dtype=np.float64) + 0.5) * transform.e
             xx, yy = np.meshgrid(xcentres, ycentres)
             lon, lat = to_lonlat.transform(xx[good_block], yy[good_block])
-            _, _, h_ellipsoid = vertical_transformer.transform(
+            _, _, h_ellipsoid = transformer.transform(
                 lon, lat, block[good_block].astype(np.float64)
             )
             converted = np.asarray(h_ellipsoid, dtype=np.float64)
             if not np.isfinite(converted).all():
                 raise ScreenError("DEM_VERTICAL_CONVERSION_RETURNED_NONFINITE_VALUES")
             elevation[r0:r1][good_block] = converted.astype(np.float32)
-        vertical_conversion = "EGM2008_ORTHOMETRIC_TO_WGS84_ELLIPSOIDAL_US_NGA_EGM08_25"
+        vertical_conversion = "EGM2008_ORTHOMETRIC_TO_WGS84_ELLIPSOIDAL:" + transformer.description
     dem_valid = np.isfinite(elevation)
     if int((dem_valid & aoi_mask).sum()) < max(10, int(0.5 * aoi_mask.sum())):
         raise ScreenError("DEM_VALID_AOI_COVERAGE_BELOW_50_PERCENT")
