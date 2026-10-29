@@ -210,6 +210,21 @@ def stack(run: list[dict], remove_common_mode: bool = True):
     # The first epoch is a relative zero only where at least one actual
     # pairwise measurement exists; it is not synthetic support for nodata.
     observed_pair_count = np.isfinite(cube).sum(axis=0).astype("uint16")
+    # A missing pair breaks the per-pixel temporal chain. Keep both the total
+    # number of observed pairs and the length of the longest contiguous segment
+    # so the spatial attrition is visible instead of disappearing into the
+    # complete-case velocity mask.
+    longest_contiguous_pair_count = np.zeros((H, W), dtype="uint16")
+    current_contiguous_pair_count = np.zeros((H, W), dtype="uint16")
+    for pair_index in range(cube.shape[0]):
+        pair_is_valid = np.isfinite(cube[pair_index])
+        current_contiguous_pair_count = np.where(
+            pair_is_valid, current_contiguous_pair_count + 1, 0
+        ).astype("uint16")
+        longest_contiguous_pair_count = np.maximum(
+            longest_contiguous_pair_count, current_contiguous_pair_count
+        )
+    partial_support = (observed_pair_count > 0) & ~np.isfinite(cum).all(axis=0)
     has_any_observation = observed_pair_count > 0
     cum[0, has_any_observation] = 0.0
     for k in range(cube.shape[0]):
@@ -243,6 +258,8 @@ def stack(run: list[dict], remove_common_mode: bool = True):
         "velocity": vel, "sigma": sig, "cumulative": cum, "coherence": cohs,
         "valid": complete, "days": days, "geo": geo, "run": run,
         "observed_pair_count": observed_pair_count,
+        "longest_contiguous_pair_count": longest_contiguous_pair_count,
+        "partial_support": partial_support,
         "complete_series_pixels": valid_pair_count,
         "total_grid_pixels": int(complete.size),
         "minimum_pairs_for_velocity": 2,
@@ -492,12 +509,27 @@ def cross_geometry_check(found: dict) -> None:
 def write_geotiff(res: dict, out: Path) -> None:
     import rasterio
     v, s = res["velocity"], res["sigma"]
+    # Bands 1-2 hold only complete-chain velocity and its uncertainty.
+    # Bands 3-4 preserve partial support explicitly; they are not displacement
+    # measurements and must not be interpreted as zero velocity.
     with rasterio.open(out, "w", driver="GTiff", height=v.shape[0], width=v.shape[1],
-                       count=2, dtype="float32", crs=res["geo"]["crs"],
+                       count=4, dtype="float32", crs=res["geo"]["crs"],
                        transform=res["geo"]["transform"], nodata=np.nan,
                        compress="deflate", predictor=3) as dst:
-        dst.write(v, 1); dst.set_band_description(1, "LOS velocity (mm/day)")
-        dst.write(s, 2); dst.set_band_description(2, "1-sigma (mm/day)")
+        dst.write(v, 1); dst.set_band_description(1, "LOS velocity (mm/day; complete connected chain only)")
+        dst.write(s, 2); dst.set_band_description(2, "1-sigma (mm/day; withheld if unavailable)")
+        dst.write(res["observed_pair_count"].astype("float32"), 3)
+        dst.set_band_description(3, "Observed valid pair count (support diagnostic; not motion)")
+        dst.write(res["longest_contiguous_pair_count"].astype("float32"), 4)
+        dst.set_band_description(4, "Longest contiguous valid pair count (support diagnostic; not motion)")
+        dst.update_tags(
+            support_policy="velocity bands require complete connected pair chain",
+            partial_support_pixels=str(int(res["partial_support"].sum())),
+            complete_series_pixels=str(int(res["complete_series_pixels"])),
+            no_pair_support_pixels=str(int((res["observed_pair_count"] == 0).sum())),
+            degrees_of_freedom=str(max(len(res["days"]) - 2, 0)),
+            uncertainty_status=str(res["uncertainty_status"]),
+        )
     logger.info("Wrote %s", out)
 
 
