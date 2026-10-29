@@ -401,3 +401,28 @@ def test_referenced_measurement_does_not_leak_across_unwrapping_components(tmp_p
         components = h5[f"{synth.UNW}/HH/connectedComponents"][()]
     assert not (result["valid"] & (components != result["reference_component_id"])).any()
     assert result["gate_rejections"]["different component from reference"] > 0
+
+
+def test_valid_zero_phase_is_not_dropped_without_fill_evidence(tmp_path):
+    """A numerical zero is not nodata when the packed mask and component are valid."""
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    from gunw_reader import AOIS
+    with h5py.File(f, "a") as h5:
+        base = f"{synth.UNW}/HH"
+        phase_ds = h5[f"{base}/unwrappedPhase"]
+        phase = phase_ds[()]
+        xs = h5[f"{base}/xCoordinates"][()]
+        ys = h5[f"{base}/yCoordinates"][()]
+        mask = h5[f"{synth.UNW}/mask"][()]
+        components = h5[f"{base}/connectedComponents"][()]
+        inside = build_aoi_mask(xs, ys, AOIS["lhende"], 4326)
+        candidates = np.argwhere(inside & (mask == 11) & (components > 0))
+        assert candidates.size
+        row, col = (int(v) for v in candidates[len(candidates) // 2])
+        phase[row, col] = 0.0
+        phase_ds[...] = phase
+    result = read_gunw(f, auto_ref=True)
+    assert result["valid"][row, col], (
+        "zero phase with valid component/mask/coherence metadata must remain measurable"
+    )
