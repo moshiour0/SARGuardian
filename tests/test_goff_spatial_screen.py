@@ -271,6 +271,9 @@ def test_raw_hdf5_to_ranked_candidate_outputs_end_to_end(tmp_path: Path) -> None
     assert summary["status"] == "EXPLORATORY_RANKING_ONLY"
     assert summary["pair_count"] == 2
     assert summary["aoi_grid_pixels"] > 1000
+    assert summary["persistent_pixels_before_component_size_filter"] >= 5
+    assert summary["review_candidate_components"] >= 1
+    assert summary["qualified_candidate_pixels"] >= 5
     for filename in [
         "pair_persistence_count.tif", "mean_anomaly_m.tif",
         "mean_directional_coherence.tif", "persistent_candidate_mask.tif",
@@ -280,8 +283,12 @@ def test_raw_hdf5_to_ranked_candidate_outputs_end_to_end(tmp_path: Path) -> None
     with rasterio.open(output / "pair_persistence_count.tif") as dataset:
         assert dataset.crs.to_epsg() == 32645
         assert dataset.shape == (height, width)
+        assert dataset.read(1)[31, 31] == 2
+    with rasterio.open(output / "persistent_candidate_mask.tif") as dataset:
+        assert dataset.read(1)[31, 31] == 1
     import json
     geojson = json.loads((output / "candidates.geojson").read_text(encoding="utf-8"))
+    assert len(geojson["features"]) >= 1
     for feature in geojson["features"]:
         coords = feature["geometry"]["coordinates"][0]
         assert all(-180 <= point[0] <= 180 and -90 <= point[1] <= 90 for point in coords)
