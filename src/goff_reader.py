@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import re
 import sys
@@ -222,17 +223,30 @@ def read_goff(
     out = {}
     for name, L in results.items():
         rng, azi = L["rng"], L["azi"]
-        gates = {"finite": int(np.isfinite(rng).sum())}
-        valid = np.isfinite(rng)
-        if azi is not None:
-            valid &= np.isfinite(azi)
+        source_total_pixels = int(rng.size)
+        valid = np.ones(rng.shape, dtype=bool)
+        gates = {"source_total_pixels": source_total_pixels}
+        gate_rejections: dict[str, int] = {}
 
-        if L["corr"] is not None:
-            valid &= L["corr"] >= correlation_min
-            gates[f"correlation>={correlation_min}"] = int(valid.sum())
-        if L["snr"] is not None:
-            valid &= L["snr"] >= snr_min
-            gates[f"snr>={snr_min}"] = int(valid.sum())
+        def apply_gate(label: str, keep: np.ndarray) -> None:
+            nonlocal valid
+            keep = np.asarray(keep, dtype=bool)
+            if keep.shape != valid.shape:
+                raise RuntimeError(
+                    f"{name}: quality gate '{label}' shape {keep.shape} does not match offset shape {valid.shape}."
+                )
+            before = int(valid.sum())
+            valid &= keep
+            after = int(valid.sum())
+            gates[label] = after
+            gate_rejections[label] = before - after
+
+        apply_gate("finite_range_offset", np.isfinite(rng))
+        apply_gate("finite_along_track_offset", np.isfinite(azi))
+        apply_gate("finite_correlation", np.isfinite(L["corr"]))
+        apply_gate("finite_snr", np.isfinite(L["snr"]))
+        apply_gate(f"correlation>={correlation_min}", L["corr"] >= correlation_min)
+        apply_gate(f"snr>={snr_min}", L["snr"] >= snr_min)
 
         quality_valid = valid.copy()
 
@@ -252,10 +266,7 @@ def read_goff(
                 raise RuntimeError(
                     f"{L['group']}: AOI mask shape {aoi_mask.shape} does not match offset raster shape {valid.shape}."
                 )
-            before_aoi = int(valid.sum())
-            valid &= aoi_mask
-            gates["inside AOI"] = int(valid.sum())
-            gates["outside AOI rejected"] = before_aoi - int(valid.sum())
+            apply_gate("inside AOI", aoi_mask)
 
         # Keep an immutable quality-valid screen mask before any global MAD
         # culling. A coherent local movement patch may be a global outlier; it
@@ -384,9 +395,19 @@ def read_goff(
                 gates[f"joint range+azimuth within {cull_sigma:g}x MAD"] = int(valid.sum())
             else:
                 gates[f"within {cull_sigma:g}x MAD"] = int(valid.sum())
+            gates["strict robust-inlier pixels"] = int(valid.sum())
             gates["global MAD outlier vectors retained for spatial review"] = int(outlier_mask.sum())
+            gate_rejections["global MAD outlier vectors"] = int(outlier_mask.sum())
         else:
             outlier_mask = np.zeros_like(valid, dtype=bool)
+
+        final_valid = int(valid.sum())
+        rejected_total = sum(int(n) for n in gate_rejections.values())
+        if source_total_pixels - final_valid != rejected_total:
+            raise RuntimeError(
+                f"{name}: GOFF_PIXEL_ATTRITION_LEDGER_DOES_NOT_RECONCILE "
+                f"({source_total_pixels} source - {final_valid} valid != {rejected_total} rejected)."
+            )
 
         out[name] = {
             "layer": name,
@@ -409,6 +430,8 @@ def read_goff(
             "snr_min": snr_min,
             "cull_sigma": cull_sigma,
             "gates": gates,
+            "gate_rejections": gate_rejections,
+            "source_total_pixels": source_total_pixels,
             "ramp_rms_mm": ramp_rms,
             "ref_range_m": ref_rng,
             "ref_azimuth_m": ref_azi,
@@ -550,6 +573,9 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                             layer=name, source=res["file"],
                             aoi_name=str(res["aoi_name"]),
                             outliers_preserved_for_screening="true",
+                            source_total_pixels=str(int(L.get("source_total_pixels", L["range_m"].size))),
+                            gate_counts_json=json.dumps(L.get("gates", {}), sort_keys=True, separators=(",", ":")),
+                            gate_rejections_json=json.dumps(L.get("gate_rejections", {}), sort_keys=True, separators=(",", ":")),
                             robust_screen_policy="pre_global_MAD_quality_valid",
                             screen_valid_pixels=str(int(screen_valid.sum())),
                             robust_inlier_pixels=str(int(valid.sum())),
@@ -591,7 +617,13 @@ def report(res: dict, span_days: float | None = None) -> list[dict]:
         n = int(v.sum())
         print(f"\n  --- {name} ---")
         for k, c in L["gates"].items():
-            print(f"    {k:<26}{c:>12,}  {100*c/total:>7.3f}% of frame")
+            print(f"    {k:<44}{c:>12,}  {100*c/total:>7.3f}% of frame")
+        print("    pixel attrition ledger (sequential, non-overlapping):")
+        for k, c in L.get("gate_rejections", {}).items():
+            print(f"      {k:<42}{c:>12,}")
+        rejected = sum(int(v) for v in L.get("gate_rejections", {}).values())
+        if int(L.get("source_total_pixels", total)) - int(v.sum()) != rejected:
+            raise RuntimeError(f"{name}: GOFF_PIXEL_ATTRITION_LEDGER_DOES_NOT_RECONCILE")
         if L.get("aoi_px"):
             print(f"    {'-> coverage of the AOI':<26}{n:>12,}  "
                   f"{100*n/L['aoi_px']:>7.1f}% of {L['aoi_px']:,} AOI cells")
