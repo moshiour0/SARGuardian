@@ -266,14 +266,29 @@ def decompose(d_asc: float, d_desc: float, los_asc: np.ndarray,
     parallel to its own surface, and a plunge steeper than the terrain is a
     delay wearing a vector's clothes.
     """
-    M = np.array([[los_asc[0], los_asc[2]], [los_desc[0], los_desc[2]]])
-    if abs(np.linalg.det(M)) < 1e-6:
-        raise ValueError("The two geometries are too similar to separate.")
-    u_e, u_u = np.linalg.solve(M, [d_asc, d_desc])
+    M = np.array([[los_asc[0], los_asc[2]], [los_desc[0], los_desc[2]]], dtype=float)
+    observations = np.asarray([d_asc, d_desc], dtype=float)
+    if M.shape != (2, 2) or not np.isfinite(M).all() or not np.isfinite(observations).all():
+        raise ValueError("LOS geometry and pair measurements must be finite 2-component inputs.")
+    rank = int(np.linalg.matrix_rank(M))
+    condition = float(np.linalg.cond(M))
+    if rank < 2 or not np.isfinite(condition) or condition > 1e4:
+        raise ValueError(
+            "The ascending/descending east-up design is rank-deficient or ill-conditioned "
+            f"(rank={rank}, condition={condition:.3g}); decomposition withheld."
+        )
+    u_e, u_u = np.linalg.solve(M, observations)
     mag = float(math.hypot(u_e, u_u))
-    return {"east": float(u_e), "up": float(u_u), "magnitude": mag,
-            "plunge_deg": float(math.degrees(math.atan2(-u_u, abs(u_e)))) if mag else 0.0,
-            "vertical_fraction": float(abs(u_u) / mag) if mag else 0.0}
+    return {
+        "east": float(u_e), "up": float(u_u), "magnitude": mag,
+        "plunge_deg": float(math.degrees(math.atan2(-u_u, abs(u_e)))) if mag else 0.0,
+        "vertical_fraction": float(abs(u_u) / mag) if mag else 0.0,
+        "design_matrix_rank": rank,
+        "design_matrix_condition": condition,
+        "north_motion_assumption": "FIXED_ZERO",
+        "uncertainty_status": "NOT_PROPAGATED_INPUT_COVARIANCE_REQUIRED",
+        "interpretation": "2-D east/vertical LOS decomposition; not a full 3-D displacement.",
+    }
 
 
 def downslope_unit(slope_deg: float, aspect_deg: float) -> np.ndarray:
