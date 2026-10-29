@@ -44,6 +44,9 @@ For every product, layer, and processing variant, persist a reproducible pixel-g
 - finite / source-valid cells;
 - count after **each named gate**, in exact execution order;
 - count rejected by each gate and why (mutually exclusive first-rejection counts where possible; otherwise label overlapping reasons);
+- persist two ledgers when quality gates run over a full frame before AOI clipping: a whole-frame ledger and a separate AOI-scoped ledger whose denominator is the pixel centres inside the requested AOI and on the source product grid;
+- AOI-scoped cumulative counts must be recomputed through the same ordered gate masks, not inferred by subtracting global frame counts; component/reference gates that run after clipping must also be reflected in the AOI ledger;
+- reconcile the AOI first-rejection counts to `AOI source-grid cells - final AOI-valid pixels`, and reconcile the final AOI-ledger survivor count to the exported validity mask; fail loudly if either invariant fails;
 - cells intersecting/inside AOI under the explicitly declared pixel-centre or all-touched rule;
 - final reader-valid pixels, exported valid pixels, and candidate pixels;
 - percentages using a relevant denominator (AOI-covered cells for AOI coverage, not the entire product frame);
