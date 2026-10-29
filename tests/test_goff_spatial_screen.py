@@ -267,6 +267,7 @@ def test_raw_hdf5_to_ranked_candidate_outputs_end_to_end(tmp_path: Path) -> None
         local_window_px=15, direction_window_px=3, z_min=2.0,
         anomaly_min_m=0.3, coherence_min=0.6,
         minimum_pairs=2, minimum_component_pixels=5,
+        dem_vertical_crs="ELLIPSOIDAL_WGS84",
     )
     assert summary["status"] == "EXPLORATORY_RANKING_ONLY"
     assert summary["pair_count"] == 2
