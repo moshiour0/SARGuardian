@@ -321,7 +321,7 @@ def read_raw_pair(
     frequency: str = "frequencyA",
     layer: str = "layer2",
     snr_min: float = 5.0,
-    correlation_min: float = 0.30,
+    correlation_min: float | None = 0.30,
 ) -> RawPair:
     identity = parse_identity(path)
     if dem_vertical_crs not in {"EPSG:3855", "ELLIPSOIDAL_WGS84"}:
@@ -554,7 +554,7 @@ def score_pair_arrays(
     correlation: np.ndarray,
     aoi_mask: np.ndarray,
     snr_min: float = DEFAULTS["snr_min"],
-    correlation_min: float = DEFAULTS["correlation_min"],
+    correlation_min: float | None = DEFAULTS["correlation_min"],
     magnitude_clip_m: float = DEFAULTS["magnitude_clip_m"],
     local_window_px: int = DEFAULTS["local_window_px"],
     direction_window_px: int = DEFAULTS["direction_window_px"],
@@ -573,9 +573,12 @@ def score_pair_arrays(
     magnitude = np.hypot(east, north).astype(np.float32)
     valid = (
         np.isfinite(east) & np.isfinite(north) & np.isfinite(snr) & (snr >= snr_min)
-        & np.isfinite(correlation) & (correlation >= correlation_min)
         & np.isfinite(magnitude) & (magnitude <= magnitude_clip_m)
     )
+    # Exact author-like screening does not gate on correlationSurfacePeak.
+    # The stricter SARGuardian mode can opt in to that additional filter.
+    if correlation_min is not None:
+        valid &= np.isfinite(correlation) & (correlation >= correlation_min)
     local_mag = local_mean(magnitude, valid, local_window_px)
     anomaly = magnitude - local_mag
     abs_dev = np.abs(anomaly)
@@ -711,7 +714,7 @@ def _component_rows(mask: np.ndarray, transform: Affine, crs: CRS, minimum_pixel
     next_label = 1
     # Use rasterio polygonization with 8-connectivity and count pixels from the
     # polygon area. Each output feature is a review polygon, not a landslide.
-    for geometry, value in shapes(mask.astype(np.uint8), mask=mask, transform=transform, connectivity=8):
+    for geometry, value in shapes(mask.astype(np.uint8), mask=mask, transform=transform, connectivity=4):
         if int(value) != 1:
             continue
         area_m2 = None
@@ -787,7 +790,7 @@ def run_screen(
     frequency: str = "frequencyA",
     layer: str = "layer2",
     snr_min: float = DEFAULTS["snr_min"],
-    correlation_min: float = DEFAULTS["correlation_min"],
+    correlation_min: float | None = DEFAULTS["correlation_min"],
     local_window_px: int = DEFAULTS["local_window_px"],
     direction_window_px: int = DEFAULTS["direction_window_px"],
     z_min: float = DEFAULTS["z_min"],
@@ -1084,7 +1087,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frequency", default="frequencyA")
     parser.add_argument("--layer", default="layer2")
     parser.add_argument("--snr-min", type=float, default=DEFAULTS["snr_min"])
-    parser.add_argument("--correlation-min", type=float, default=DEFAULTS["correlation_min"])
+    def parse_optional_correlation(value: str) -> float | None:
+        if value.strip().lower() in {"none", "off", "disabled"}:
+            return None
+        threshold = float(value)
+        if not math.isfinite(threshold):
+            raise argparse.ArgumentTypeError("correlation threshold must be finite or 'none'")
+        return threshold
+
+    parser.add_argument(
+        "--correlation-min", type=parse_optional_correlation,
+        default=DEFAULTS["correlation_min"],
+        help="Correlation quality threshold; pass 'none' to match the author screen's SNR-only gate",
+    )
     parser.add_argument("--local-window-px", type=int, default=DEFAULTS["local_window_px"])
     parser.add_argument("--direction-window-px", type=int, default=DEFAULTS["direction_window_px"])
     parser.add_argument("--z-min", type=float, default=DEFAULTS["z_min"])
