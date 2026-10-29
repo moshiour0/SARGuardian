@@ -10,7 +10,7 @@ import pytest
 import rasterio
 from affine import Affine
 
-from pixel_stack import align, stack
+from pixel_stack import align, stack, write_geotiff
 
 
 def _write_raster(path: Path, values: np.ndarray, transform: Affine) -> None:
@@ -62,3 +62,37 @@ def test_missing_pair_pixels_are_reported_as_partial_not_filled_with_zero(tmp_pa
     assert np.isnan(result["cumulative"][2, 1, 1])
     assert result["complete_series_pixels"] == 7
     assert result["total_grid_pixels"] == 9
+
+
+def test_partial_support_counts_are_exported_separately_from_velocity(tmp_path):
+    base_transform = Affine(80, 0, 500000, 0, -80, 3200000)
+    first = np.full((3, 3), 10.0, dtype="float32")
+    second = np.full((3, 3), 10.0, dtype="float32")
+    first[0, 0] = np.nan
+    second[1, 1] = np.nan
+    p1 = tmp_path / "20260101_20260113.tif"
+    p2 = tmp_path / "20260113_20260125.tif"
+    _write_raster(p1, first, base_transform)
+    _write_raster(p2, second, base_transform)
+    run = [
+        {"path": p1, "ref": date(2026, 1, 1), "sec": date(2026, 1, 13), "geom": "A098"},
+        {"path": p2, "ref": date(2026, 1, 13), "sec": date(2026, 1, 25), "geom": "A098"},
+    ]
+    result = stack(run, remove_common_mode=False)
+    assert result["observed_pair_count"][0, 0] == 1
+    assert result["longest_contiguous_pair_count"][0, 0] == 1
+    assert result["partial_support"][0, 0]
+    assert not result["valid"][0, 0]
+
+    out = tmp_path / "stack.tif"
+    write_geotiff(result, out)
+    with rasterio.open(out) as src:
+        assert src.count == 4
+        assert "complete connected chain only" in src.descriptions[0]
+        assert "Observed valid pair count" in src.descriptions[2]
+        assert "Longest contiguous valid pair count" in src.descriptions[3]
+        assert src.read(3)[0, 0] == 1.0
+        assert src.read(4)[0, 0] == 1.0
+        assert src.read(1, masked=True).mask[0, 0]
+        assert int(src.tags()["partial_support_pixels"]) == 2
+        assert src.tags()["support_policy"] == "velocity bands require complete connected pair chain"
