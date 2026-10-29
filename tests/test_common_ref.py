@@ -106,3 +106,9 @@ def test_common_reference_excludes_out_of_aoi_candidate_and_uses_exact_polygon(
         rows = list(csv.DictReader(stream))
     assert rows
     assert {row["target_id"] for row in rows} == {"4"}
+    assert {row["reference_status"] for row in rows} == {"AOI_COMMON_SUPPORT_STABILITY_UNVALIDATED"}
+    assert {row["reference_stability"] for row in rows} == {"UNVALIDATED"}
+    assert all(int(row["reference_support_px"]) == int(row["stable_px"]) for row in rows)
+    assert {row["reference_kind"] for row in rows} == {
+        "AOI_COMMON_SUPPORT_NOT_INDEPENDENTLY_VERIFIED_STABLE_GROUND"
+    }
