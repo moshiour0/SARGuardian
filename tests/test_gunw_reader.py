@@ -396,7 +396,6 @@ def test_referenced_measurement_does_not_leak_across_unwrapping_components(tmp_p
     result = read_gunw(f, auto_ref=True)
     assert result["reference_component_id"] is not None
     assert result["component_rejected_pixels"] > 0
-    assert not (result["valid"] & (result["components"] == 7)).any() if "components" in result else True
     # The explicit validity mask excludes incompatible-component measurements.
     with h5py.File(f, "r") as h5:
         components = h5[f"{synth.UNW}/HH/connectedComponents"][()]
