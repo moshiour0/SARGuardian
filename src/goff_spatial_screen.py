@@ -42,12 +42,12 @@ from aoi_wkt import parse_polygon_wkt  # noqa: E402
 SCHEMA = "sarguardian-goff-spatial-screen/1.0"
 LAYER_RE = re.compile(r"/pixelOffsets/([^/]+)/layer2$")
 GRANULE_RE = re.compile(
-    r"NISAR_L2_(?P<processing>PR|UR)_GOFF_(?P<granule>\\d{3})_"
-    r"(?P<track>\\d{3})_(?P<direction>[AD])_(?P<frame>\\d{3})_"
-    r"(?P<subswath>\\d{3})_(?P<bandwidth>\\d{4})_(?P<polarization>[A-Z]{2})_"
-    r"(?P<reference>\\d{8}T\\d{6})_\\d{8}T\\d{6}_"
-    r"(?P<secondary>\\d{8}T\\d{6})_\\d{8}T\\d{6}_"
-    r"(?P<crid>[PX]\\d{5})_"
+    r"NISAR_L2_(?P<processing>PR|UR)_GOFF_(?P<granule>\d{3})_"
+    r"(?P<track>\d{3})_(?P<direction>[AD])_(?P<frame>\d{3})_"
+    r"(?P<subswath>\d{3})_(?P<bandwidth>\d{4})_(?P<polarization>[A-Z]{2})_"
+    r"(?P<reference>\d{8}T\d{6})_\d{8}T\d{6}_"
+    r"(?P<secondary>\d{8}T\d{6})_\d{8}T\d{6}_"
+    r"(?P<crid>[PX]\d{5})_"
 )
 DEFAULTS = {
     "snr_min": 5.0,
