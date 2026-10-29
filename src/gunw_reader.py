@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import math
 import os
@@ -532,8 +533,11 @@ def read_gunw(
     disp = phase * scale
 
     valid = np.isfinite(disp) & has_phase
+    source_cells_total = int(valid.size)
     gates = {"finite_phase": int(valid.sum())}
-    gate_rejections: dict[str, int] = {}
+    gate_rejections: dict[str, int] = {
+        "nonfinite_phase": source_cells_total - int(valid.sum())
+    }
 
     def apply_gate(label: str, keep: np.ndarray) -> None:
         nonlocal valid
@@ -788,10 +792,12 @@ def read_gunw(
     if _auto_grid_ref is not None and aoi_mask is not None:
         reference_in_aoi = bool(aoi_mask[_auto_grid_ref[0], _auto_grid_ref[1]])
     validation_status = (
-        "REFERENCE_COMPONENT_VALIDATED"
+        "REFERENCE_COMPONENT_COMPATIBLE_DATUM_STABILITY_UNVALIDATED"
         if reference_component is not None and ref_value is not None
         else "REFERENCE_UNVALIDATED"
     )
+    if reference_in_aoi and reference_component is not None:
+        validation_status = "REFERENCE_INSIDE_AOI_COMPONENT_COMPATIBLE_DATUM_UNVALIDATED"
     if apply_iono and not (iono is not None and iono.shape == phase.shape):
         validation_status = "IONOSPHERE_SCREEN_UNAVAILABLE_" + validation_status
 
@@ -814,6 +820,7 @@ def read_gunw(
         # zone. It also makes the ascending/descending comparison unfair,
         # because the two frames differ in size by 1.5x.
         "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
+        "source_cells_total": source_cells_total,
         "iono_rms_mm": iono_rms_mm,
         "ref_value_mm": ref_value,
         "reference_component_id": reference_component,
@@ -848,9 +855,15 @@ def report(result: dict) -> dict:
     # Percentages here are of the FRAME, and are labelled so, because a gate
     # applied before the AOI clip has no AOI to be a fraction of. The coverage
     # figure that matters is printed below, against the AOI.
-    print("\n  quality gates (cumulative, % of frame):")
-    for name, n in result["gates"].items():
-        print(f"    {name:<28} {n:>10,}  {100*n/total:>7.3f}%")
+    print("\n  quality gates (cumulative survivors, % of frame):")
+    for name, count in result["gates"].items():
+        print(f"    {name:<44} {count:>10,}  {100*count/total:>7.3f}%")
+    print("\n  pixel attrition ledger (rejected at this stage):")
+    for name, count in result.get("gate_rejections", {}).items():
+        print(f"    {name:<44} {count:>10,}  {100*count/total:>7.3f}%")
+    print(f"  reference status  {result.get('validation_status', 'REFERENCE_UNVALIDATED')}")
+    print(f"  reference component {result.get('reference_component_id')}")
+    print(f"  reference inside AOI {result.get('reference_in_aoi')} (stable-ground status is not inferred)")
 
     n = int(valid.sum())
     aoi_px = result.get("aoi_px")
@@ -888,7 +901,15 @@ def report(result: dict) -> dict:
              # it, so every row says which it is. See product_maturity().
              "maturity": product_maturity(result.get("file", "")),
              "crid": crid_of(result.get("file", "")),
-             "processing": "UR" if "_UR_" in str(result.get("file", "")) else "PR"}
+             "processing": "UR" if "_UR_" in str(result.get("file", "")) else "PR",
+             "source_cells_total": result.get("source_cells_total"),
+             "reference_status": result.get("validation_status"),
+             "reference_component_id": result.get("reference_component_id"),
+             "reference_in_aoi": result.get("reference_in_aoi"),
+             "component_rejected_pixels": result.get("component_rejected_pixels", 0),
+             "ionosphere_correction_applied": bool(result.get("ionosphere_correction_applied")),
+             "gate_cumulative_counts_json": json.dumps(result.get("gates", {}), sort_keys=True),
+             "gate_rejections_json": json.dumps(result.get("gate_rejections", {}), sort_keys=True)}
 
     if n == 0:
         print("\n  NO VALID PIXELS. Lower --coh-threshold or check the AOI overlaps the frame.")
@@ -965,6 +986,14 @@ def write_geotiff(result: dict, out: Path) -> None:
             aoi_mask_applied=str(bool(result.get("aoi_mask_applied", False))).lower(),
             crid=crid_of(result["file"]), maturity=product_maturity(result["file"]),
             ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable",
+            validation_status=str(result.get("validation_status") or "REFERENCE_UNVALIDATED"),
+            reference_component_id=str(result.get("reference_component_id") if result.get("reference_component_id") is not None else ""),
+            reference_in_aoi=str(result.get("reference_in_aoi") if result.get("reference_in_aoi") is not None else "unknown").lower(),
+            component_rejected_pixels=str(int(result.get("component_rejected_pixels") or 0)),
+            source_cells_total=str(int(result.get("source_cells_total") or data.size)),
+            valid_pixels_after_all_gates=str(int(result["valid"].sum())),
+            gate_cumulative_counts_json=json.dumps(result.get("gates", {}), sort_keys=True),
+            gate_rejections_json=json.dumps(result.get("gate_rejections", {}), sort_keys=True),
             export_scope="full_product_grid",
         )
     logger.info("Wrote %s", out)
