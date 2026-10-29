@@ -167,6 +167,10 @@ def write_gunw(
 
     coh = np.full((n, n), coherence, dtype=np.float32)
     mask = np.full((n, n), encode_mask(), dtype=np.uint8)
+    # A true fill cell must be identifiable from independent product validity
+    # metadata, not from phase==0 alone. Zero phase can be a real measurement.
+    comp[nodata] = 0
+    mask[nodata] = 255
     if hole_fraction:
         # Scattered invalid pixels, the way real decorrelation arrives. Stripes
         # leave whole clean blocks standing, so they never exercise the relaxed
