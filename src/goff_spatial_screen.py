@@ -94,7 +94,9 @@ class GranuleIdentity:
 
     @property
     def pair_key(self) -> tuple[str, str]:
-        return self.reference, self.secondary
+        # Acquisitions across adjacent subswaths can differ by seconds while
+        # representing the same repeat pair; do not count them twice.
+        return self.reference[:8], self.secondary[:8]
 
     @property
     def identity_string(self) -> str:
@@ -325,19 +327,7 @@ def read_raw_pair(
     expected_group = f"science/LSAR/GOFF/grids/{frequency}/pixelOffsets/{polarization}/{layer}"
     with h5py.File(path, "r") as h5:
         if expected_group not in h5:
-            # Search exact layer2 groups in the product so group-layout changes
-            # fail with a diagnostic instead of silently choosing an unrelated layer.
-            alternatives = []
-            prefix = f"science/LSAR/GOFF/grids/"
-            def visitor(name: str, node: Any) -> None:
-                if isinstance(node, h5py.Group) and name.endswith(f"/pixelOffsets/{polarization}/{layer}"):
-                    alternatives.append(name)
-            h5.visititems(visitor)
-            if len(alternatives) != 1:
-                raise ScreenError(
-                    f"GOFF_LAYER_NOT_FOUND_OR_AMBIGUOUS:{expected_group}:alternatives={alternatives}"
-                )
-            expected_group = alternatives[0]
+            raise ScreenError("GOFF_LAYER_NOT_FOUND:" + expected_group)
 
         def require(name: str) -> np.ndarray:
             key = expected_group + "/" + name
