@@ -170,7 +170,9 @@ def test_all_invalid_goff_layer_writes_an_explicit_nodata_aoi_raster(tmp_path):
     assert rows[0]["export_file"]
 
     with rasterio.open(tmp_path / rows[0]["export_file"]) as src:
-        assert src.count == 3
+        assert src.count == 4
+        assert "robust inlier flag" in (src.descriptions[3] or "").lower()
+        assert not np.isfinite(src.read(4)).any(), "an all-invalid layer must not invent outlier flags"
         assert src.crs.to_epsg() == 32645
         assert src.tags()["aoi_name"] == "source"
         assert src.tags()["aoi_mask_applied"] == "true"
