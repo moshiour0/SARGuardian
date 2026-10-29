@@ -96,3 +96,33 @@ def test_partial_support_counts_are_exported_separately_from_velocity(tmp_path):
         assert src.read(1, masked=True).mask[0, 0]
         assert int(src.tags()["partial_support_pixels"]) == 2
         assert src.tags()["support_policy"] == "velocity bands require complete connected pair chain"
+        assert src.tags()["common_mode_policy"] == "PAIRWISE_MEDIAN_RETAINED"
+        assert src.tags()["common_mode_removed"] == "false"
+        assert int(src.tags()["source_pair_count"]) == 2
+        import json
+        pairs = json.loads(src.tags()["pair_records_json"])
+        assert [p["reference_date"] for p in pairs] == ["2026-01-01", "2026-01-13"]
+
+
+def test_common_mode_removal_is_explicit_and_records_each_removed_pair_median(tmp_path):
+    base_transform = Affine(80, 0, 500000, 0, -80, 3200000)
+    first = np.full((3, 3), 10.0, dtype="float32")
+    second = np.full((3, 3), 12.0, dtype="float32")
+    p1 = tmp_path / "20260101_20260113.tif"
+    p2 = tmp_path / "20260113_20260125.tif"
+    _write_raster(p1, first, base_transform)
+    _write_raster(p2, second, base_transform)
+    run = [
+        {"path": p1, "ref": date(2026, 1, 1), "sec": date(2026, 1, 13), "geom": "A098"},
+        {"path": p2, "ref": date(2026, 1, 13), "sec": date(2026, 1, 25), "geom": "A098"},
+    ]
+    removed = stack(run, remove_common_mode=True)
+    retained = stack(run, remove_common_mode=False)
+    assert removed["common_mode_policy"] == "PAIRWISE_MEDIAN_REMOVED"
+    assert removed["common_mode_pair_medians_mm"] == [10.0, 12.0]
+    assert retained["common_mode_policy"] == "PAIRWISE_MEDIAN_RETAINED"
+    assert retained["common_mode_pair_medians_mm"] == [10.0, 12.0]
+    # These two choices cannot be silently conflated; broad common motion is
+    # removed in one branch and retained in the other diagnostic branch.
+    assert np.allclose(removed["cumulative"][:, 1, 1], [0.0, 0.0, 0.0])
+    assert np.allclose(retained["cumulative"][:, 1, 1], [0.0, 10.0, 22.0])
