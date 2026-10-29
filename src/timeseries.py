@@ -551,25 +551,60 @@ def invert_component(pairs: list[Pair], epochs: list[date]) -> dict:
     d(epochs[0]) is fixed at 0 - every series is relative to its own first
     acquisition, which is why disconnected components can never be compared.
     """
-    epochs = sorted(epochs)
+    epochs = sorted(set(epochs))
     index = {e: i for i, e in enumerate(epochs)}
     n_unknown = len(epochs) - 1
-
-    usable = [p for p in pairs if p.value is not None]
-    if not usable:
-        return {"error": "no pairs carry a measured value"}
-    if n_unknown == 0:
+    if n_unknown < 1:
         return {"error": "single epoch"}
+
+    # Only finite, measured edges can constrain a numeric inversion. Catalog
+    # edges or pairs whose measurement failed must not artificially connect
+    # components in the design matrix.
+    usable = []
+    for pair in pairs:
+        if pair.value is None:
+            continue
+        try:
+            value = float(pair.value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not np.isfinite(value):
+            continue
+        if pair.ref not in index or pair.sec not in index or pair.sec <= pair.ref:
+            return {"error": "pair dates are inconsistent with the supplied epoch set"}
+        usable.append((pair, value))
+    if not usable:
+        return {"error": "no finite pairs carry a measured value"}
 
     G = np.zeros((len(usable), n_unknown))
     obs = np.zeros(len(usable))
-    for r, p in enumerate(usable):
+    for r, (p, value) in enumerate(usable):
         i, j = index[p.ref], index[p.sec]
         if i > 0:
             G[r, i - 1] = -1.0
         if j > 0:
             G[r, j - 1] = +1.0
-        obs[r] = p.value
+        obs[r] = value
+
+    # numpy.linalg.lstsq returns a minimum-norm answer for a rank-deficient
+    # graph instead of raising. Such an answer bridges unobserved epoch gaps
+    # and must never be published as a cumulative displacement series.
+    design_rank = int(np.linalg.matrix_rank(G))
+    if design_rank < n_unknown:
+        return {
+            "error": f"rank-deficient measured network ({design_rank}/{n_unknown}); inversion withheld",
+            "design_matrix_rank": design_rank,
+            "unknown_epoch_count": n_unknown,
+            "n_pairs": len(usable),
+        }
+    design_condition = float(np.linalg.cond(G))
+    if not np.isfinite(design_condition) or design_condition > 1e10:
+        return {
+            "error": f"ill-conditioned measured network (condition={design_condition:.3g}); inversion withheld",
+            "design_matrix_rank": design_rank,
+            "design_matrix_condition": design_condition,
+            "n_pairs": len(usable),
+        }
 
     solution, *_ = np.linalg.lstsq(G, obs, rcond=None)
     cumulative = np.concatenate([[0.0], solution])
@@ -612,6 +647,9 @@ def invert_component(pairs: list[Pair], epochs: list[date]) -> dict:
         "velocity_mm_per_day": velocity,
         "velocity_err_mm_per_day": velocity_err,
         "n_pairs": len(usable),
+        "design_matrix_rank": design_rank,
+        "design_matrix_condition": design_condition,
+        "network_status": "REDUNDANT" if dof > 0 else "EXACTLY_DETERMINED_NO_RESIDUAL_DOF",
     }
 
 
