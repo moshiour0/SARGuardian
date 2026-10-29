@@ -381,7 +381,7 @@ def read_goff(
             if azi is not None:
                 gates[f"azimuth within {cull_sigma:g}x MAD"] = int((base_valid & azimuth_keep).sum())
                 gates["azimuth-axis outliers rejected"] = int((base_valid & ~azimuth_keep).sum())
-                gates["joint range+azimuth within {cull_sigma:g}x MAD"] = int(valid.sum())
+                gates[f"joint range+azimuth within {cull_sigma:g}x MAD"] = int(valid.sum())
             else:
                 gates[f"within {cull_sigma:g}x MAD"] = int(valid.sum())
             gates["global MAD outlier vectors retained for spatial review"] = int(outlier_mask.sum())
