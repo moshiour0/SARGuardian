@@ -337,3 +337,31 @@ def test_processing_filter_prevents_ambiguous_values_from_entering_inversion(tmp
     _write_stats(path, rows)
     assert [p.value for p in pairs_from_stats(path, processing="PR")] == [12.0]
     assert [p.value for p in pairs_from_stats(path, processing="UR")] == [240.0]
+
+
+def test_inversion_refuses_rank_deficient_measured_edges():
+    """Missing measured pair must not be bridged by numpy's minimum-norm fit."""
+    pairs = _chain(D[:4], [10.0, 10.0, 10.0])
+    pairs[1].value = None
+    result = invert_component(pairs, D[:4])
+    assert "error" in result
+    assert "rank-deficient" in result["error"]
+    assert result["design_matrix_rank"] < result["unknown_epoch_count"]
+
+
+def test_inversion_ignores_nonfinite_measurements_when_checking_rank():
+    pairs = _chain(D[:4], [10.0, 10.0, 10.0])
+    pairs[1].value = float("nan")
+    result = invert_component(pairs, D[:4])
+    assert "error" in result
+    assert "rank-deficient" in result["error"]
+
+
+def test_exactly_determined_inversion_has_no_formal_residual_uncertainty():
+    pairs = _chain(D[:3], [10.0, 10.0])
+    result = invert_component(pairs, D[:3])
+    assert "error" not in result
+    assert result["dof"] == 0
+    assert result["network_status"] == "EXACTLY_DETERMINED_NO_RESIDUAL_DOF"
+    assert np.isnan(result["sigma_mm"])
+    assert not np.isfinite(result["error_mm"][1:]).any()
