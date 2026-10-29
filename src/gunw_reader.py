@@ -439,9 +439,27 @@ def read_gunw(
         p_coh = sibling("coherenceMagnitude", "coherence")
         p_conn = sibling("connectedComponents")
         p_mask = sibling("mask", "layoverShadowMask")
+        p_iono_any = find(datasets, "ionospherePhaseScreen", ndim=2)
+        if p_iono_any and datasets[p_iono_any][0] != shape:
+            raise RuntimeError(
+                f"Ionosphere-screen grid {datasets[p_iono_any][0]} does not match phase grid {shape}."
+            )
         p_iono = sibling("ionospherePhaseScreen")
         p_x = sibling("xCoordinates", ndim=1)
         p_y = sibling("yCoordinates", ndim=1)
+        required = {
+            "coherenceMagnitude": p_coh,
+            "connectedComponents": p_conn,
+            "mask": p_mask,
+            "xCoordinates": p_x,
+            "yCoordinates": p_y,
+        }
+        missing = [name for name, hit in required.items() if hit is None]
+        if missing:
+            raise RuntimeError(
+                "Supported GUNW product is missing required shape-compatible layers: "
+                + ", ".join(missing) + ". Refusing to silently bypass a quality or AOI gate."
+            )
 
         logger.info("group      : %s", grp)
         logger.info("phase      : %s", shape)
@@ -500,25 +518,43 @@ def read_gunw(
     disp = phase * scale
 
     valid = np.isfinite(disp) & has_phase
-    gates = {"finite": int(valid.sum())}
+    gates = {"finite_and_nonfill_phase": int(valid.sum())}
+    gate_rejections: dict[str, int] = {}
+
+    def apply_gate(label: str, keep: np.ndarray) -> None:
+        nonlocal valid
+        keep = np.asarray(keep, dtype=bool)
+        if keep.shape != valid.shape:
+            raise RuntimeError(
+                f"Quality gate '{label}' shape {keep.shape} does not match phase shape {valid.shape}."
+            )
+        before = int(valid.sum())
+        valid &= keep
+        after = int(valid.sum())
+        gates[label] = after
+        gate_rejections[label] = before - after
 
     if coherence is not None:
-        valid &= coherence >= coherence_threshold
-        gates[f"coherence>={coherence_threshold}"] = int(valid.sum())
+        apply_gate(f"coherence>={coherence_threshold}",
+                   np.isfinite(coherence) & (coherence >= coherence_threshold))
     if components is not None:
-        valid &= components > 0          # component 0 = not reliably unwrapped
-        gates["connected_component>0"] = int(valid.sum())
-    if losmask is not None and losmask.shape == valid.shape:
-        mask_bits = decode_gunw_mask(losmask, apply_iono=apply_iono)
-        valid &= mask_bits["land_valid_subswaths_low_byte"]
-        gates["land + valid subswath (low-byte code)"] = int(valid.sum())
-        valid &= ~mask_bits["anomaly_flags_nonzero"]
-        gates["reference/secondary anomaly flags clear"] = int(valid.sum())
-        if apply_iono:
-            valid &= ~mask_bits["ionosphere_interpolated_mask"]
-            gates["ionosphere correction not interpolated at pixel"] = int(valid.sum())
-        valid &= ~mask_bits["reserved_bits_nonzero"]
-        gates["reserved mask bits zero"] = int(valid.sum())
+        apply_gate("connected_component>0", components > 0)
+
+    # The selected product schema requires an explicit mask. A missing or
+    # incompatible mask must never bypass water/subswath/quality filtering.
+    if losmask is None:
+        raise RuntimeError("GUNW mask dataset is missing; refusing to bypass mask-based quality gates.")
+    if losmask.shape != valid.shape:
+        raise RuntimeError(f"GUNW mask shape {losmask.shape} does not match phase shape {valid.shape}.")
+    mask_bits = decode_gunw_mask(losmask, apply_iono=apply_iono)
+    apply_gate("land + valid subswath (low-byte code)",
+               mask_bits["land_valid_subswaths_low_byte"])
+    apply_gate("reference/secondary anomaly flags clear",
+               ~mask_bits["anomaly_flags_nonzero"])
+    if apply_iono:
+        apply_gate("ionosphere correction not interpolated at pixel",
+                   ~mask_bits["ionosphere_interpolated_mask"])
+    apply_gate("reserved mask bits zero", ~mask_bits["reserved_bits_nonzero"])
 
     # Quality mask WITHOUT the AOI clip. The reference point is usually chosen
     # on stable ground outside the area of interest, so it must not be clipped
@@ -541,14 +577,24 @@ def read_gunw(
             raise RuntimeError(
                 f"AOI mask shape {aoi_mask.shape} does not match GUNW raster shape {valid.shape}."
             )
+        before_aoi = int(valid.sum())
         valid &= aoi_mask
         gates["inside AOI"] = int(valid.sum())
+        gate_rejections["outside AOI"] = before_aoi - int(valid.sum())
 
     # Automatic reference selection. Guessing a reference point does not work:
     # on this scene the three "obvious" choices had ZERO usable pixels because
     # winter snow had decorrelated them, while a block 8 km away sat at 0.84
     # coherence. Pick the best fully-valid block instead, preferring ground
     # outside the AOI so the reference is not part of what is being measured.
+    target_comp = None
+    if components is not None and aoi_mask is not None:
+        inside_components = components[quality_valid & aoi_mask]
+        if inside_components.size:
+            ids, counts = np.unique(inside_components, return_counts=True)
+            target_comp = int(ids[int(np.argmax(counts)])
+
+    reference_component = None
     if auto_ref and xs is not None and ys is not None:
         blk = max(3, 2 * ref_radius_px + 1)
         ny, nx = coherence.shape if coherence is not None else disp.shape
@@ -565,7 +611,6 @@ def read_gunw(
             # 2 to 4 fringes (248, 285, 473 mm at lambda/2 = 122 mm) in the
             # summer pairs, and why the same pair processed twice differed by
             # 265 mm.
-            target_comp = None
             comp_ok = np.ones_like(full)
             if components is not None and aoi_mask is not None:
                 inside = components[quality_valid & aoi_mask]
@@ -633,6 +678,8 @@ def read_gunw(
                             components[i, j] if components is not None else "n/a",
                             100 * chosen_level)
                 _auto_grid_ref = (i, j)
+                if components is not None:
+                    reference_component = target_comp if target_comp is not None else int(components[i, j])
             elif target_comp is not None:
                 # No clean block of that component outside the AOI. Referencing
                 # anywhere else would be wrong, so reference INSIDE the AOI and
@@ -648,6 +695,8 @@ def read_gunw(
                         "relative to that point, not to stable ground.",
                         target_comp, i, j)
                     _auto_grid_ref = (i, j)
+                    if components is not None:
+                        reference_component = target_comp
                 else:
                     logger.warning("Auto reference found no usable block.")
                     _auto_grid_ref = None
@@ -687,8 +736,13 @@ def read_gunw(
             r = ref_radius_px
             window = disp[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
             wvalid = quality_valid[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
+            if components is not None and target_comp is not None:
+                component_window = components[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
+                wvalid &= component_window == target_comp
             if wvalid.sum() > 0:
                 ref_value = float(np.median(window[wvalid]))
+                if components is not None:
+                    reference_component = target_comp if target_comp is not None else int(components[i, j])
                 disp = disp - ref_value
                 logger.info("Referenced to %.4f N %.4f E: subtracted %.2f mm (%d px)",
                             ref_lat, ref_lon, ref_value, int(wvalid.sum()))
@@ -702,6 +756,26 @@ def read_gunw(
             "No reference applied. Values are RELATIVE - differences within the "
             "scene are meaningful, absolute magnitudes are not. Use --auto-ref."
         )
+
+    component_rejected_pixels = 0
+    if components is not None and reference_component is not None:
+        before_component = int(valid.sum())
+        different_component = valid & (components != reference_component)
+        component_rejected_pixels = int(different_component.sum())
+        valid &= components == reference_component
+        gates["same connected component as reference"] = int(valid.sum())
+        gate_rejections["different component from reference"] = before_component - int(valid.sum())
+
+    reference_in_aoi = None
+    if _auto_grid_ref is not None and aoi_mask is not None:
+        reference_in_aoi = bool(aoi_mask[_auto_grid_ref[0], _auto_grid_ref[1]])
+    validation_status = (
+        "REFERENCE_COMPONENT_VALIDATED"
+        if reference_component is not None and ref_value is not None
+        else "REFERENCE_UNVALIDATED"
+    )
+    if apply_iono and not (iono is not None and iono.shape == phase.shape):
+        validation_status = "IONOSPHERE_SCREEN_UNAVAILABLE_" + validation_status
 
     return {
         "file": path.name,
@@ -724,6 +798,11 @@ def read_gunw(
         "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
         "iono_rms_mm": iono_rms_mm,
         "ref_value_mm": ref_value,
+        "reference_component_id": reference_component,
+        "reference_in_aoi": reference_in_aoi,
+        "component_rejected_pixels": component_rejected_pixels,
+        "gate_rejections": gate_rejections,
+        "validation_status": validation_status,
         # Where the reference was taken, in grid indices. Exposed so a caller
         # can check it landed on stable ground outside the AOI rather than
         # inside the thing being measured - a distinction that changes the
