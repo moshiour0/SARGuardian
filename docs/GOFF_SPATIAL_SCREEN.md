@@ -45,8 +45,10 @@ This command does not download data and is not wired into the production backend
 - `mean_anomaly_m.tif`: mean positive local-magnitude anomaly over pairs that flagged the pixel.
 - `mean_directional_coherence.tif`: mean coherence of local residual vectors in flagged pairs.
 - `persistent_candidate_mask.tif`: connected components that persist in at least the configured number of pairs and meet the minimum component-size gate.
-- `candidates.geojson` (WGS84 coordinates) and `candidates.csv`: review polygons and coordinates.
-- `screen-summary.json`: AOI, grid, pair identity, source hashes, parameters, candidate counts, output hashes, and limitations.
+- `candidates.geojson` (WGS84 coordinates) and `candidates.csv`: review polygons and coordinates, plus mean residual displacement azimuth, DEM-derived downslope azimuth, slope, ellipsoidal elevation, directional misfit, fraction of candidate pixels within 45° of downslope, and alignment with the local ground-range direction.
+- `screen-summary.json`: AOI, grid, pair identity, source hashes, parameters, candidate counts, output hashes, terrain-direction review summary, and limitations.
+
+Terrain direction is reported **after** candidate screening; it is not used to force a candidate to agree with slope. A downslope match is not proof of a landslide, and a mismatch is not a definitive rejection because real motion can be three-dimensional, rotational, or affected by radar geometry. The ground-range alignment is an artefact comparator, not an automatic correction.
 
 Empty output means no candidate met these exploratory gates on the usable pixels; it does **not** mean no motion or no hazard exists. A product with no usable AOI pixels is a data-support limitation, not a measured zero displacement.
 
