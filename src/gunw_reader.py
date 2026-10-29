@@ -592,7 +592,7 @@ def read_gunw(
         inside_components = components[quality_valid & aoi_mask]
         if inside_components.size:
             ids, counts = np.unique(inside_components, return_counts=True)
-            target_comp = int(ids[int(np.argmax(counts)])
+            target_comp = int(ids[int(np.argmax(counts))])
 
     reference_component = None
     if auto_ref and xs is not None and ys is not None:
