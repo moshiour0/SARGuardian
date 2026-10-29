@@ -32,6 +32,7 @@ python src/goff_spatial_screen.py \
          /path/to/next-compatible-GOFF-pair.h5 \
   --dem /path/to/verified-dem.tif \
   --dem-vertical-crs EPSG:3855 \
+  --correlation-min none \
   --aoi-wkt 'POLYGON ((lon lat, lon lat, lon lat, lon lat))' \
   --out outputs/custom-aoi-goff-screen
 ```
@@ -59,9 +60,9 @@ For each pair, the screen:
 4. Requires a sufficiently large anomaly and high directional coherence of the residual vectors.
 5. Counts spatially coincident hits across independent pairs and retains only persistent connected components.
 
-The vertical conversion uses the public [PROJ EGM2008 geoid grid](https://cdn.proj.org/us_nga_egm08_25.tif). The Copernicus DEM height reference is EGM2008; see the [Copernicus DEM documentation](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM.html). Conversion is applied only when the caller explicitly declares §EPSG:3855§; otherwise the caller must declare that heights are already ellipsoidal.
+The vertical conversion uses the public [PROJ EGM2008 geoid grid](https://cdn.proj.org/us_nga_egm08_25.tif). The Copernicus DEM height reference is EGM2008; see the [Copernicus DEM documentation](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM.html). Conversion is applied only when the caller explicitly declares `EPSG:3855`; otherwise the caller must declare that heights are already ellipsoidal.
 
-The initial thresholds are adapted from Meena (2026), *Bhote Koshi 2026 ice–rock avalanche: NISAR L2 GOFF site series and footprint-wide offset-tracking screen — data and code*, Zenodo DOI [10.5281/zenodo.22730419](https://doi.org/10.5281/zenodo.22730419). The prototype adds a correlation threshold to the author's SNR gate, so it is **not an exact paper reproduction**. Those thresholds are not calibrated for arbitrary AOIs. The output includes this limitation explicitly.
+The initial thresholds are adapted from Meena (2026), *Bhote Koshi 2026 ice–rock avalanche: NISAR L2 GOFF site series and footprint-wide offset-tracking screen — data and code*, Zenodo DOI [10.5281/zenodo.22730419](https://doi.org/10.5281/zenodo.22730419). Use `--correlation-min none` for an author-like SNR-only quality gate, or leave the default `0.30` to add SARGuardian's stricter correlation filter. The latter is deliberately not a paper-equivalent gate. Component extraction uses 4-connectivity to match the author's default connected-component labelling. Even with `none`, this remains a reproduction-oriented implementation, not a validated exact paper reproduction: the geometry interpolation, vertical-datum correction, AOI edge support and dependency versions still must be cross-checked against the author's source implementation. Those thresholds are not calibrated for arbitrary AOIs. The output includes this limitation explicitly.
 
 ## External benchmark: what not to claim
 
@@ -74,7 +75,7 @@ This prototype has **not** rerun the source HDF5 and has not independently repro
 ## Required validation before any operational integration
 
 - Verify the DEM vertical datum against the product's ellipsoidal radar-grid heights, and document the vertical-datum conversion.
-- Compare a raw-pair screen against the author's exact SNR/geometry/parameter choices before enabling the additional correlation gate; record which choice changes the result.
+- Run first with `--correlation-min none` to align the author's SNR-only screen, then repeat with `--correlation-min 0.30`; compare hit masks, valid-pixel denominators and components.
 - Use matched spatial nulls and multiple-testing correction for the actual AOI, not just a z-score or a “persistent” label.
 - Test against held-out known positive and negative controls; quantify false alarms and missed detections.
 - Independently validate candidate locations, terrain orientation, glacier/debris-cover context and source-product maturity.
