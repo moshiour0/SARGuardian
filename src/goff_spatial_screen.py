@@ -1197,6 +1197,16 @@ def run_screen(
             "directional_coherence_min": coherence_min,
             "minimum_pairs": minimum_pairs, "minimum_component_pixels": minimum_component_pixels,
         },
+        "per_pair_statistics": [
+            {
+                "granule": report["granule"],
+                "valid_aoi_pixels": report["valid_aoi_pixels"],
+                "candidate_pixels": report["candidate_pixels"],
+                "candidate_aoi_fraction": report["candidate_aoi_fraction"],
+                "status": report["status"],
+            }
+            for report in reports
+        ],
         "parameter_source": {
             "adapted_from": "Meena (2026), NISAR GOFF source screening, Zenodo 10.5281/zenodo.22730419",
             "license": "CC BY 4.0 for code/data outside separately licensed extent_CC-BY-NC-4.0 folder",
