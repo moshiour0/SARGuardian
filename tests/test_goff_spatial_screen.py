@@ -49,6 +49,13 @@ def test_series_identity_allows_swath_change_but_not_release_or_track_change() -
         "20260726T233919_20260726T233954_20260819T233918_20260819T233953",
     )))
     assert a.series_key == b.series_key
+    seconds_variant = granule_name("028", "P05023", "098").replace(
+        "20260620T233921_20260620T233956_20260702T233920_20260702T233955",
+        "20260620T233922_20260620T233957_20260702T233921_20260702T233956",
+    )
+    same_interval = parse_identity(Path(seconds_variant))
+    assert same_interval.series_key == a.series_key
+    assert same_interval.pair_key == a.pair_key
     x = parse_identity(Path(granule_name("028", "X05026", "098")))
     assert x.series_key != a.series_key
     y = parse_identity(Path(granule_name("028", "P05023", "170")))
@@ -165,6 +172,13 @@ def test_series_gate_refuses_mixed_crids_before_temporal_combination() -> None:
         )
     with pytest.raises(ScreenError, match="MIXED_SERIES_IDENTITY"):
         validate_series([pair(identity), pair(mismatch)])
+
+    seconds_variant = parse_identity(Path(granule_name("028", "P05023").replace(
+        "20260620T233921_20260620T233956_20260702T233920_20260702T233955",
+        "20260620T233922_20260620T233957_20260702T233921_20260702T233956",
+    )))
+    with pytest.raises(ScreenError, match="DUPLICATE_ACQUISITION_INTERVALS"):
+        validate_series([pair(identity), pair(seconds_variant)])
 
 
 def test_raw_hdf5_to_ranked_candidate_outputs_end_to_end(tmp_path: Path) -> None:
