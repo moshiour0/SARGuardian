@@ -544,3 +544,48 @@ def test_track_floor_catalogue_rejects_unidentified_geometry(tmp_path):
     from inverse_velocity import normalize_track_id
     with pytest.raises(ValueError):
         normalize_track_id("unidentified stack")
+
+
+def test_fit_refuses_zero_speed_before_taking_the_inverse():
+    from datetime import date, timedelta
+    start = date(2026, 1, 1)
+    win = [
+        {"mid": start + timedelta(days=d), "v_mm_day": v}
+        for d, v in ((0, 20.0), (12, 0.0), (24, 30.0))
+    ]
+    result = fit_inverse_velocity(win)
+    assert result["status"] == "WITHHELD_ZERO_OR_NEAR_ZERO_SPEED_MAKES_INVERSE_UNDEFINED"
+    assert result["t_fail_date"] is None
+    assert not result["ci_bounded"]
+
+
+def test_forecast_is_withheld_when_the_fieller_failure_date_interval_is_unbounded():
+    from datetime import date, timedelta
+    start = date(2026, 1, 1)
+    speeds = [20.0, 25.0, 1.0 / 0.035]
+    rows = [{"epoch": start + timedelta(days=12 * i), "cumulative_mm": 0.0,
+             "error_mm": None} for i in range(4)]
+    cumulative = 0.0
+    rows[0]["cumulative_mm"] = 0.0
+    for i, speed in enumerate(speeds, start=1):
+        cumulative += speed * 12.0
+        rows[i]["cumulative_mm"] = cumulative
+    result = run(rows, noise_floor=1.0)
+    assert not result["alarm"], "an unbounded ratio interval is not a forecast"
+    assert result["reason"] == "failure-date confidence interval unbounded; forecast withheld"
+    assert result["unbounded_failure_date_windows"] >= 1
+
+
+def test_nonpositive_pair_floor_is_not_used_as_a_zero_threshold():
+    from datetime import date, timedelta
+    start = date(2026, 1, 1)
+    rows = [
+        {"epoch": start + timedelta(days=12 * i), "cumulative_mm": value, "error_mm": None}
+        for i, value in enumerate((0.0, 240.0, 540.0, 882.857))
+    ]
+    floors = {(rows[0]["epoch"], rows[1]["epoch"]): 0.0}
+    result = analyse_block("TEST", 1, rows, noise_floor=1.0, window=3,
+                           r2_min=0.8, horizon_days=120, sig_multiple=1.0,
+                           event_date=None, floors=floors)
+    assert not result["alarm"]
+    assert (rows[0]["epoch"], rows[1]["epoch"]) in result["dropped"]
