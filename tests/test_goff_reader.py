@@ -179,6 +179,9 @@ def test_coherent_high_offset_patch_survives_for_spatial_review(tmp_path):
     assert layer["screen_valid"][row, col]
     assert layer["outlier_mask"][row, col], "the truth patch must exercise the global MAD gate"
     assert not layer["valid"][row, col], "conservative pairwise stats still exclude the outlier"
+    rejected = sum(int(n) for n in layer["gate_rejections"].values())
+    assert layer["source_total_pixels"] - int(layer["valid"].sum()) == rejected
+    assert layer["gates"]["strict robust-inlier pixels"] == int(layer["valid"].sum())
 
     exported = export_clipped(result, tmp_path / "exports")
     assert exported and exported[0]["export_status"] == "WRITTEN"
@@ -189,4 +192,11 @@ def test_coherent_high_offset_patch_survives_for_spatial_review(tmp_path):
         assert np.isfinite(src.read(1)[rr, cc]), "screen raster must retain the high range offset"
         assert np.isfinite(src.read(2)[rr, cc]), "screen raster must retain the paired azimuth offset"
         assert src.read(4)[rr, cc] == 0.0, "band 4 must identify a global-MAD outlier"
-        assert src.tags()["outliers_preserved_for_screening"] == "true"
+        import json
+        tags = src.tags()
+        assert tags["outliers_preserved_for_screening"] == "true"
+        assert int(tags["source_total_pixels"]) == shape[0] * shape[1]
+        gate_counts = json.loads(tags["gate_counts_json"])
+        gate_rejections = json.loads(tags["gate_rejections_json"])
+        assert gate_counts["strict robust-inlier pixels"] == int(layer["valid"].sum())
+        assert sum(int(n) for n in gate_rejections.values()) == shape[0] * shape[1] - int(layer["valid"].sum())
