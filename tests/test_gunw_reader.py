@@ -430,3 +430,15 @@ def test_valid_zero_phase_is_not_dropped_without_fill_evidence(tmp_path):
     assert result["valid"][row, col], (
         "zero phase with valid component/mask/coherence metadata must remain measurable"
     )
+
+
+def test_layover_shadow_mask_is_not_a_substitute_for_packed_gunw_mask(tmp_path):
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    with h5py.File(f, "a") as h5:
+        parent = h5[synth.UNW]
+        original = parent["mask"][()]
+        del parent["mask"]
+        parent.create_dataset("layoverShadowMask", data=original)
+    with pytest.raises(RuntimeError, match="missing required shape-compatible layers"):
+        read_gunw(f, auto_ref=True)
