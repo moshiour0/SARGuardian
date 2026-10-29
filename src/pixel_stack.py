@@ -531,6 +531,14 @@ def write_geotiff(res: dict, out: Path) -> None:
         dst.set_band_description(3, "Observed valid pair count (support diagnostic; not motion)")
         dst.write(res["longest_contiguous_pair_count"].astype("float32"), 4)
         dst.set_band_description(4, "Longest contiguous valid pair count (support diagnostic; not motion)")
+        pair_records = [
+            {
+                "source": str(Path(p.get("path", "")).name),
+                "reference_date": p["ref"].isoformat(),
+                "secondary_date": p["sec"].isoformat(),
+            }
+            for p in res["run"]
+        ]
         dst.update_tags(
             support_policy="velocity bands require complete connected pair chain",
             partial_support_pixels=str(int(res["partial_support"].sum())),
@@ -541,6 +549,11 @@ def write_geotiff(res: dict, out: Path) -> None:
             common_mode_removed=str(res["common_mode_removed"]).lower(),
             common_mode_policy=str(res["common_mode_policy"]),
             common_mode_pair_medians_mm_json=json.dumps(res["common_mode_pair_medians_mm"], separators=(",", ":")),
+            pair_records_json=json.dumps(pair_records, separators=(",", ":")),
+            geometry=str(res["run"][0].get("geom", "unknown")),
+            first_acquisition_date=str(res["run"][0]["ref"].isoformat()),
+            last_acquisition_date=str(res["run"][-1]["sec"].isoformat()),
+            source_pair_count=str(len(res["run"])),
             scientific_claim_limit="Relative LOS trend diagnostic; not independent geophysical validation or a hazard finding.",
         )
     logger.info("Wrote %s", out)
