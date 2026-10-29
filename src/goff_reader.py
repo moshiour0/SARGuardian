@@ -252,8 +252,17 @@ def read_goff(
                 raise RuntimeError(
                     f"{L['group']}: AOI mask shape {aoi_mask.shape} does not match offset raster shape {valid.shape}."
                 )
+            before_aoi = int(valid.sum())
             valid &= aoi_mask
             gates["inside AOI"] = int(valid.sum())
+            gates["outside AOI rejected"] = before_aoi - int(valid.sum())
+
+        # Keep an immutable quality-valid screen mask before any global MAD
+        # culling. A coherent local movement patch may be a global outlier; it
+        # must remain reviewable by the target-free spatial candidate screen.
+        # Standard pair medians/floors continue to use the stricter post-MAD mask.
+        screen_valid = valid.copy()
+        outlier_mask = np.zeros_like(valid, dtype=bool)
 
         # Reference: offsets carry a bias from orbit and coregistration error,
         # exactly as unwrapped phase carries an arbitrary constant.
@@ -360,16 +369,24 @@ def read_goff(
         if valid.sum() > 10 and cull_sigma > 0:
             base_valid = valid.copy()
             range_keep = mad_inlier_mask(rng, base_valid, cull_sigma)
-            valid &= range_keep
-            gates[f"range within {cull_sigma:g}x MAD"] = int(valid.sum())
+            azimuth_keep = (
+                mad_inlier_mask(azi, base_valid, cull_sigma)
+                if azi is not None else np.ones_like(base_valid, dtype=bool)
+            )
+            robust_inlier = base_valid & range_keep & azimuth_keep
+            outlier_mask = base_valid & ~robust_inlier
+            valid = robust_inlier
+            gates[f"range within {cull_sigma:g}x MAD"] = int((base_valid & range_keep).sum())
+            gates["range-axis outliers rejected"] = int((base_valid & ~range_keep).sum())
             if azi is not None:
-                azimuth_keep = mad_inlier_mask(azi, base_valid, cull_sigma)
-                valid &= azimuth_keep
-                gates[f"joint range+azimuth within {cull_sigma:g}x MAD"] = int(valid.sum())
-                gates["range-axis outliers rejected"] = int((base_valid & ~range_keep).sum())
+                gates[f"azimuth within {cull_sigma:g}x MAD"] = int((base_valid & azimuth_keep).sum())
                 gates["azimuth-axis outliers rejected"] = int((base_valid & ~azimuth_keep).sum())
+                gates["joint range+azimuth within {cull_sigma:g}x MAD"] = int(valid.sum())
             else:
                 gates[f"within {cull_sigma:g}x MAD"] = int(valid.sum())
+            gates["global MAD outlier vectors retained for spatial review"] = int(outlier_mask.sum())
+        else:
+            outlier_mask = np.zeros_like(valid, dtype=bool)
 
         out[name] = {
             "layer": name,
@@ -379,6 +396,8 @@ def read_goff(
             "snr": L["snr"],
             "range_var": L["rng_var"],
             "valid": valid,
+            "screen_valid": screen_valid,
+            "outlier_mask": outlier_mask,
             "xs": L["xs"], "ys": L["ys"], "epsg": L["epsg"],
             # Cells the AOI covers, so coverage has a denominator that means
             # something. See gunw_reader.report for what quoting the frame
@@ -438,7 +457,15 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
     outdir.mkdir(parents=True, exist_ok=True)
 
     for name, L in sorted(res["layers"].items()):
+        # Exports serve two purposes: conservative pairwise stats and a broad
+        # AOI-wide anomaly screen. Keep their masks separate. Band 4 will flag
+        # pixels rejected by global MAD so the candidate screen can inspect
+        # them without treating them as ordinary inlier measurements.
         valid = L["valid"]
+        screen_valid = np.asarray(L.get("screen_valid", valid), dtype=bool)
+        outlier_mask = np.asarray(L.get("outlier_mask", screen_valid & ~valid), dtype=bool)
+        if screen_valid.shape != valid.shape or outlier_mask.shape != valid.shape:
+            raise RuntimeError(f"{name}: GOFF screen/robust masks have incompatible shapes.")
         if L["xs"] is None or L["ys"] is None:
             raise RuntimeError(f"{name}: cannot export GOFF layer without x/y coordinates.")
         if L["epsg"] is None:
@@ -472,14 +499,24 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         def band(key, scale=1.0):
             if L.get(key) is None:
                 return None
-            full = np.where(valid, L[key] * scale, np.nan)
+            full = np.where(screen_valid, L[key] * scale, np.nan)
             if grid is not None:
                 return _g.place_on_grid(full, grid)
             return full[r0:r1, c0:c1].astype("float32")
 
-        bands = [(band("range_m", 1000.0), "slant-range offset (mm)"),
-                 (band("azimuth_m", 1000.0), "along-track offset (mm)"),
-                 (band("correlation"), "correlation")]
+        def mask_band(values):
+            full = np.where(screen_valid, np.asarray(values, dtype=np.float32), np.nan)
+            if grid is not None:
+                return _g.place_on_grid(full, grid)
+            return full[r0:r1, c0:c1].astype("float32")
+
+        outlier_flag = np.where(screen_valid, np.where(outlier_mask, 0.0, 1.0), np.nan)
+        bands = [
+            (band("range_m", 1000.0), "slant-range offset (mm)"),
+            (band("azimuth_m", 1000.0), "along-track offset (mm)"),
+            (band("correlation"), "correlation"),
+            (mask_band(outlier_flag), "robust inlier flag (1=inlier, 0=global-MAD outlier retained for review)"),
+        ]
         bands = [(a, d) for a, d in bands if a is not None]
         if not bands:
             continue
@@ -512,6 +549,12 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                             secondary=res["secondary_date"],
                             layer=name, source=res["file"],
                             aoi_name=str(res["aoi_name"]),
+                            outliers_preserved_for_screening="true",
+                            robust_screen_policy="pre_global_MAD_quality_valid",
+                            screen_valid_pixels=str(int(screen_valid.sum())),
+                            robust_inlier_pixels=str(int(valid.sum())),
+                            robust_outlier_pixels=str(int(outlier_mask.sum())),
+                            outlier_flag_band="4",
                             aoi_mask_applied="true",
                             correlation_min=str(res["correlation_min"]),
                             snr_min=str(res["snr_min"]),
@@ -529,6 +572,8 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                     "export_rows": bands[0][0].shape[0],
                     "export_cols": bands[0][0].shape[1],
                     "export_valid_px": valid_export_px,
+                    "export_robust_inlier_px": int(valid.sum()),
+                    "export_screen_outlier_px": int(outlier_mask.sum()),
                     "export_status": export_status,
                     "export_grid_policy": ("common_aoi_lattice" if grid is not None
                                            else "per_product_aoi_window_not_common_lattice")})
