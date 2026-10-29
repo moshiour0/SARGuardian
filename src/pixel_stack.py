@@ -224,7 +224,6 @@ def stack(run: list[dict], remove_common_mode: bool = True):
         longest_contiguous_pair_count = np.maximum(
             longest_contiguous_pair_count, current_contiguous_pair_count
         )
-    partial_support = (observed_pair_count > 0) & ~np.isfinite(cum).all(axis=0)
     has_any_observation = observed_pair_count > 0
     cum[0, has_any_observation] = 0.0
     for k in range(cube.shape[0]):
@@ -232,8 +231,9 @@ def stack(run: list[dict], remove_common_mode: bool = True):
         observed = np.isfinite(cube[k]) & np.isfinite(previous)
         cum[k + 1, observed] = previous[observed] + cube[k, observed]
 
-    days = np.array([0.0] + list(np.cumsum([(r["sec"] - r["ref"]).days for r in run])))
     complete = np.isfinite(cum).all(axis=0)
+    partial_support = (observed_pair_count > 0) & ~complete
+    days = np.array([0.0] + list(np.cumsum([(r["sec"] - r["ref"]).days for r in run])))
     valid_pair_count = int(complete.sum())
 
     vel = np.full((H, W), np.nan, dtype="float32")
