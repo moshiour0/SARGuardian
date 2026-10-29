@@ -630,7 +630,13 @@ def invert_component(pairs: list[Pair], epochs: list[date]) -> dict:
         coef, *_ = np.linalg.lstsq(A, cumulative, rcond=None)
         velocity = float(coef[0])
         fit_res = A @ coef - cumulative
-        if len(epochs) > 2:
+        # A slope fit to the cumulative curve is not an independent
+        # substitute for network closure. If the measured pair graph is exactly
+        # determined, it has zero residual DOF and cannot provide a data-derived
+        # uncertainty for the underlying pair inversion. Keep the slope as a
+        # diagnostic, but withhold its formal error unless the network itself
+        # has redundant measured edges.
+        if dof > 0:
             s = np.sqrt(np.sum(fit_res ** 2) / (len(epochs) - 2))
             try:
                 velocity_err = float(s * np.sqrt(np.linalg.inv(A.T @ A)[0, 0]))
