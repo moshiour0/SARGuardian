@@ -9,7 +9,7 @@ import pytest
 import synth
 
 import goff_reader as goff
-from goff_reader import layer_groups, mad_inlier_mask, read_goff, robust_sigma
+from goff_reader import export_clipped, layer_groups, mad_inlier_mask, read_goff, robust_sigma
 
 
 def test_layer_groups_ignore_processing_metadata_parameter_nodes():
