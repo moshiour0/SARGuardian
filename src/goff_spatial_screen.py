@@ -813,7 +813,7 @@ def run_screen(
     geojson_path.write_text(json.dumps({
         "type": "FeatureCollection", "features": candidate_features,
         "properties": {"status": status, "interpretation": "Exploratory review candidates; not hazard detections."},
-    }, indent=2, ensure_ascii=False) + "\\n", encoding="utf-8")
+    }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     csv_path = out_dir / "candidates.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(
@@ -872,7 +872,7 @@ def run_screen(
         name: sha256_file(out_dir / filename) for name, filename in summary["outputs"].items()
     }
     (out_dir / "screen-summary.json").write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\\n", encoding="utf-8"
+        json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
     )
     return summary
 
