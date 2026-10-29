@@ -293,3 +293,14 @@ def test_raw_hdf5_to_ranked_candidate_outputs_end_to_end(tmp_path: Path) -> None
     for feature in geojson["features"]:
         coords = feature["geometry"]["coordinates"][0]
         assert all(-180 <= point[0] <= 180 and -90 <= point[1] <= 90 for point in coords)
+
+
+def test_target_free_screen_requires_explicit_dem_vertical_datum(tmp_path: Path) -> None:
+    from src.goff_spatial_screen import run_screen
+
+    with pytest.raises(ScreenError, match="DEM_VERTICAL_DATUM_REQUIRED"):
+        run_screen(
+            [], tmp_path / "missing-dem.tif",
+            "POLYGON ((85.0 28.0, 85.1 28.0, 85.1 28.1, 85.0 28.0))",
+            tmp_path / "out",
+        )
