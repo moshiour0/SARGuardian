@@ -9,6 +9,7 @@ survives four rounds of "I re-ran it and it looks the same".
 
 from __future__ import annotations
 
+import h5py
 import numpy as np
 import pytest
 
@@ -360,3 +361,44 @@ def test_unvalidated_gunw_mask_dtypes_fail_closed():
         decode_gunw_mask(np.array([[12]], dtype=np.uint16))
     with pytest.raises(TypeError, match="Unsupported GUNW mask dtype"):
         decode_gunw_mask(np.array([[12]], dtype=np.int64))
+
+
+def test_missing_mask_fails_closed_instead_of_skipping_quality_gates(tmp_path):
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    with h5py.File(f, "a") as h5:
+        del h5[synth.UNW]["mask"]
+    with pytest.raises(RuntimeError, match="missing required shape-compatible layers"):
+        read_gunw(f, auto_ref=True)
+
+
+def test_missing_connected_components_fails_closed(tmp_path):
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    with h5py.File(f, "a") as h5:
+        del h5[f"{synth.UNW}/HH"]["connectedComponents"]
+    with pytest.raises(RuntimeError, match="connectedComponents"):
+        read_gunw(f, auto_ref=True)
+
+
+def test_referenced_measurement_does_not_leak_across_unwrapping_components(tmp_path):
+    f = tmp_path / synth.granule_name()
+    truth = synth.write_gunw(f, truth_mm=50.0, far_component=2, far_fringes=2.0)
+    # Add a second valid connected component within the actual AOI. The reader
+    # must not subtract one component's arbitrary phase constant from the other.
+    with h5py.File(f, "a") as h5:
+        path = f"{synth.UNW}/HH/connectedComponents"
+        components = h5[path][()]
+        cols = np.indices(components.shape)[1]
+        second = truth["aoi"] & (cols > int(components.shape[1] * 0.58))
+        components[second] = 7
+        h5[path][...] = components
+    result = read_gunw(f, auto_ref=True)
+    assert result["reference_component_id"] is not None
+    assert result["component_rejected_pixels"] > 0
+    assert not (result["valid"] & (result["components"] == 7)).any() if "components" in result else True
+    # The explicit validity mask excludes incompatible-component measurements.
+    with h5py.File(f, "r") as h5:
+        components = h5[f"{synth.UNW}/HH/connectedComponents"][()]
+    assert not (result["valid"] & (components != result["reference_component_id"])).any()
+    assert result["gate_rejections"]["different component from reference"] > 0
