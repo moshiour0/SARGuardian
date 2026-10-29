@@ -101,9 +101,15 @@ def align(rasters: list[dict]) -> tuple[np.ndarray, np.ndarray, dict]:
     metas = []
     for r in rasters:
         with rasterio.open(r["path"]) as src:
-            metas.append({"t": src.transform, "h": src.height, "w": src.width,
-                          "crs": src.crs, "disp": src.read(1),
-                          "coh": src.read(2) if src.count > 1 else None})
+            transform = src.transform
+            if src.crs is None:
+                raise SystemExit(f"Raster has no CRS: {r['path']}")
+            if abs(transform.b) > 1e-12 or abs(transform.d) > 1e-12:
+                raise SystemExit(f"Rotated/sheared raster is unsupported by this north-up stack: {r['path']}")
+            disp = src.read(1, masked=True).filled(np.nan).astype("float32")
+            coh = src.read(2, masked=True).filled(np.nan).astype("float32") if src.count > 1 else None
+            metas.append({"t": transform, "h": src.height, "w": src.width,
+                          "crs": src.crs, "disp": disp, "coh": coh})
 
     res = {(round(m["t"].a, 9), round(m["t"].e, 9)) for m in metas}
     if len(res) != 1:
@@ -112,12 +118,38 @@ def align(rasters: list[dict]) -> tuple[np.ndarray, np.ndarray, dict]:
         raise SystemExit("Rasters are in different CRSs")
 
     px, py = metas[0]["t"].a, metas[0]["t"].e
+    if not (np.isfinite(px) and np.isfinite(py) and px > 0 and py < 0):
+        raise SystemExit(f"Expected a finite north-up raster grid with positive x and negative y posting; got {(px, py)}")
+    if any(
+        not np.isclose(m["t"].a, px, rtol=0, atol=1e-9)
+        or not np.isclose(m["t"].e, py, rtol=0, atol=1e-9)
+        for m in metas
+    ):
+        raise SystemExit("Rasters have incompatible x/y posting.")
     x0 = min(m["t"].c for m in metas)
     y0 = max(m["t"].f for m in metas)
     x1 = max(m["t"].c + m["w"] * px for m in metas)
     y1 = min(m["t"].f + m["h"] * py for m in metas)
-    W = int(round((x1 - x0) / px))
-    H = int(round((y1 - y0) / py))
+
+    # Do not round a half-pixel or off-lattice offset into false spatial
+    # agreement. Every source origin and the union extent must fall on the
+    # same lattice before any array assignment.
+    tolerance_px = 1e-6
+    for m in metas:
+        raw_col = (m["t"].c - x0) / px
+        raw_row = (m["t"].f - y0) / py
+        if abs(raw_col - round(raw_col)) > tolerance_px or abs(raw_row - round(raw_row)) > tolerance_px:
+            raise SystemExit(
+                f"Raster origin is not aligned to the common pixel lattice: {m['path'] if 'path' in m else m['t']}"
+            )
+    width_float = (x1 - x0) / px
+    height_float = (y1 - y0) / py
+    if abs(width_float - round(width_float)) > tolerance_px or abs(height_float - round(height_float)) > tolerance_px:
+        raise SystemExit("Raster union extent is not an integer number of common-grid pixels.")
+    W = int(round(width_float))
+    H = int(round(height_float))
+    if W <= 0 or H <= 0:
+        raise SystemExit(f"Invalid common-grid dimensions {(H, W)}.")
 
     cube = np.full((len(metas), H, W), np.nan, dtype="float32")
     cohs = np.full((len(metas), H, W), np.nan, dtype="float32")
@@ -156,6 +188,11 @@ def chain(rasters: list[dict]) -> list[list[dict]]:
 
 
 def stack(run: list[dict], remove_common_mode: bool = True):
+    if len(run) < 2:
+        raise ValueError(
+            "Per-pixel velocity requires at least two consecutive pair intervals "
+            "(three acquisition epochs); one pair cannot estimate residual-based uncertainty."
+        )
     cube, cohs, geo = align(run)
     n_ep = len(run) + 1
     H, W = geo["shape"]
@@ -170,27 +207,47 @@ def stack(run: list[dict], remove_common_mode: bool = True):
                 cube[k] -= med
 
     cum = np.full((n_ep, H, W), np.nan, dtype="float32")
-    cum[0] = 0.0
+    # The first epoch is a relative zero only where at least one actual
+    # pairwise measurement exists; it is not synthetic support for nodata.
+    observed_pair_count = np.isfinite(cube).sum(axis=0).astype("uint16")
+    has_any_observation = observed_pair_count > 0
+    cum[0, has_any_observation] = 0.0
     for k in range(cube.shape[0]):
-        cum[k + 1] = cum[k] + cube[k]
+        previous = cum[k]
+        observed = np.isfinite(cube[k]) & np.isfinite(previous)
+        cum[k + 1, observed] = previous[observed] + cube[k, observed]
 
     days = np.array([0.0] + list(np.cumsum([(r["sec"] - r["ref"]).days for r in run])))
-    ok = np.isfinite(cum).all(axis=0)
+    complete = np.isfinite(cum).all(axis=0)
+    valid_pair_count = int(complete.sum())
 
     vel = np.full((H, W), np.nan, dtype="float32")
     sig = np.full((H, W), np.nan, dtype="float32")
-    if ok.any():
-        y = cum[:, ok]                                   # (n_ep, n_px)
+    dof = n_ep - 2
+    if dof <= 0:
+        # Defensive invariant even though the public API gate above requires
+        # at least three epochs.
+        raise ValueError("Insufficient temporal degrees of freedom for a residual-based velocity uncertainty.")
+    if complete.any():
+        y = cum[:, complete]                            # (n_ep, n_px)
         A = np.vstack([days, np.ones_like(days)]).T
+        if np.linalg.matrix_rank(A) < 2 or not np.isfinite(A).all():
+            raise ValueError("Temporal design matrix is singular or non-finite.")
         coef, *_ = np.linalg.lstsq(A, y, rcond=None)
         resid = A @ coef - y
-        dof = max(n_ep - 2, 1)
         s = np.sqrt((resid ** 2).sum(axis=0) / dof)
         se = s * np.sqrt(np.linalg.inv(A.T @ A)[0, 0])
-        vel[ok] = coef[0]
-        sig[ok] = se
-    return {"velocity": vel, "sigma": sig, "cumulative": cum, "coherence": cohs,
-            "valid": ok, "days": days, "geo": geo, "run": run}
+        vel[complete] = coef[0]
+        sig[complete] = se
+    return {
+        "velocity": vel, "sigma": sig, "cumulative": cum, "coherence": cohs,
+        "valid": complete, "days": days, "geo": geo, "run": run,
+        "observed_pair_count": observed_pair_count,
+        "complete_series_pixels": valid_pair_count,
+        "total_grid_pixels": int(complete.size),
+        "minimum_pairs_for_velocity": 2,
+        "uncertainty_status": "ESTIMABLE_FROM_RESIDUAL_DOF" if dof > 0 else "WITHHELD_NO_DOF",
+    }
 
 
 def report(res: dict, label: str) -> None:
@@ -199,8 +256,14 @@ def report(res: dict, label: str) -> None:
     print(f"\n{'='*72}\n{label}   {run[0]['ref']} .. {run[-1]['sec']}  "
           f"({len(run)} pairs, {int(res['days'][-1])} d)\n{'='*72}")
     n = int(ok.sum())
-    print(f"  pixels with a complete series : {n:,} of {ok.size:,} "
-          f"({100*n/ok.size:.0f}%)")
+    total = int(ok.size)
+    partial = int(((res["observed_pair_count"] > 0) & ~ok).sum())
+    never = int((res["observed_pair_count"] == 0).sum())
+    print(f"  pixels with a complete series : {n:,} of {total:,} "
+          f"({100*n/max(total, 1):.1f}%)")
+    print(f"  partial temporal support      : {partial:,} px "
+          "(some observed pairs, but not a complete connected chain)")
+    print(f"  no valid pair observations    : {never:,} px")
     if n == 0:
         print("  nothing to fit"); return
 
