@@ -240,7 +240,7 @@ def test_raw_hdf5_to_ranked_candidate_outputs_end_to_end(tmp_path: Path) -> None
     for granule, subswath, reference, secondary, seed in specifications:
         name = (
             f"NISAR_L2_PR_GOFF_{granule}_098_A_016_{subswath}_4000_SH_"
-            f"{reference}_{reference[:-6]}T000030_{secondary}_{secondary[:-6]}T000030_"
+            f"{reference}_{reference[:9]}000030_{secondary}_{secondary[:9]}000030_"
             "P05023_N_F_J_001.h5"
         )
         path = tmp_path / name
