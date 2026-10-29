@@ -315,3 +315,31 @@ def test_terrain_aspect_uses_clockwise_from_north_azimuth() -> None:
     slope, aspect = terrain_slope_and_downslope(elevation, pixel_size_m=80.0)
     assert np.nanmedian(slope) > 0.5
     assert abs((float(np.nanmedian(aspect)) - 270.0 + 180.0) % 360.0 - 180.0) < 2.0
+
+
+def test_author_like_mode_does_not_require_correlation_values() -> None:
+    east, north, snr, correlation, aoi = _fixture_arrays()
+    correlation[:] = np.nan
+    author_like = score_pair_arrays(
+        east, north, snr, correlation, aoi, correlation_min=None
+    )
+    assert author_like["candidate_pixels"] >= 10
+    guarded = score_pair_arrays(
+        east, north, snr, correlation, aoi, correlation_min=0.30
+    )
+    assert guarded["candidate_pixels"] == 0
+
+
+def test_component_connectivity_matches_four_connected_author_extraction() -> None:
+    from rasterio.crs import CRS
+    from rasterio.transform import Affine
+    from src.goff_spatial_screen import _component_rows
+
+    mask = np.array([[True, False], [False, True]], dtype=bool)
+    components = _component_rows(
+        mask, Affine(80, 0, 0, 0, -80, 160), CRS.from_epsg(32645), 1
+    )
+    # Diagonal contact is not an edge connection under the author's default
+    # scipy.ndimage.label structure (4-connectivity).
+    assert len(components) == 2
+    assert {component["pixels_approx"] for component in components} == {1}
