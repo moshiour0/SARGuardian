@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - science/valid-pixel-target4-9-audit
+      - fix/science-regression-guards-20261029
     paths:
       - "src/**"
       - "tests/**"
