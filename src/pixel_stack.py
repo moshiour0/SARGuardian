@@ -188,22 +188,26 @@ def align(rasters: list[dict]) -> tuple[np.ndarray, np.ndarray, dict]:
 
 def chain(rasters: list[dict]) -> list[list[dict]]:
     """
-    Contiguous runs within ONE geometry.
+    Contiguous runs within one exact measurement network.
 
-    Ascending and descending measure different components of the same 3-D
-    motion and can never be chained, however neatly their dates happen to line
-    up. Grouping first makes that impossible rather than merely unlikely.
+    ASC/DESC, frame, subswath, bandwidth, polarization and CRID are kept
+    separate. A common path/look label alone does not prove that two GUNW
+    rasters observe the same LOS projection or processing lineage.
     """
     runs = []
-    for geom in sorted({r["geom"] for r in rasters}):
-        group = sorted((r for r in rasters if r["geom"] == geom),
-                       key=lambda r: r["ref"])
+    network_ids = sorted({r.get("network_id") for r in rasters if r.get("network_id")})
+    for network_id in network_ids:
+        group = sorted(
+            (r for r in rasters if r.get("network_id") == network_id),
+            key=lambda r: (r["ref"], r["sec"]),
+        )
         cur = [group[0]]
         for a, b in zip(group, group[1:]):
             if a["sec"] == b["ref"]:
                 cur.append(b)
             else:
-                runs.append(cur); cur = [b]
+                runs.append(cur)
+                cur = [b]
         runs.append(cur)
     return runs
 
