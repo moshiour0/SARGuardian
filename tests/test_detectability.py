@@ -38,6 +38,12 @@ a single cell.
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from datetime import date, timedelta
+from io import StringIO
+from types import SimpleNamespace
+import warnings
+
 import math
 import subprocess
 import sys
@@ -47,6 +53,150 @@ import numpy as np
 import pytest
 
 from detectability import Detector, Precursor, simulate
+from pixel_stack import _correlation_length_km, chain, parse_export, report
+
+# ---------------------------------------------------------------------------
+# GUNW pixel-stack network and spatial-noise gates
+# ---------------------------------------------------------------------------
+def _pixel_stack_geo(pixel_size_m: float = 200.0) -> dict:
+    return {"transform": SimpleNamespace(a=pixel_size_m)}
+
+
+def _sparse_pixel_positions():
+    return [(5, 5), (15, 17), (25, 29), (35, 41), (45, 53), (55, 65),
+            (65, 8), (8, 70), (70, 70), (40, 10), (10, 40), (30, 60)]
+
+
+def test_gunw_chain_does_not_join_different_subswaths_or_crids():
+    """Same track/look and consecutive dates do not make different networks compatible."""
+    first = date(2026, 6, 8)
+    second = date(2026, 6, 20)
+    third = date(2026, 7, 2)
+    rasters = [
+        {
+            "geom": "A098",
+            "network_id": "A098-F016-SW023-BW4000-SH-X05026",
+            "ref": first,
+            "sec": second,
+        },
+        {
+            "geom": "A098",
+            "network_id": "A098-F016-SW024-BW4000-SH-P05023",
+            "ref": second,
+            "sec": third,
+        },
+    ]
+
+    runs = chain(rasters)
+    assert len(runs) == 2
+    assert all(len(run) == 1 for run in runs)
+    assert {run[0]["network_id"] for run in runs} == {
+        "A098-F016-SW023-BW4000-SH-X05026",
+        "A098-F016-SW024-BW4000-SH-P05023",
+    }
+
+
+def test_parse_export_preserves_complete_network_identity(tmp_path):
+    """The GeoTIFF source tag must retain frame/swath/bandwidth/pol/CRID."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "GUNW_20260608_20260620_PR.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=2,
+        dtype="float32",
+        crs="EPSG:32645",
+        transform=from_origin(500000, 3000000, 80, 80),
+    ) as ds:
+        ds.write(np.ones((2, 2), dtype="float32"), 1)
+        ds.write(np.ones((2, 2), dtype="float32"), 2)
+        ds.update_tags(
+            source=(
+                "NISAR_L2_PR_GUNW_022_098_A_016_023_4000_SH_"
+                "20260608T233922_20260608T233956_20260620T233921_"
+                "20260620T233956_P05023_N_F_J_001.h5"
+            )
+        )
+
+    parsed = parse_export(path)
+    assert parsed is not None
+    assert parsed["geom"] == "A098"
+    assert parsed["network_id"] == "A098-F016-SW023-BW4000-SH-P05023"
+
+
+def test_sparse_complete_pixels_withhold_spatial_noise_correlation():
+    """A handful of isolated valid pixels cannot estimate a spatial null."""
+    velocity = np.full((80, 80), np.nan, dtype="float32")
+    valid = np.zeros(velocity.shape, dtype=bool)
+    for row, col in _sparse_pixel_positions():
+        velocity[row, col] = 1.0
+        valid[row, col] = True
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        assert _correlation_length_km(velocity, valid, _pixel_stack_geo()) is None
+
+
+def test_dense_valid_pixels_can_estimate_spatial_correlation():
+    rng = np.random.default_rng(23)
+    velocity = rng.normal(0.0, 1.0, size=(80, 80)).astype("float32")
+    valid = np.ones(velocity.shape, dtype=bool)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        estimate = _correlation_length_km(velocity, valid, _pixel_stack_geo())
+
+    assert estimate is not None
+    assert estimate >= 0.2
+
+
+def test_sparse_stack_verdict_is_not_testable_not_no_detection():
+    """Withheld noise calibration must not be presented as evidence of no motion."""
+    velocity = np.full((80, 80), np.nan, dtype="float32")
+    sigma = np.full_like(velocity, np.nan)
+    valid = np.zeros(velocity.shape, dtype=bool)
+    observed = np.zeros(velocity.shape, dtype="uint16")
+    for row, col in _sparse_pixel_positions():
+        velocity[row, col] = 0.5
+        sigma[row, col] = 0.01
+        valid[row, col] = True
+        observed[row, col] = 3
+
+    first = date(2026, 6, 1)
+    run = [
+        {"ref": first, "sec": first + timedelta(days=12)},
+        {"ref": first + timedelta(days=12), "sec": first + timedelta(days=24)},
+        {"ref": first + timedelta(days=24), "sec": first + timedelta(days=36)},
+    ]
+    result = {
+        "velocity": velocity,
+        "sigma": sigma,
+        "valid": valid,
+        "run": run,
+        "days": np.array([0.0, 12.0, 24.0, 36.0]),
+        "observed_pair_count": observed,
+        "common_mode_policy": "PAIRWISE_MEDIAN_REMOVED",
+        "uncertainty_status": "RESIDUAL_BASED_DIAGNOSTIC_NOT_INDEPENDENTLY_VALIDATED",
+        "geo": _pixel_stack_geo(),
+    }
+
+    output = StringIO()
+    with redirect_stdout(output), warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        verdict = report(result, "A098 chain 1")
+
+    rendered = output.getvalue()
+    assert verdict is None
+    assert result["spatial_null_test_status"] == "WITHHELD_INSUFFICIENT_SPATIAL_NEIGHBOR_SUPPORT"
+    assert "VERDICT: NOT TESTABLE" in rendered
+    assert "NO DETECTION" not in rendered
+    assert "noise-only cluster test        : WITHHELD" in rendered
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
