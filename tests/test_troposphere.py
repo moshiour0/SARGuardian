@@ -248,3 +248,18 @@ def test_an_undefined_correlation_is_not_reported_as_significant():
     assert not np.isfinite(const["p_value"]), (
         f"an undefined correlation was scored p={const['p_value']!r}; "
         "0.0 would star it *** in the table")
+
+
+def test_constant_displacement_has_undefined_correlation_without_runtime_warning():
+    """A flat signal has no Pearson r; it must not trigger divide-by-zero warnings."""
+    import warnings
+
+    elev = np.linspace(3000.0, 7000.0, 400)
+    disp = np.full(400, 12.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        fit = fit_elevation_trend(elev, disp)
+
+    assert fit["usable"]
+    assert np.isnan(fit["r"])
+    assert np.isnan(fit["p_value"])

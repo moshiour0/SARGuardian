@@ -75,22 +75,18 @@ AOI_RING = AOIS[AOI_NAME]
 
 
 def set_aoi(name: str) -> None:
-    """Switch the AOI and rebuild everything derived from it."""
+    """Switch the active AOI and rebuild the exact search polygon."""
     global AOI_NAME, AOI_RING, AOI_WKT, BBOX, SEARCH_WKT
     if name not in AOIS:
         raise SystemExit(f"Unknown AOI '{name}'. Choose from {sorted(AOIS)}")
     AOI_NAME = name
     AOI_RING = AOIS[name]
-    AOI_WKT = "POLYGON ((" + ", ".join(f"{x} {y}" for x, y in AOI_RING + [AOI_RING[0]]) + "))"
+    AOI_WKT = "POLYGON ((" + ", ".join(f"{x} {y}" for x, y in AOI_RING) + "))"
     lons = [c[0] for c in AOI_RING]
     lats = [c[1] for c in AOI_RING]
     BBOX = (min(lons), min(lats), max(lons), max(lats))
-    SEARCH_WKT = (
-        f"POLYGON(({BBOX[0]:.4f} {BBOX[1]:.4f},{BBOX[2]:.4f} {BBOX[1]:.4f},"
-        f"{BBOX[2]:.4f} {BBOX[3]:.4f},{BBOX[0]:.4f} {BBOX[3]:.4f},"
-        f"{BBOX[0]:.4f} {BBOX[1]:.4f}))"
-    )
-
+    # Submit the actual polygon, not its bounding rectangle, to the ASF catalog.
+    SEARCH_WKT = AOI_WKT
 
 AOI_WKT = "POLYGON ((" + ", ".join(f"{x} {y}" for x, y in AOI_RING + [AOI_RING[0]]) + "))"
 _lons = [c[0] for c in AOI_RING]

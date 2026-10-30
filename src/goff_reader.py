@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import re
 import sys
@@ -76,14 +77,20 @@ MAD_SIGMA = 1.4826          # MAD -> Gaussian sigma
 
 # ---------------------------------------------------------------------------
 def layer_groups(datasets: dict) -> list[str]:
-    """Every .../pixelOffsets/<pol>/<layerN> group present, in order."""
+    """Return measurement layers under science grids, not processing metadata.
+
+    Some newer products contain a similarly named configuration node at
+    metadata/processingInformation/parameters/pixelOffsets/frequencyA/layer2.
+    That node is not a raster layer and has none of the offset/quality arrays.
+    Requiring the grids/frequency/pixelOffsets/polarization/layerN path prevents
+    metadata parameters from being mistaken for measurements.
+    """
     groups = set()
     for path in datasets:
-        m = re.match(r"(.*/pixelOffsets/[^/]+/layer\d+)/", path)
+        m = re.match(r"(.*/grids/[^/]+/pixelOffsets/[^/]+/layer\d+)/", path)
         if m:
             groups.add(m.group(1))
     return sorted(groups)
-
 
 def robust_sigma(a: np.ndarray) -> float:
     """MAD-based scatter - immune to the gross outliers in unculled offsets."""
@@ -91,6 +98,33 @@ def robust_sigma(a: np.ndarray) -> float:
     if a.size == 0:
         return float("nan")
     return float(MAD_SIGMA * np.median(np.abs(a - np.median(a))))
+
+
+def mad_inlier_mask(values: np.ndarray, base_mask: np.ndarray,
+                    cull_sigma: float) -> np.ndarray:
+    """Robustly flag outliers in one component without borrowing another axis.
+
+    The mask is computed only from finite values already accepted by the
+    upstream quality gates. A zero/undefined MAD is not enough evidence to
+    label every deviation an outlier, so that case conservatively retains the
+    upstream mask. Callers combining a 2-D offset vector must intersect the
+    independently computed range and azimuth masks.
+    """
+    values = np.asarray(values, dtype=float)
+    base = np.asarray(base_mask, dtype=bool)
+    if values.shape != base.shape:
+        raise ValueError("values and base_mask must have identical shapes")
+    if cull_sigma <= 0:
+        return base & np.isfinite(values)
+    candidate = base & np.isfinite(values)
+    sample = values[candidate]
+    if sample.size <= 10:
+        return candidate
+    sigma = robust_sigma(sample)
+    if not np.isfinite(sigma) or sigma <= 0:
+        return candidate
+    median = float(np.median(sample))
+    return candidate & (np.abs(values - median) <= cull_sigma * sigma)
 
 
 def read_goff(
@@ -103,6 +137,15 @@ def read_goff(
     auto_ref: bool = True,
     deramp: bool = True,
 ) -> dict:
+    if deramp and not clip_aoi:
+        raise ValueError(
+            "GOFF deramping requires an AOI mask so the fit can exclude the signal AOI; "
+            "use clip_aoi=True or explicitly disable deramp."
+        )
+    # Use the active AOI chosen by set_aoi(); this is the same polygon used for exports.
+    aoi_ring = _g.AOIS.get(_g.AOI_NAME)
+    if clip_aoi and not aoi_ring:
+        raise RuntimeError(f"GOFF AOI clipping requested, but active AOI {_g.AOI_NAME!r} has no polygon.")
     with h5py.File(path, "r") as f:
         datasets = walk(f)
         groups = layer_groups(datasets)
@@ -113,9 +156,18 @@ def read_goff(
             chosen = groups              # read all, pick later
         elif isinstance(layer, int) or str(layer).isdigit():
             want = f"layer{int(layer)}"
-            chosen = [g for g in groups if g.endswith("/" + want)] or groups[:1]
+            chosen = [g for g in groups if g.endswith("/" + want)]
+            if not chosen:
+                raise RuntimeError(
+                    f"Requested GOFF layer {want!r} not found; available groups: {groups}"
+                )
         else:
-            chosen = [g for g in groups if g.endswith("/" + str(layer))] or groups[:1]
+            want = str(layer)
+            chosen = [g for g in groups if g.endswith("/" + want)]
+            if not chosen:
+                raise RuntimeError(
+                    f"Requested GOFF layer {want!r} not found; available groups: {groups}"
+                )
 
         results = {}
         for grp in chosen:
@@ -128,9 +180,41 @@ def read_goff(
             corr = ds("correlationSurfacePeak")
             snr = ds("snr")
             rng_var = ds("slantRangeOffsetVariance")
-            if rng is None:
-                continue
-
+            azi_var = ds("alongTrackOffsetVariance")
+            cross_var = ds("crossOffsetVariance")
+            optional_arrays = {
+                "slantRangeOffsetVariance": rng_var,
+                "alongTrackOffsetVariance": azi_var,
+                "crossOffsetVariance": cross_var,
+            }
+            optional_mismatched = [
+                name for name, value in optional_arrays.items()
+                if value is not None and value.shape != rng.shape
+            ]
+            if optional_mismatched:
+                raise RuntimeError(
+                    f"{grp}: optional GOFF variance-layer shape mismatch against "
+                    f"slantRangeOffset {rng.shape}: {optional_mismatched}"
+                )
+            required = {
+                "slantRangeOffset": rng, "alongTrackOffset": azi,
+                "correlationSurfacePeak": corr, "snr": snr,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise RuntimeError(
+                    f"{grp}: missing required GOFF measurement/quality layer(s): {missing}; "
+                    "refusing to create a product with silently skipped quality gates."
+                )
+            mismatched = [name for name, value in required.items()
+                          if value is not None and value.shape != rng.shape]
+            if mismatched:
+                raise RuntimeError(
+                    f"{grp}: GOFF measurement/quality layer shape mismatch against "
+                    f"slantRangeOffset {rng.shape}: {mismatched}"
+                )
+            if f"{grp}/xCoordinates" not in datasets or f"{grp}/yCoordinates" not in datasets:
+                raise RuntimeError(f"{grp}: AOI/grid coordinates are missing.")
             xs = np.asarray(f[f"{grp}/xCoordinates"][()], dtype=np.float64)
             ys = np.asarray(f[f"{grp}/yCoordinates"][()], dtype=np.float64)
             epsg = None
@@ -146,6 +230,7 @@ def read_goff(
             pol_name = grp.split("/")[-2]
             results[f"{pol_name}/{grp.rsplit('/', 1)[-1]}"] = dict(
                 rng=rng, azi=azi, corr=corr, snr=snr, rng_var=rng_var,
+                azi_var=azi_var, cross_var=cross_var,
                 xs=xs, ys=ys, epsg=epsg, group=grp,
             )
 
@@ -155,26 +240,57 @@ def read_goff(
     out = {}
     for name, L in results.items():
         rng, azi = L["rng"], L["azi"]
-        gates = {"finite": int(np.isfinite(rng).sum())}
-        valid = np.isfinite(rng)
-        if azi is not None:
-            valid &= np.isfinite(azi)
+        source_total_pixels = int(rng.size)
+        valid = np.ones(rng.shape, dtype=bool)
+        gates = {"source_total_pixels": source_total_pixels}
+        gate_rejections: dict[str, int] = {}
 
-        if L["corr"] is not None:
-            valid &= L["corr"] >= correlation_min
-            gates[f"correlation>={correlation_min}"] = int(valid.sum())
-        if L["snr"] is not None:
-            valid &= L["snr"] >= snr_min
-            gates[f"snr>={snr_min}"] = int(valid.sum())
+        def apply_gate(label: str, keep: np.ndarray) -> None:
+            nonlocal valid
+            keep = np.asarray(keep, dtype=bool)
+            if keep.shape != valid.shape:
+                raise RuntimeError(
+                    f"{name}: quality gate '{label}' shape {keep.shape} does not match offset shape {valid.shape}."
+                )
+            before = int(valid.sum())
+            valid &= keep
+            after = int(valid.sum())
+            gates[label] = after
+            gate_rejections[label] = before - after
+
+        apply_gate("finite_range_offset", np.isfinite(rng))
+        apply_gate("finite_along_track_offset", np.isfinite(azi))
+        apply_gate("finite_correlation", np.isfinite(L["corr"]))
+        apply_gate("finite_snr", np.isfinite(L["snr"]))
+        apply_gate(f"correlation>={correlation_min}", L["corr"] >= correlation_min)
+        apply_gate(f"snr>={snr_min}", L["snr"] >= snr_min)
 
         quality_valid = valid.copy()
 
         aoi_mask = None
         if clip_aoi:
-            aoi_mask = build_aoi_mask(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
-            if aoi_mask is not None:
-                valid &= aoi_mask
-                gates["inside AOI"] = int(valid.sum())
+            if L["xs"] is None or L["ys"] is None:
+                raise RuntimeError(f"{L['group']}: AOI clipping requested but x/y coordinate vectors are missing.")
+            if L["epsg"] is None:
+                raise RuntimeError(f"{L['group']}: AOI clipping requested but projection/EPSG metadata is missing.")
+            if len(L["xs"]) != valid.shape[1] or len(L["ys"]) != valid.shape[0]:
+                raise RuntimeError(
+                    f"{L['group']}: coordinate lengths {(len(L['ys']), len(L['xs']))} "
+                    f"do not match offset raster shape {valid.shape}."
+                )
+            aoi_mask = build_aoi_mask(L["xs"], L["ys"], aoi_ring, L["epsg"])
+            if aoi_mask.shape != valid.shape:
+                raise RuntimeError(
+                    f"{L['group']}: AOI mask shape {aoi_mask.shape} does not match offset raster shape {valid.shape}."
+                )
+            apply_gate("inside AOI", aoi_mask)
+
+        # Keep an immutable quality-valid screen mask before any global MAD
+        # culling. A coherent local movement patch may be a global outlier; it
+        # must remain reviewable by the target-free spatial candidate screen.
+        # Standard pair medians/floors continue to use the stricter post-MAD mask.
+        screen_valid = valid.copy()
+        outlier_mask = np.zeros_like(valid, dtype=bool)
 
         # Reference: offsets carry a bias from orbit and coregistration error,
         # exactly as unwrapped phase carries an arbitrary constant.
@@ -218,18 +334,32 @@ def read_goff(
             if aoi_mask is not None:
                 fit_mask &= ~aoi_mask
             if fit_mask.sum() > 5000:
-                gy, gx = np.nonzero(fit_mask)
-                step = max(1, gy.size // 200_000)          # cap the design matrix
-                gy, gx = gy[::step], gx[::step]
+                # A coordinate may enter the joint deramp fit only if it is
+                # an inlier in BOTH offset components. The previous code selected
+                # fit points by range MAD alone, then fed those coordinates to
+                # the azimuth plane fit as well.
+                fit_keep = mad_inlier_mask(rng, fit_mask, 4.0)
+                if azi is not None:
+                    fit_keep &= mad_inlier_mask(azi, fit_mask, 4.0)
+                gy, gx = np.nonzero(fit_keep)
+                if gy.size > 200_000:
+                    step = max(1, gy.size // 200_000)
+                    gy, gx = gy[::step], gx[::step]
                 zr = rng[gy, gx]
-                keep = np.abs(zr - np.median(zr)) <= 4 * robust_sigma(zr)
-                gy, gx, zr = gy[keep], gx[keep], zr[keep]
+                if gy.size < 3 or np.unique(gx).size < 2 or np.unique(gy).size < 2:
+                    raise RuntimeError(
+                        f"{name}: too few common range/azimuth inliers for a stable 2-D deramp."
+                    )
                 A = np.column_stack([np.ones_like(gx, dtype=float), gx.astype(float),
                                      gy.astype(float)])
+                if np.linalg.matrix_rank(A) < 3:
+                    raise RuntimeError(
+                        f"{name}: common range/azimuth inliers do not span a 2-D deramp plane."
+                    )
                 coef, *_ = np.linalg.lstsq(A, zr, rcond=None)
                 YY, XX = np.mgrid[0:rng.shape[0], 0:rng.shape[1]]
                 plane = coef[0] + coef[1] * XX + coef[2] * YY
-                ramp_rms = float(np.sqrt(np.mean((plane[fit_mask] * 1000.0) ** 2)))
+                ramp_rms = float(np.sqrt(np.mean((plane[fit_keep] * 1000.0) ** 2)))
                 rng = rng - plane
                 if azi is not None:
                     za = azi[gy, gx]
@@ -259,15 +389,42 @@ def read_goff(
             else:
                 logger.warning("[%s] too little stable ground to deramp", name)
 
-        # Cull gross outliers. NASA ships these unculled and a raw offset field
-        # always contains mismatches that are metres wrong.
+        # Cull range and azimuth independently, then intersect. A single
+        # mask is still used downstream so displacement vectors remain spatially
+        # paired, but neither component is allowed to define the other's outliers.
+        # This intentionally changes only the read-time validity gate; existing
+        # retained outputs are not silently regenerated by this code edit.
         if valid.sum() > 10 and cull_sigma > 0:
-            s = robust_sigma(rng[valid])
-            med = float(np.median(rng[valid]))
-            if np.isfinite(s) and s > 0:
-                keep = np.abs(rng - med) <= cull_sigma * s
-                valid &= keep
+            base_valid = valid.copy()
+            range_keep = mad_inlier_mask(rng, base_valid, cull_sigma)
+            azimuth_keep = (
+                mad_inlier_mask(azi, base_valid, cull_sigma)
+                if azi is not None else np.ones_like(base_valid, dtype=bool)
+            )
+            robust_inlier = base_valid & range_keep & azimuth_keep
+            outlier_mask = base_valid & ~robust_inlier
+            valid = robust_inlier
+            gates[f"range within {cull_sigma:g}x MAD"] = int((base_valid & range_keep).sum())
+            gates["range-axis outliers rejected"] = int((base_valid & ~range_keep).sum())
+            if azi is not None:
+                gates[f"azimuth within {cull_sigma:g}x MAD"] = int((base_valid & azimuth_keep).sum())
+                gates["azimuth-axis outliers rejected"] = int((base_valid & ~azimuth_keep).sum())
+                gates[f"joint range+azimuth within {cull_sigma:g}x MAD"] = int(valid.sum())
+            else:
                 gates[f"within {cull_sigma:g}x MAD"] = int(valid.sum())
+            gates["strict robust-inlier pixels"] = int(valid.sum())
+            gates["global MAD outlier vectors retained for spatial review"] = int(outlier_mask.sum())
+            gate_rejections["global MAD outlier vectors"] = int(outlier_mask.sum())
+        else:
+            outlier_mask = np.zeros_like(valid, dtype=bool)
+
+        final_valid = int(valid.sum())
+        rejected_total = sum(int(n) for n in gate_rejections.values())
+        if source_total_pixels - final_valid != rejected_total:
+            raise RuntimeError(
+                f"{name}: GOFF_PIXEL_ATTRITION_LEDGER_DOES_NOT_RECONCILE "
+                f"({source_total_pixels} source - {final_valid} valid != {rejected_total} rejected)."
+            )
 
         out[name] = {
             "layer": name,
@@ -276,13 +433,24 @@ def read_goff(
             "correlation": L["corr"],
             "snr": L["snr"],
             "range_var": L["rng_var"],
+            "azimuth_var": L.get("azi_var"),
+            "cross_offset_variance": L.get("cross_var"),
             "valid": valid,
+            "screen_valid": screen_valid,
+            "outlier_mask": outlier_mask,
             "xs": L["xs"], "ys": L["ys"], "epsg": L["epsg"],
             # Cells the AOI covers, so coverage has a denominator that means
             # something. See gunw_reader.report for what quoting the frame
             # fraction instead cost this project.
             "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
+            "aoi_name": _g.AOI_NAME,
+            "aoi_mask_applied": bool(clip_aoi and aoi_mask is not None),
+            "correlation_min": correlation_min,
+            "snr_min": snr_min,
+            "cull_sigma": cull_sigma,
             "gates": gates,
+            "gate_rejections": gate_rejections,
+            "source_total_pixels": source_total_pixels,
             "ramp_rms_mm": ramp_rms,
             "ref_range_m": ref_rng,
             "ref_azimuth_m": ref_azi,
@@ -290,7 +458,9 @@ def read_goff(
 
     ref, sec = read_pair_dates(path)
     return {"file": path.name, "reference_date": ref, "secondary_date": sec,
-            "layers": out}
+            "aoi_name": _g.AOI_NAME, "aoi_mask_applied": bool(clip_aoi),
+            "correlation_min": correlation_min, "snr_min": snr_min,
+            "cull_sigma": cull_sigma, "layers": out}
 
 
 # ---------------------------------------------------------------------------
@@ -317,38 +487,85 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         logger.error("rasterio required for --export:  pip install rasterio")
         return []
 
+    if not res.get("aoi_mask_applied", False):
+        raise RuntimeError("Refusing AOI-clipped GeoTIFF export: the source reader did not apply the AOI mask.")
+    aoi_name = res.get("aoi_name")
+    if aoi_name not in _g.AOIS:
+        raise RuntimeError(f"Refusing GOFF export: missing or unknown AOI identity {aoi_name!r}.")
+    export_ring = _g.AOIS[aoi_name]
     out = []
     proc = re.search(r"NISAR_L2_([A-Z]{2})_", Path(res["file"]).name)
     tag = f"_{proc.group(1)}" if proc else ""
     outdir.mkdir(parents=True, exist_ok=True)
 
     for name, L in sorted(res["layers"].items()):
+        # Exports serve two purposes: conservative pairwise stats and a broad
+        # AOI-wide anomaly screen. Keep their masks separate. Band 4 will flag
+        # pixels rejected by global MAD so the candidate screen can inspect
+        # them without treating them as ordinary inlier measurements.
         valid = L["valid"]
-        if not valid.any() or L["xs"] is None:
-            continue
+        screen_valid = np.asarray(L.get("screen_valid", valid), dtype=bool)
+        outlier_mask = np.asarray(L.get("outlier_mask", screen_valid & ~valid), dtype=bool)
+        if screen_valid.shape != valid.shape or outlier_mask.shape != valid.shape:
+            raise RuntimeError(f"{name}: GOFF screen/robust masks have incompatible shapes.")
+        if L["xs"] is None or L["ys"] is None:
+            raise RuntimeError(f"{name}: cannot export GOFF layer without x/y coordinates.")
+        if L["epsg"] is None:
+            raise RuntimeError(f"{name}: cannot export GOFF layer without EPSG/CRS metadata.")
+        if valid.ndim != 2 or any(
+            value is not None and np.asarray(value).shape != valid.shape
+            for value in (L.get("range_m"), L.get("azimuth_m"), L.get("correlation"))
+        ):
+            raise RuntimeError(f"{name}: GOFF export arrays do not share the validity-mask shape.")
+
         # Fixed AOI grid, so two layers or two pairs over the same ground come
         # out the same size and can be differenced. See gunw_reader.aoi_grid.
-        grid = _g.aoi_grid(L["xs"], L["ys"], _g.AOI_RING, L["epsg"])
-
-        rows_any = valid.any(axis=1)
-        cols_any = valid.any(axis=0)
-        r0, r1 = int(np.argmax(rows_any)), int(len(rows_any) - np.argmax(rows_any[::-1]))
-        c0, c1 = int(np.argmax(cols_any)), int(len(cols_any) - np.argmax(cols_any[::-1]))
+        if L.get("aoi_name") != aoi_name or not L.get("aoi_mask_applied", False):
+            raise RuntimeError(f"{name}: layer AOI provenance conflicts with the parent GOFF result.")
+        grid = _g.aoi_grid(L["xs"], L["ys"], export_ring, L["epsg"])
+        aoi_mask = None
+        if grid is None:
+            # A non-lattice product must still be represented if it covers the
+            # AOI, even if no offset pixel passes quality gates.
+            aoi_mask = build_aoi_mask(L["xs"], L["ys"], export_ring, L["epsg"])
+            if not aoi_mask.any():
+                logger.warning("%s has no AOI grid cells; no clipped raster can represent this AOI.", name)
+                out.append({"layer": name, "export_file": "", "export_status": "NO_AOI_GRID_COVERAGE",
+                            "export_valid_px": 0, "export_rows": 0, "export_cols": 0})
+                continue
+            rows_any = np.any(aoi_mask, axis=1)
+            cols_any = np.any(aoi_mask, axis=0)
+            r0, r1 = int(np.argmax(rows_any)), int(len(rows_any) - np.argmax(rows_any[::-1]))
+            c0, c1 = int(np.argmax(cols_any)), int(len(cols_any) - np.argmax(cols_any[::-1]))
 
         def band(key, scale=1.0):
             if L.get(key) is None:
                 return None
-            full = np.where(valid, L[key] * scale, np.nan)
+            full = np.where(screen_valid, L[key] * scale, np.nan)
             if grid is not None:
                 return _g.place_on_grid(full, grid)
             return full[r0:r1, c0:c1].astype("float32")
 
-        bands = [(band("range_m", 1000.0), "slant-range offset (mm)"),
-                 (band("azimuth_m", 1000.0), "along-track offset (mm)"),
-                 (band("correlation"), "correlation")]
+        def mask_band(values):
+            full = np.where(screen_valid, np.asarray(values, dtype=np.float32), np.nan)
+            if grid is not None:
+                return _g.place_on_grid(full, grid)
+            return full[r0:r1, c0:c1].astype("float32")
+
+        outlier_flag = np.where(screen_valid, np.where(outlier_mask, 0.0, 1.0), np.nan)
+        bands = [
+            (band("range_m", 1000.0), "slant-range offset (mm)"),
+            (band("azimuth_m", 1000.0), "along-track offset (mm)"),
+            (band("correlation"), "correlation"),
+            (mask_band(outlier_flag), "robust inlier flag (1=inlier, 0=global-MAD outlier retained for review)"),
+            (band("range_var", 1_000_000.0), "slant-range offset variance (mm^2)"),
+            (band("azimuth_var", 1_000_000.0), "along-track offset variance (mm^2)"),
+            (band("cross_offset_variance", 1_000_000.0), "cross offset variance (mm^2; preserved as supplied, not assumed to be covariance)"),
+        ]
         bands = [(a, d) for a, d in bands if a is not None]
         if not bands:
             continue
+        band_indexes = {description: index for index, (_, description) in enumerate(bands, 1)}
 
         if grid is not None:
             transform = grid["transform"]
@@ -360,6 +577,8 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                                     float(ys.max()) + resy / 2, resx, resy)
             if ys[0] < ys[-1]:
                 bands = [(np.flipud(a), d) for a, d in bands]
+        valid_export_px = int(np.isfinite(bands[0][0]).sum())
+        export_status = "WRITTEN" if valid_export_px else "NO_VALID_PIXELS"
 
         safe = name.replace("/", "-")
         target = outdir / (f"GOFF_{res['reference_date']}_{res['secondary_date']}"
@@ -374,12 +593,42 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                 dst.set_band_description(k, desc)
             dst.update_tags(reference=res["reference_date"],
                             secondary=res["secondary_date"],
-                            layer=name, source=res["file"])
+                            layer=name, source=res["file"],
+                            aoi_name=str(res["aoi_name"]),
+                            outliers_preserved_for_screening="true",
+                            source_total_pixels=str(int(L.get("source_total_pixels", L["range_m"].size))),
+                            gate_counts_json=json.dumps(L.get("gates", {}), sort_keys=True, separators=(",", ":")),
+                            gate_rejections_json=json.dumps(L.get("gate_rejections", {}), sort_keys=True, separators=(",", ":")),
+                            robust_screen_policy="pre_global_MAD_quality_valid",
+                            screen_valid_pixels=str(int(screen_valid.sum())),
+                            robust_inlier_pixels=str(int(valid.sum())),
+                            robust_outlier_pixels=str(int(outlier_mask.sum())),
+                            outlier_flag_band="4",
+                             range_variance_band=str(band_indexes.get("slant-range offset variance (mm^2)", "not_exported")),
+                             along_track_variance_band=str(band_indexes.get("along-track offset variance (mm^2)", "not_exported")),
+                             cross_offset_variance_band=str(band_indexes.get("cross offset variance (mm^2; preserved as supplied, not assumed to be covariance)", "not_exported")),
+                            aoi_mask_applied="true",
+                            correlation_min=str(res["correlation_min"]),
+                            snr_min=str(res["snr_min"]),
+                            cull_sigma=str(res["cull_sigma"]),
+                            export_status=export_status,
+                            valid_pixel_count=str(valid_export_px),
+                            grid_policy=("common_aoi_lattice" if grid is not None else "per_product_aoi_window_not_common_lattice"),
+                            crid=_g.crid_of(res["file"]),
+                            maturity=_g.product_maturity(res["file"]))
         mb = target.stat().st_size / 1024 / 1024
         logger.info("Exported %s  %dx%d  %.2f MB", target.name,
                     bands[0][0].shape[0], bands[0][0].shape[1], mb)
         out.append({"layer": name, "export_file": target.name,
-                    "export_mb": round(mb, 3)})
+                    "export_mb": round(mb, 3),
+                    "export_rows": bands[0][0].shape[0],
+                    "export_cols": bands[0][0].shape[1],
+                    "export_valid_px": valid_export_px,
+                    "export_robust_inlier_px": int(valid.sum()),
+                    "export_screen_outlier_px": int(outlier_mask.sum()),
+                    "export_status": export_status,
+                    "export_grid_policy": ("common_aoi_lattice" if grid is not None
+                                           else "per_product_aoi_window_not_common_lattice")})
     return out
 
 
@@ -394,7 +643,13 @@ def report(res: dict, span_days: float | None = None) -> list[dict]:
         n = int(v.sum())
         print(f"\n  --- {name} ---")
         for k, c in L["gates"].items():
-            print(f"    {k:<26}{c:>12,}  {100*c/total:>7.3f}% of frame")
+            print(f"    {k:<44}{c:>12,}  {100*c/total:>7.3f}% of frame")
+        print("    pixel attrition ledger (sequential, non-overlapping):")
+        for k, c in L.get("gate_rejections", {}).items():
+            print(f"      {k:<42}{c:>12,}")
+        rejected = sum(int(v) for v in L.get("gate_rejections", {}).values())
+        if int(L.get("source_total_pixels", total)) - int(v.sum()) != rejected:
+            raise RuntimeError(f"{name}: GOFF_PIXEL_ATTRITION_LEDGER_DOES_NOT_RECONCILE")
         if L.get("aoi_px"):
             print(f"    {'-> coverage of the AOI':<26}{n:>12,}  "
                   f"{100*n/L['aoi_px']:>7.1f}% of {L['aoi_px']:,} AOI cells")
@@ -559,7 +814,7 @@ def main() -> int:
                    help="folder of GOFF products (default: data/nisar_l2/GOFF)")
     m.add_argument("--noise-floor", metavar="DIR",
                    help="measure the detection floor on pairs you believe are stable")
-    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
+    ap.add_argument("--aoi", choices=tuple(sorted(_g.AOIS)), default="source",
                     help="which box to clip to. 'source' is the confirmed detachment zone and the default; 'lhende' is the runout corridor the avalanche dammed, not a control")
     ap.add_argument("--layer", default="best", help="layer1, layer2, or best (both)")
     ap.add_argument("--correlation", type=float, default=DEFAULT_CORRELATION)
@@ -576,6 +831,8 @@ def main() -> int:
     ap.add_argument("--csv", metavar="OUT.csv")
     args = ap.parse_args()
 
+    if args.no_clip and args.export:
+        ap.error("--export requires AOI clipping; remove --no-clip or omit --export.")
     set_aoi(args.aoi)
 
     kw = dict(layer=args.layer, correlation_min=args.correlation, snr_min=args.snr,

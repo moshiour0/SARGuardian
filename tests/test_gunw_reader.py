@@ -9,11 +9,13 @@ survives four rounds of "I re-ran it and it looks the same".
 
 from __future__ import annotations
 
+import h5py
 import numpy as np
 import pytest
 
 import synth
-from gunw_reader import check_consistency, read_gunw, verify_products
+from gunw_reader import (SOURCE_RING, aoi_grid, build_aoi_mask, check_consistency,
+                         decode_gunw_mask, read_gunw, verify_products)
 
 TOL_MM = 1.5
 
@@ -31,8 +33,33 @@ def test_known_displacement_round_trips(tmp_path):
     """50 mm in, 50 mm out. Sign, wavelength, scaling and gating, in one line."""
     f = tmp_path / synth.granule_name()
     truth = synth.write_gunw(f, truth_mm=50.0)
-    got = _median_in_aoi(read_gunw(f, auto_ref=True))
+    result = read_gunw(f, auto_ref=True)
+    got = _median_in_aoi(result)
     assert got == pytest.approx(truth["truth_mm"], abs=TOL_MM)
+    rejected = sum(int(n) for n in result["gate_rejections"].values())
+    assert result["source_cells_total"] - int(result["valid"].sum()) == rejected
+    assert result["gates"]["finite_phase"] <= result["source_cells_total"]
+
+
+def test_aoi_scoped_gate_ledger_reconciles_with_final_pixels(tmp_path):
+    """Every dropped in-AOI pixel is assigned to one sequential quality gate."""
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    result = read_gunw(f, auto_ref=True)
+
+    assert result["aoi_gate_ledger_status"] == "PASS_AOI_GATE_RECONCILIATION"
+    assert result["aoi_px"] is not None and result["aoi_px"] > 0
+    cumulative = result["aoi_gate_cumulative_counts"]
+    rejected = result["aoi_gate_rejections"]
+    final = int(result["valid"].sum())
+
+    assert cumulative["final_valid_pixels"] == final
+    assert sum(rejected.values()) == result["aoi_px"] - final
+    assert result["aoi_px"] - sum(rejected.values()) == final
+
+    # A cumulative survivor count may only decrease as sequential gates apply.
+    values = [int(v) for k, v in cumulative.items() if k != "final_valid_pixels"]
+    assert all(left >= right for left, right in zip(values, values[1:])), values
 
 
 @pytest.mark.parametrize("truth_mm", [-120.0, -7.5, 0.0, 7.5, 120.0])
@@ -305,3 +332,134 @@ def test_a_name_that_is_not_a_granule_yields_no_track():
     from gunw_reader import track_of
     assert track_of("GOFF_20251128_20251210_PR_HH-layer2.tif") == ""
     assert track_of("") == ""
+
+
+
+def test_uint32_mask_decodes_low_byte_separately_from_iono_bit_and_anomaly_flags():
+    """P05023 mask values must not be parsed as one giant decimal code."""
+    raw = np.array([[
+        11, 12, 111, 16777228, 16777216, 16777340, 255,
+        0x0000010C, 0x0001000C, 0x0200000C,
+    ]], dtype=np.uint32)
+    raw_before = raw.copy()
+    corrected = decode_gunw_mask(raw, apply_iono=True)
+    uncorrected = decode_gunw_mask(raw, apply_iono=False)
+
+    assert np.array_equal(raw, raw_before)
+    assert corrected["land_valid_subswaths_low_byte"].tolist() == [[
+        True, True, False, True, False, False, False, True, True, True
+    ]]
+    assert corrected["ionosphere_interpolated_mask"].tolist() == [[
+        False, False, False, True, True, True, False, False, False, False
+    ]]
+    assert corrected["anomaly_flags_nonzero"].tolist() == [[
+        False, False, False, False, False, False, False, True, True, False
+    ]]
+    assert corrected["reserved_bits_nonzero"].tolist() == [[
+        False, False, False, False, False, False, False, False, False, True
+    ]]
+    assert corrected["usable_mask_for_policy"].tolist() == [[
+        True, True, False, False, False, False, False, False, False, False
+    ]]
+    assert uncorrected["usable_mask_for_policy"].tolist() == [[
+        True, True, False, True, False, False, False, False, False, False
+    ]]
+
+
+def test_aoi_mask_refuses_to_guess_a_missing_source_crs():
+    xs = np.linspace(500_000, 501_000, 11)
+    ys = np.linspace(3_200_000, 3_199_000, 11)
+    with pytest.raises(ValueError, match="no EPSG/CRS metadata"):
+        build_aoi_mask(xs, ys, SOURCE_RING, None)
+
+
+def test_fixed_aoi_grid_refuses_to_guess_a_missing_source_crs():
+    xs = np.linspace(500_000, 501_000, 11)
+    ys = np.linspace(3_200_000, 3_199_000, 11)
+    with pytest.raises(ValueError, match="without source EPSG/CRS"):
+        aoi_grid(xs, ys, SOURCE_RING, None)
+
+
+def test_unvalidated_gunw_mask_dtypes_fail_closed():
+    import pytest
+    with pytest.raises(TypeError, match="Unsupported GUNW mask dtype"):
+        decode_gunw_mask(np.array([[12]], dtype=np.uint16))
+    with pytest.raises(TypeError, match="Unsupported GUNW mask dtype"):
+        decode_gunw_mask(np.array([[12]], dtype=np.int64))
+
+
+def test_missing_mask_fails_closed_instead_of_skipping_quality_gates(tmp_path):
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    with h5py.File(f, "a") as h5:
+        del h5[synth.UNW]["mask"]
+    with pytest.raises(RuntimeError, match="missing required shape-compatible layers"):
+        read_gunw(f, auto_ref=True)
+
+
+def test_missing_connected_components_fails_closed(tmp_path):
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    with h5py.File(f, "a") as h5:
+        del h5[f"{synth.UNW}/HH"]["connectedComponents"]
+    with pytest.raises(RuntimeError, match="connectedComponents"):
+        read_gunw(f, auto_ref=True)
+
+
+def test_referenced_measurement_does_not_leak_across_unwrapping_components(tmp_path):
+    f = tmp_path / synth.granule_name()
+    truth = synth.write_gunw(f, truth_mm=50.0, far_component=2, far_fringes=2.0)
+    # Add a second valid connected component within the actual AOI. The reader
+    # must not subtract one component's arbitrary phase constant from the other.
+    with h5py.File(f, "a") as h5:
+        path = f"{synth.UNW}/HH/connectedComponents"
+        components = h5[path][()]
+        cols = np.indices(components.shape)[1]
+        second = truth["aoi"] & (cols > int(components.shape[1] * 0.58))
+        components[second] = 7
+        h5[path][...] = components
+    result = read_gunw(f, auto_ref=True)
+    assert result["reference_component_id"] is not None
+    assert result["component_rejected_pixels"] > 0
+    # The explicit validity mask excludes incompatible-component measurements.
+    with h5py.File(f, "r") as h5:
+        components = h5[f"{synth.UNW}/HH/connectedComponents"][()]
+    assert not (result["valid"] & (components != result["reference_component_id"])).any()
+    assert result["gate_rejections"]["different component from reference"] > 0
+
+
+def test_valid_zero_phase_is_not_dropped_without_fill_evidence(tmp_path):
+    """A numerical zero is not nodata when the packed mask and component are valid."""
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    from gunw_reader import AOIS
+    with h5py.File(f, "a") as h5:
+        base = f"{synth.UNW}/HH"
+        phase_ds = h5[f"{base}/unwrappedPhase"]
+        phase = phase_ds[()]
+        xs = h5[f"{base}/xCoordinates"][()]
+        ys = h5[f"{base}/yCoordinates"][()]
+        mask = h5[f"{synth.UNW}/mask"][()]
+        components = h5[f"{base}/connectedComponents"][()]
+        inside = build_aoi_mask(xs, ys, AOIS["lhende"], 4326)
+        candidates = np.argwhere(inside & (mask == 11) & (components > 0))
+        assert candidates.size
+        row, col = (int(v) for v in candidates[len(candidates) // 2])
+        phase[row, col] = 0.0
+        phase_ds[...] = phase
+    result = read_gunw(f, auto_ref=True)
+    assert result["valid"][row, col], (
+        "zero phase with valid component/mask/coherence metadata must remain measurable"
+    )
+
+
+def test_layover_shadow_mask_is_not_a_substitute_for_packed_gunw_mask(tmp_path):
+    f = tmp_path / synth.granule_name()
+    synth.write_gunw(f, truth_mm=50.0)
+    with h5py.File(f, "a") as h5:
+        parent = h5[synth.UNW]
+        original = parent["mask"][()]
+        del parent["mask"]
+        parent.create_dataset("layoverShadowMask", data=original)
+    with pytest.raises(RuntimeError, match="missing required shape-compatible layers"):
+        read_gunw(f, auto_ref=True)

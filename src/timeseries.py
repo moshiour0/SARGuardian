@@ -48,6 +48,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import re
 import sys
 from collections import defaultdict
@@ -65,31 +66,82 @@ from paths import NISAR, resolve  # noqa: E402
 
 EVENT_DATE = date(2026, 8, 26)
 
+GRANULE_HEAD_RE = re.compile(
+    r"^NISAR_L2_(?P<processing>PR|UR)_(?P<product>GUNW|GOFF)_"
+    r"(?P<cycle>\d+)_(?P<path>\d+)_(?P<direction>[AD])_"
+    r"(?P<frame>\d+)_(?P<subswath>\d+)_(?P<bandwidth>\d+)_"
+    r"(?P<polarisation>[A-Z]{2})_"
+)
+CRID_TAIL_RE = re.compile(
+    r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}(?:\.h5)?$", re.IGNORECASE
+)
+
+
+def granule_metadata(name: str) -> dict | None:
+    """Parse exact NISAR L2 footprint and processing/release identity."""
+    basename = Path(str(name)).name
+    match = GRANULE_HEAD_RE.match(basename)
+    if not match:
+        return None
+    fields = match.groupdict()
+    for key in ("cycle", "path", "frame", "subswath", "bandwidth"):
+        fields[key] = int(fields[key])
+    crid_match = CRID_TAIL_RE.search(basename)
+    fields["crid"] = crid_match.group(1).upper() if crid_match else "UNKNOWN"
+    return fields
+
 
 # ---------------------------------------------------------------------------
 # Pair inventory
 # ---------------------------------------------------------------------------
 class Pair:
-    """One interferogram: a measured difference between two epochs."""
+    """One interferogram with explicit spatial footprint and processing identity."""
 
-    __slots__ = ("path", "direction", "ref", "sec", "value", "n_px", "coherence", "source")
+    __slots__ = (
+        "path", "direction", "ref", "sec", "value", "n_px", "coherence", "source",
+        "product", "cycle", "frame", "subswath", "bandwidth", "polarisation",
+        "crid", "processing",
+    )
 
-    def __init__(self, path, direction, ref, sec, value=None, n_px=None, coherence=None, source=""):
+    def __init__(self, path, direction, ref, sec, value=None, n_px=None,
+                 coherence=None, source="", metadata=None):
         self.path = path
         self.direction = direction
         self.ref = ref
         self.sec = sec
-        self.value = value          # mm, region mean, filled by --invert
+        self.value = value
         self.n_px = n_px
         self.coherence = coherence
         self.source = source
+        meta = metadata or granule_metadata(source) or {}
+        for key in ("product", "cycle", "frame", "subswath", "bandwidth",
+                    "polarisation", "crid", "processing"):
+            setattr(self, key, meta.get(key))
 
     @property
     def span_days(self) -> int:
         return (self.sec - self.ref).days
 
+    def network_key(self) -> tuple:
+        """Separate frame/subswath/release series; never silently cross a CRID."""
+        if self.frame is None:
+            return (self.direction, self.path, None, None, None, None, None, self.product)
+        return (self.direction, self.path, self.frame, self.subswath,
+                self.bandwidth, self.polarisation, self.crid, self.product)
+
+    def network_label(self, *, short: bool = False) -> str:
+        label = f"{'ASCENDING' if self.direction == 'A' else 'DESCENDING'} path {self.path}"
+        if self.frame is not None:
+            label += (f" frame {self.frame} subswath {self.subswath} "
+                      f"bandwidth {self.bandwidth} pol {self.polarisation}")
+        if self.crid and self.crid != "UNKNOWN":
+            label += f" CRID {self.crid}"
+        if self.product:
+            label += f" {self.product}"
+        return label.replace("ASCENDING", "ASC").replace("DESCENDING", "DESC") if short else label
+
     def __repr__(self):
-        return f"<{self.direction}{self.path} {self.ref}->{self.sec}>"
+        return f"<{self.network_label()} {self.ref}->{self.sec}>"
 
 
 def pairs_from_granule_names(names: list[str], paths: list, directions: list) -> list[Pair]:
@@ -98,17 +150,18 @@ def pairs_from_granule_names(names: list[str], paths: list, directions: list) ->
         stamps = re.findall(r"_(\d{8})T\d{6}", name)
         if len(stamps) < 4:
             continue
-        out.append(
-            Pair(
-                path=path,
-                direction=(direction or "?")[0],
-                ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
-                sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
-                source=name,
-            )
-        )
+        metadata = granule_metadata(name)
+        if metadata is None:
+            logger.warning("Skipping catalogue item without complete NISAR footprint identity: %s", name)
+            continue
+        out.append(Pair(
+            path=metadata["path"],
+            direction=metadata["direction"],
+            ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
+            sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
+            source=name, metadata=metadata,
+        ))
     return out
-
 
 def pairs_from_catalogue() -> list[Pair]:
     """Query ASF for GUNW pairs over the AOI without downloading anything."""
@@ -123,36 +176,40 @@ def pairs_from_catalogue() -> list[Pair]:
     )
 
 
-def pairs_from_stats(path: Path, fringe_mm: float = 121.95,
-                     layer: str | None = None) -> list[Pair]:
-    """
-    Build the network from a gunw_reader --csv summary instead of the products.
+def pairs_from_stats(
+    path: Path,
+    fringe_mm: float = 121.95,
+    layer: str | None = None,
+    *,
+    product: str | None = None,
+    processing: str | None = None,
+    crid: str | None = None,
+    min_valid_pixels: int = 6,
+) -> list[Pair]:
+    """Build an epoch network from reader CSVs without silently mixing products.
 
-    A GUNW is 2.4 GB; the row describing it is 200 bytes. Once the AOI median
-    has been measured there is nothing else in the file the inversion needs, so
-    a teammate with the disk space can process the stack and send back a CSV
-    that reproduces the whole time series. That is the difference between a
-    pipeline one machine can run and one a team can.
-
-    Duplicate acquisitions
-    ----------------------
-    NASA ships a routine (PR) and an urgent (UR) product for the same images.
-    Both are valid interferograms; they can differ by a whole number of fringes
-    because unwrapping is only unique up to a cycle. Averaging them is
-    meaningless. Instead, keep the branch consistent with the rest of that
-    geometry - the surrounding pairs already say what magnitude is plausible,
-    which is temporal unwrapping applied to the ambiguity.
+    Duplicate PR/UR GUNW products may differ by whole phase cycles; those are
+    resolved only within the same frame, subswath, bandwidth, polarisation,
+    CRID and acquisition pair, using other intervals from that exact geometry.
+    Different CRIDs are treated as separate processing releases. Conflicting
+    GOFF PR/UR offsets are never resolved using a phase-fringe heuristic.
     """
-    rows = list(csv.DictReader(open(path, newline="")))
+    if min_valid_pixels < 1:
+        raise ValueError("min_valid_pixels must be positive")
+    if processing is not None:
+        processing = processing.upper()
+        if processing not in {"PR", "UR"}:
+            raise ValueError("processing must be PR, UR or None")
+    requested_product = product.upper() if product else None
+    requested_crid = crid.upper() if crid else None
+
+    with open(path, newline="") as fh:
+        rows = list(csv.DictReader(fh))
     if not rows:
         logger.error("No rows in %s", path)
         return []
 
-    # GOFF writes one row per product PER LAYER, so without a filter every pair
-    # arrives three times and the duplicate resolver reports three products for
-    # a single acquisition pair. Layers are different measurements at different
-    # correlation window sizes, not duplicates, so pick one.
-    if layer and rows and "layer" in rows[0]:
+    if layer and "layer" in rows[0]:
         before = len(rows)
         rows = [r for r in rows if layer in (r.get("layer") or "")]
         logger.info("Layer filter '%s': %d of %d rows", layer, len(rows), before)
@@ -160,76 +217,216 @@ def pairs_from_stats(path: Path, fringe_mm: float = 121.95,
             logger.error("No rows match layer '%s'", layer)
             return []
 
-    # The two readers write different column names for the same quantity, and
-    # this used to read only the GUNW one - so --from-stats with --product GOFF
-    # died on KeyError: 'median' rather than saying what was wrong.
-    #
-    # The fringe reasoning below applies to phase only. Pixel offsets are not
-    # wrapped, so a PR/UR disagreement in GOFF is a processing difference and
-    # not a cycle ambiguity; quoting it in fringes would invent a mechanism.
+    filtered = []
+    for row in rows:
+        name = row.get("file", "")
+        meta = granule_metadata(name)
+        if meta is None:
+            logger.warning("Cannot parse full NISAR product identity from %s; skipped",
+                           name or "<blank>")
+            continue
+        row_product = meta["product"]
+        row_processing = meta["processing"]
+        row_crid = meta["crid"]
+
+        # Reader metadata and the product basename must describe the same file.
+        # A stale or hand-edited metadata column must not override the filename.
+        supplied_processing = (row.get("processing") or "").strip().upper()
+        supplied_crid = (row.get("crid") or "").strip().upper()
+        if supplied_processing and supplied_processing not in {"NAN", row_processing}:
+            raise ValueError(
+                f"Stats metadata processing={supplied_processing} disagrees with filename "
+                f"processing={row_processing}: {name}"
+            )
+        if supplied_crid and supplied_crid not in {"NAN", row_crid}:
+            raise ValueError(
+                f"Stats metadata CRID={supplied_crid} disagrees with filename CRID={row_crid}: {name}"
+            )
+        if requested_product and row_product != requested_product:
+            continue
+        if processing and row_processing != processing:
+            continue
+        if requested_crid and row_crid != requested_crid:
+            continue
+        row["_metadata"] = meta
+        filtered.append(row)
+    rows = filtered
+    if not rows:
+        logger.error("No rows remain after product/processing/CRID filters.")
+        return []
+    if processing:
+        logger.info("Processing filter %s retained %d rows", processing, len(rows))
+    if requested_crid:
+        logger.info("CRID filter %s retained %d rows", requested_crid, len(rows))
+
     head = rows[0]
     if "median" in head:
         value_col, coh_col, wrapped = "median", "mean_coherence", True
+        actual_product = "GUNW"
     elif "range_median_mm" in head:
         value_col, coh_col, wrapped = "range_median_mm", "mean_correlation", False
+        actual_product = "GOFF"
     else:
         logger.error("%s has neither 'median' (GUNW) nor 'range_median_mm' (GOFF). "
                      "Columns present: %s", path, ", ".join(sorted(head)))
         return []
-    logger.info("Reading displacement from column '%s'", value_col)
+    if any(row["_metadata"]["product"] != actual_product for row in rows):
+        raise ValueError("A stats CSV mixes GUNW and GOFF product schemas; create separate product CSVs.")
+    if requested_product and requested_product != actual_product:
+        logger.error("CSV values are %s, but --product %s was requested.",
+                     actual_product, requested_product)
+        return []
+    logger.info("Reading %s values from column '%s'", actual_product, value_col)
 
     parsed = []
-    for r in rows:
-        name = r.get("file", "")
-        m = re.search(r"NISAR_L2_([A-Z]{2})_[A-Z]{4}_\d+_(\d+)_([AD])_", name)
-        stamps = re.findall(r"_(\d{8})T\d{6}", name)
-        if not m or len(stamps) < 4:
-            logger.warning("Cannot parse %s", name or "<blank>")
-            continue
-        parsed.append((m.group(1), Pair(
-            path=int(m.group(2)), direction=m.group(3),
-            ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
-            sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
-            value=float(r[value_col]), n_px=int(float(r.get("valid_px") or 0)),
-            coherence=float(r[coh_col]) if r.get(coh_col) else None,
-            source=name)))
+    invalid_rows = 0
+    for row in rows:
+        meta = row["_metadata"]
+        name = row.get("file", "")
+        try:
+            stamps = re.findall(r"_(\d{8})T\d{6}", name)
+            if len(stamps) < 4:
+                raise ValueError("fewer than four acquisition timestamps")
+            raw_value = (row.get(value_col) or "").strip()
+            value = float(raw_value)
+            raw_valid_px = (row.get("valid_px") or "").strip()
+            if not raw_valid_px:
+                raise ValueError("valid_px is missing; re-export using the current reader")
+            valid_px = int(float(raw_valid_px))
+            if not math.isfinite(value):
+                raise ValueError(f"{value_col} is not finite")
+            if valid_px < min_valid_pixels:
+                raise ValueError(
+                    f"only {valid_px} valid pixels; minimum is {min_valid_pixels}"
+                )
+            if "usable" in row and str(row["usable"]).strip().lower() not in {"true", "1", "yes"}:
+                raise ValueError("row is marked unusable")
+            a = datetime.strptime(stamps[0], "%Y%m%d").date()
+            b = datetime.strptime(stamps[2], "%Y%m%d").date()
+            if b <= a:
+                raise ValueError(f"invalid acquisition interval {a} -> {b}")
+            coherence_value = None
+            raw_coh = (row.get(coh_col) or "").strip()
+            if raw_coh:
+                parsed_coherence = float(raw_coh)
+                if math.isfinite(parsed_coherence):
+                    coherence_value = parsed_coherence
+            pair = Pair(
+                path=meta["path"], direction=meta["direction"],
+                ref=a, sec=b, value=value, n_px=valid_px,
+                coherence=coherence_value, source=name, metadata=meta,
+            )
+            geometry = (
+                meta["product"], meta["cycle"], meta["path"], meta["direction"],
+                meta["frame"], meta["subswath"], meta["bandwidth"],
+                meta["polarisation"],
+            )
+            parsed.append((meta["processing"], pair, geometry, meta["crid"]))
+        except (TypeError, ValueError, OverflowError) as exc:
+            invalid_rows += 1
+            logger.warning("Stats row skipped (%s): %s", name or "<blank>", exc)
+    if invalid_rows:
+        logger.warning(
+            "Skipped %d invalid/unusable stats row(s); no empty/NaN measurement was admitted.",
+            invalid_rows,
+        )
+    if not parsed:
+        logger.error("No finite stats rows with at least %d valid pixels.", min_valid_pixels)
+        return []
+
+    # One exact footprint/interval cannot silently mix CRIDs. The appropriate
+    # action for a reprocessed product is an explicit --crid choice, not a
+    # magnitude heuristic between different scientific releases.
+    crids_by_pair: dict[tuple, set[str]] = defaultdict(set)
+    for _proc, pair, geometry, pair_crid in parsed:
+        crids_by_pair[(geometry, pair.ref, pair.sec)].add(pair_crid)
+    conflicts = [
+        (key, sorted(values)) for key, values in crids_by_pair.items()
+        if len(values) > 1
+    ]
+    if conflicts:
+        first_key, versions = conflicts[0]
+        geometry, ref_date, sec_date = first_key
+        raise ValueError(
+            "Same product footprint and acquisition pair appears with multiple CRIDs "
+            f"({', '.join(versions)}): {ref_date} -> {sec_date}, "
+            f"frame={geometry[4]} subswath={geometry[5]} pol={geometry[7]}. "
+            "Do not resolve a reprocessed-release conflict by magnitude; rerun with --crid."
+        )
 
     groups: dict[tuple, list] = defaultdict(list)
-    for proc, p in parsed:
-        groups[(p.direction, p.path, p.ref, p.sec)].append((proc, p))
+    for proc, pair, geometry, pair_crid in parsed:
+        groups[(geometry, pair.ref, pair.sec, pair_crid)].append((proc, pair))
 
     out, dropped = [], []
-    for key, cands in groups.items():
-        if len(cands) == 1:
-            out.append(cands[0][1])
+    for key, candidates in groups.items():
+        if len(candidates) == 1:
+            out.append(candidates[0][1])
             continue
-        # Scale expected from every OTHER pair in the same geometry.
-        others = [q.value for k, c in groups.items() for _, q in c
-                  if k[:2] == key[:2] and k != key and q.value is not None]
-        expect = float(np.median(np.abs(others))) if others else 0.0
-        best = min(cands, key=lambda pc: (abs(abs(pc[1].value) - expect),
-                                          0 if pc[0] == "PR" else 1))
-        for proc, p in cands:
-            if p is not best[1]:
-                gap = abs(p.value - best[1].value)
-                dropped.append((key, proc, p.value, gap, gap / fringe_mm))
-        logger.warning("%s -> %s: %d products, keeping %s (%+.1f mm)",
-                       key[2], key[3], len(cands), best[0], best[1].value)
+        geometry, ref_date, sec_date, pair_crid = key
+        processing_values = [proc for proc, _ in candidates]
+        if len(set(processing_values)) != len(processing_values):
+            raise ValueError(
+                f"Duplicate {actual_product} rows for {ref_date}->{sec_date} have the same "
+                f"processing code ({processing_values}); verify CSV uniqueness before inversion."
+            )
+        values = [pair.value for _, pair in candidates]
+        same_value = all(
+            math.isclose(values[0], value, rel_tol=1e-9, abs_tol=1e-6)
+            for value in values[1:]
+        )
+        if same_value:
+            # No scientific branch choice is required when values agree.
+            best = next((candidate for candidate in candidates if candidate[0] == "PR"),
+                        candidates[0])
+        elif not wrapped:
+            raise ValueError(
+                f"Conflicting GOFF PR/UR offsets for {ref_date}->{sec_date}, "
+                f"frame={geometry[4]} subswath={geometry[5]} CRID={pair_crid}. "
+                "Offsets are not phase-wrapped; choose --processing PR or --processing UR explicitly."
+            )
+        else:
+            raise ValueError(
+                f"Conflicting GUNW PR/UR phase values for {ref_date}->{sec_date}, "
+                f"frame={geometry[4]} subswath={geometry[5]} CRID={pair_crid}. "
+                "A magnitude-only guess is not an adequate phase-ambiguity resolution; "
+                "choose --processing PR or --processing UR explicitly, or resolve the ambiguity "
+                "with a validated redundant-network closure analysis."
+            )
+
+        for proc, pair in candidates:
+            if pair is best[1]:
+                continue
+            gap = abs(pair.value - best[1].value)
+            if wrapped:
+                logger.warning(
+                    "%s -> %s frame %s sub %s CRID %s: dropped %s (%+.1f mm), "
+                    "%.1f mm from kept %s = %.2f fringes",
+                    ref_date, sec_date, geometry[4], geometry[5], pair_crid,
+                    proc, pair.value, gap, best[0], gap / fringe_mm,
+                )
+            else:
+                logger.warning(
+                    "%s -> %s frame %s sub %s CRID %s: duplicate GOFF values agree; "
+                    "kept %s, dropped %s",
+                    ref_date, sec_date, geometry[4], geometry[5], pair_crid,
+                    best[0], proc,
+                )
+            dropped.append((key, proc, pair.value, gap))
         out.append(best[1])
 
-    for key, proc, val, gap, fr in dropped:
-        if wrapped:
-            logger.warning("  dropped %s (%+.1f mm), %.1f mm from the kept value "
-                           "= %.2f fringes", proc, val, gap, fr)
-        else:
-            logger.warning("  dropped %s (%+.1f mm), %.1f mm from the kept value "
-                           "(offsets are not wrapped - this is a processing "
-                           "difference, not a cycle)", proc, val, gap)
+    by_interval = defaultdict(set)
+    for pair in out:
+        by_interval[(pair.direction, pair.path, pair.ref, pair.sec)].add(pair.network_key())
+    if any(len(geometries) > 1 for geometries in by_interval.values()):
+        logger.warning(
+            "One or more acquisition intervals contain multiple frame/subswath/CRID "
+            "footprints. They were retained as separate network identities rather than silently dropping all but one."
+        )
 
-    logger.info("Loaded %d pairs from %s (%d duplicate product(s) dropped)",
-                len(out), path.name, len(dropped))
+    logger.info("Loaded %d %s pairs from %s (%d duplicate product(s) dropped)",
+                len(out), actual_product, path.name, len(dropped))
     return out
-
 
 def pairs_from_dir(directory: Path, product: str = "GUNW") -> list[Pair]:
     """
@@ -247,17 +444,21 @@ def pairs_from_dir(directory: Path, product: str = "GUNW") -> list[Pair]:
     out = []
     for fp in files:
         stamps = re.findall(r"_(\d{8})T\d{6}", fp.name)
-        m = re.search(rf"_{product}_\d+_(\d+)_([AD])_", fp.name)
-        if len(stamps) < 4 or not m:
-            logger.warning("Cannot parse %s", fp.name)
+        metadata = granule_metadata(fp.name)
+        if len(stamps) < 4 or metadata is None:
+            logger.warning("Cannot parse full NISAR footprint/release identity from %s", fp.name)
+            continue
+        if metadata["product"] != product:
+            logger.warning("Product filename does not match requested %s: %s", product, fp.name)
             continue
         out.append(
             Pair(
-                path=int(m.group(1)),
-                direction=m.group(2),
+                path=metadata["path"],
+                direction=metadata["direction"],
                 ref=datetime.strptime(stamps[0], "%Y%m%d").date(),
                 sec=datetime.strptime(stamps[2], "%Y%m%d").date(),
                 source=str(fp),
+                metadata=metadata,
             )
         )
     return out
@@ -293,16 +494,19 @@ def connected_components(pairs: list[Pair]) -> list[list[date]]:
 
 def describe_network(pairs: list[Pair]) -> dict:
     by_geom: dict[tuple, list[Pair]] = defaultdict(list)
+    representative: dict[tuple, Pair] = {}
     for p in pairs:
-        by_geom[(p.direction, p.path)].append(p)
+        key = p.network_key()
+        by_geom[key].append(p)
+        representative.setdefault(key, p)
 
-    print(f"\n{len(pairs)} interferograms across {len(by_geom)} geometries\n")
+    print(f"\n{len(pairs)} interferograms across {len(by_geom)} spatial/release networks\n")
     summary = {}
 
-    for (direction, path), group in sorted(by_geom.items()):
+    for key, group in sorted(by_geom.items(), key=lambda item: str(item[0])):
         comps = connected_components(group)
         epochs = sorted({e for p in group for e in (p.ref, p.sec)})
-        label = f"{'ASCENDING' if direction == 'A' else 'DESCENDING'} path {path}"
+        label = representative[key].network_label()
         print("=" * 68)
         print(f"{label}   {len(group)} pairs, {len(epochs)} epochs, "
               f"{len(comps)} connected component(s)")
@@ -347,25 +551,60 @@ def invert_component(pairs: list[Pair], epochs: list[date]) -> dict:
     d(epochs[0]) is fixed at 0 - every series is relative to its own first
     acquisition, which is why disconnected components can never be compared.
     """
-    epochs = sorted(epochs)
+    epochs = sorted(set(epochs))
     index = {e: i for i, e in enumerate(epochs)}
     n_unknown = len(epochs) - 1
-
-    usable = [p for p in pairs if p.value is not None]
-    if not usable:
-        return {"error": "no pairs carry a measured value"}
-    if n_unknown == 0:
+    if n_unknown < 1:
         return {"error": "single epoch"}
+
+    # Only finite, measured edges can constrain a numeric inversion. Catalog
+    # edges or pairs whose measurement failed must not artificially connect
+    # components in the design matrix.
+    usable = []
+    for pair in pairs:
+        if pair.value is None:
+            continue
+        try:
+            value = float(pair.value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not np.isfinite(value):
+            continue
+        if pair.ref not in index or pair.sec not in index or pair.sec <= pair.ref:
+            return {"error": "pair dates are inconsistent with the supplied epoch set"}
+        usable.append((pair, value))
+    if not usable:
+        return {"error": "no finite pairs carry a measured value"}
 
     G = np.zeros((len(usable), n_unknown))
     obs = np.zeros(len(usable))
-    for r, p in enumerate(usable):
+    for r, (p, value) in enumerate(usable):
         i, j = index[p.ref], index[p.sec]
         if i > 0:
             G[r, i - 1] = -1.0
         if j > 0:
             G[r, j - 1] = +1.0
-        obs[r] = p.value
+        obs[r] = value
+
+    # numpy.linalg.lstsq returns a minimum-norm answer for a rank-deficient
+    # graph instead of raising. Such an answer bridges unobserved epoch gaps
+    # and must never be published as a cumulative displacement series.
+    design_rank = int(np.linalg.matrix_rank(G))
+    if design_rank < n_unknown:
+        return {
+            "error": f"rank-deficient measured network ({design_rank}/{n_unknown}); inversion withheld",
+            "design_matrix_rank": design_rank,
+            "unknown_epoch_count": n_unknown,
+            "n_pairs": len(usable),
+        }
+    design_condition = float(np.linalg.cond(G))
+    if not np.isfinite(design_condition) or design_condition > 1e10:
+        return {
+            "error": f"ill-conditioned measured network (condition={design_condition:.3g}); inversion withheld",
+            "design_matrix_rank": design_rank,
+            "design_matrix_condition": design_condition,
+            "n_pairs": len(usable),
+        }
 
     solution, *_ = np.linalg.lstsq(G, obs, rcond=None)
     cumulative = np.concatenate([[0.0], solution])
@@ -391,7 +630,13 @@ def invert_component(pairs: list[Pair], epochs: list[date]) -> dict:
         coef, *_ = np.linalg.lstsq(A, cumulative, rcond=None)
         velocity = float(coef[0])
         fit_res = A @ coef - cumulative
-        if len(epochs) > 2:
+        # A slope fit to the cumulative curve is not an independent
+        # substitute for network closure. If the measured pair graph is exactly
+        # determined, it has zero residual DOF and cannot provide a data-derived
+        # uncertainty for the underlying pair inversion. Keep the slope as a
+        # diagnostic, but withhold its formal error unless the network itself
+        # has redundant measured edges.
+        if dof > 0:
             s = np.sqrt(np.sum(fit_res ** 2) / (len(epochs) - 2))
             try:
                 velocity_err = float(s * np.sqrt(np.linalg.inv(A.T @ A)[0, 0]))
@@ -408,6 +653,9 @@ def invert_component(pairs: list[Pair], epochs: list[date]) -> dict:
         "velocity_mm_per_day": velocity,
         "velocity_err_mm_per_day": velocity_err,
         "n_pairs": len(usable),
+        "design_matrix_rank": design_rank,
+        "design_matrix_condition": design_condition,
+        "network_status": "REDUNDANT" if dof > 0 else "EXACTLY_DETERMINED_NO_RESIDUAL_DOF",
     }
 
 
@@ -580,8 +828,12 @@ def measure_pairs(pairs: list[Pair], coh_threshold: float,
         p.n_px = n
         p.coherence = (float(r["coherence"][valid].mean())
                        if r["coherence"] is not None else None)
-        logger.info("%s -> %s : %+8.2f mm  (%d px, coh %.2f)",
-                    p.ref, p.sec, p.value, n,
+        # Include the exact granule basename. Candidate diagnostics must join
+        # the target-window measurement to the AOI median from the same product;
+        # dates alone collide across ascending/descending tracks and CRIDs.
+        granule_identity = Path(p.source).name if p.source else "UNKNOWN"
+        logger.info("%s -> %s [%s] : %+8.2f mm  (%d px, coh %.2f)",
+                    p.ref, p.sec, granule_identity, p.value, n,
                     p.coherence if p.coherence is not None else float("nan"))
 
     if common_ref:
@@ -608,14 +860,14 @@ def apply_common_datum(pairs: list[Pair], lattices: dict, target_lat, target_lon
     groups: dict[tuple, list[Pair]] = defaultdict(list)
     for p in pairs:
         if id(p) in lattices:
-            groups[(p.direction, p.path)].append(p)
+            groups[p.network_key()].append(p)
 
-    for (direction, path), group in sorted(groups.items()):
+    for key, group in sorted(groups.items(), key=lambda item: str(item[0])):
+        label = group[0].network_label()
         stack = [lattices[id(p)][0] for p in group]
         _, grid, epsg = lattices[id(group[0])]
         if any(lattices[id(p)][0].shape != stack[0].shape for p in group):
-            logger.error("%s path %s: pairs landed on different lattices - no "
-                         "common datum", direction, path)
+            logger.error("%s: pairs landed on different lattices - no common datum", label)
             continue
         centre = None
         if target_lat is not None and target_lon is not None:
@@ -632,11 +884,11 @@ def apply_common_datum(pairs: list[Pair], lattices: dict, target_lat, target_lon
         try:
             fixed, consts = rereference(stack, stable)
         except ValueError as exc:
-            logger.error("%s path %s: %s - no common datum, pairs left unmeasured",
-                         direction, path, exc)
+            logger.error("%s: %s - no common datum, pairs left unmeasured",
+                         label, exc)
             continue
-        logger.info("%s path %s: common datum on %d px valid in all %d pairs",
-                    direction, path, int(stable.sum()), len(group))
+        logger.info("%s: common datum on %d px valid in all %d pairs",
+                    label, int(stable.sum()), len(group))
         for p, f, k in zip(group, fixed, consts):
             if centre is not None:
                 p.value, n = window_median(f, centre, radius_px)
@@ -741,6 +993,12 @@ def main() -> int:
     ap.add_argument("--invert", action="store_true", help="run the inversion (needs --dir)")
     ap.add_argument("--product", choices=("GUNW", "GOFF"), default="GUNW",
                     help="which product to build the series from")
+    ap.add_argument("--processing", choices=("PR", "UR"),
+                    help="with --from-stats, explicitly select routine (PR) or urgent (UR) products")
+    ap.add_argument("--crid", metavar="CRID",
+                    help="with --from-stats, select one exact release (e.g. X05010 or P05023); prevents mixed-release duplicate selection")
+    ap.add_argument("--min-valid-pixels", type=int, default=6,
+                    help="with --from-stats, skip rows with fewer usable pixels (default: 6)")
     ap.add_argument("--goff-layer", default="layer2",
                     help="GOFF correlation-window layer (layer3 is usually quietest)")
     ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
@@ -767,13 +1025,40 @@ def main() -> int:
     ap.add_argument("--json", metavar="OUT.json", help="dump the network summary")
     args = ap.parse_args()
 
-    from gunw_reader import set_aoi
+    from gunw_reader import AOIS, point_in_ring, set_aoi
     set_aoi(args.aoi)
 
+    if (args.target_lat is None) != (args.target_lon is None):
+        ap.error("--target-lat and --target-lon must be supplied together")
+    if args.target_lat is not None:
+        if not (np.isfinite(args.target_lat) and np.isfinite(args.target_lon)
+                and -90 <= args.target_lat <= 90 and -180 <= args.target_lon <= 180):
+            ap.error("target coordinates must be finite WGS84 latitude/longitude")
+        if not point_in_ring(args.target_lon, args.target_lat, AOIS[args.aoi]):
+            ap.error(f"target point ({args.target_lat:.6f}, {args.target_lon:.6f}) is outside the exact {args.aoi} AOI polygon; select the AOI that actually contains the target")
+
+    if args.target_radius < 0:
+        ap.error("--target-radius must be non-negative")
+    if args.buffer_km < 0:
+        ap.error("--buffer-km must be non-negative")
+
+    if (args.processing or args.crid or args.min_valid_pixels != 6) and not args.from_stats:
+        ap.error("--processing, --crid and --min-valid-pixels are supported only with --from-stats")
+
     if args.from_stats:
-        pairs = pairs_from_stats(resolve(args.from_stats),
-                                 layer=args.goff_layer
-                                 if args.product == "GOFF" else None)
+        if args.min_valid_pixels < 1:
+            ap.error("--min-valid-pixels must be positive")
+        try:
+            pairs = pairs_from_stats(
+                resolve(args.from_stats),
+                layer=args.goff_layer if args.product == "GOFF" else None,
+                product=args.product,
+                processing=args.processing,
+                crid=args.crid,
+                min_valid_pixels=args.min_valid_pixels,
+            )
+        except ValueError as exc:
+            ap.error(str(exc))
         args.invert = True          # the values are already in the CSV
     elif args.from_catalogue:
         pairs = pairs_from_catalogue()
@@ -819,11 +1104,12 @@ def main() -> int:
 
     by_geom = defaultdict(list)
     for p in pairs:
-        by_geom[(p.direction, p.path)].append(p)
+        by_geom[p.network_key()].append(p)
 
     all_rows: list[dict] = []
-    for (direction, path), group in sorted(by_geom.items()):
-        label = f"{'ASC' if direction == 'A' else 'DESC'} path {path}"
+    representatives = {key: group[0] for key, group in by_geom.items()}
+    for key, group in sorted(by_geom.items(), key=lambda item: str(item[0])):
+        label = representatives[key].network_label(short=True)
         for k, comp in enumerate(connected_components(group), 1):
             inside = [p for p in group if p.ref in comp and p.sec in comp]
             all_rows += report_series(label, k, invert_component(inside, comp))

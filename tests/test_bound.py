@@ -43,9 +43,26 @@ def test_winter_pairs_are_beta_and_summer_pairs_provisional():
 
 
 def test_a_pair_straddling_the_release_gap_is_not_rounded_to_either():
-    """Jan 2026 to Jul 2026 is neither window. Calling it BETA would hide that."""
-    gap = BETA.replace("20251210T233920_20251210T233955", "20260714T233920_20260714T233954")
+    """Date-only fallback preserves UNKNOWN for a pair spanning release windows."""
+    # Strip the CRID to exercise only the backwards-compatible date fallback.
+    gap = BETA.replace("X05010_N_F_J_001", "N_F_J_001").replace(
+        "20251210T233920_20251210T233955", "20260714T233920_20260714T233954"
+    )
+    assert crid_of(gap) == ""
     assert product_maturity(gap) == "UNKNOWN"
+
+
+def test_crid_takes_precedence_over_dates_for_supplemental_provisional():
+    """ASF documents supplemental PROVISIONAL products with earlier acquisitions."""
+    supplemental = ("NISAR_L2_PR_GUNW_009_098_A_016_010_4000_SH_"
+                    "20260103T233921_20260103T233956_20260115T233922_20260115T233956_"
+                    "P05023_N_F_J_001.h5")
+    assert product_maturity(supplemental) == "PROVISIONAL"
+
+
+def test_unknown_recognized_crid_is_not_overridden_by_date_guess():
+    unfamiliar = BETA.replace("X05010", "V05030")
+    assert product_maturity(unfamiliar) == "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +148,9 @@ def _cand(cid="4", elev="5370"):
             "slope_deg": "36.7", "aspect_deg": "350.7", "reading": "DETACHMENT-like"}
 
 
-def _goff(cid, pair, px, blk):
-    return {"target_id": cid, "usable": "True", "file": f"GOFF_{pair}_PR_HH-layer2.tif",
+def _goff(cid, pair, px, blk, *, window_px=169, usable="True"):
+    return {"target_id": cid, "usable": usable, "window_px": str(window_px),
+            "file": f"GOFF_{pair}_PR_HH-layer2.tif",
             "local_floor_mm_day": str(px), "block_median_floor_mm_day": str(blk)}
 
 
@@ -164,8 +182,12 @@ def test_the_committed_bound_table_matches_what_bound_computes():
     """The table the demo and the site read must be the one this code writes."""
     import csv
     rows = {r["id"]: r for r in csv.DictReader(open(bound.OUT / "bound_source.csv"))}
-    cands = [c for c in bound.load("scar_candidates_source.csv")
-             if c["reading"] == "DETACHMENT-like"]
+    all_cands = [c for c in bound.load("scar_candidates_source.csv")
+                 if c["reading"] == "DETACHMENT-like"]
+    cands, excluded = bound.eligible_source_candidates(all_cands)
+    assert any(str(c["id"]) == "9" for c in excluded)
+    assert all(str(c["id"]) != "9" for c in cands)
+    assert set(rows) == {str(c["id"]) for c in cands}
     goff = bound.load("local_floor_candidates.csv")
     phase = bound.load("local_floor_phase_candidates.csv")
     cref = bound.load("common_ref_summer.csv")
@@ -173,3 +195,51 @@ def test_the_committed_bound_table_matches_what_bound_computes():
         fresh = bound.assess(c, goff, phase, cref)
         assert str(fresh["ratio_los_pixel"]) == rows[c["id"]]["ratio_los_pixel"]
         assert str(fresh["los_floor_block_mm_day"]) == rows[c["id"]]["los_floor_block_mm_day"]
+
+
+def test_source_bound_refuses_a_candidate_outside_the_source_polygon():
+    candidate = _cand("9", "6099")
+    candidate["lat"] = "28.25460"
+    candidate["lon"] = "85.47591"
+    with pytest.raises(ValueError, match="outside the exact source AOI"):
+        bound.assess(candidate, [], [], [])
+
+
+def test_nonfinite_noise_floor_values_are_not_used_as_bounds():
+    assert math.isnan(bound.worst([{"floor": "inf"}, {"floor": "nan"}], "floor"))
+    assert bound.worst([{"floor": "1.0"}, {"floor": "inf"}], "floor") == 1.0
+
+
+def test_bound_rejects_stale_usable_flags_with_insufficient_support_or_invalid_floors():
+    invalid = [
+        _goff("4", "20260702_20260714", 32.0, 9.2, window_px=3),
+        _goff("4", "20260714_20260726", 0.0, 6.2),
+        _goff("4", "20260726_20260819", float("inf"), 6.2),
+        _goff("4", "20260819_20260831", 999.0, 999.0),  # post-event; also excluded
+    ]
+    result = bound.assess(_cand(), invalid, [], [])
+    assert result["goff_intervals"] == 0
+    assert math.isnan(result["los_floor_pixel_mm_day"])
+    assert math.isnan(result["downslope_bound_mm_day"])
+    assert math.isnan(result["ratio_los_pixel"])
+
+
+def test_bound_ignores_invalid_block_floor_but_keeps_valid_pixel_floor():
+    rows = [
+        _goff("4", "20260702_20260714", 32.0, 0.0),
+        _goff("4", "20260714_20260726", 26.0, float("nan")),
+    ]
+    result = bound.assess(_cand(), rows, [], [])
+    assert result["goff_intervals"] == 2
+    assert result["los_floor_pixel_mm_day"] == 32.0
+    assert math.isnan(result["los_floor_block_mm_day"])
+    assert math.isnan(result["ratio_los_block"])
+    assert "interpreted as LOS" in result["precursor_rate_assumption"]
+
+
+def test_floor_row_eligibility_requires_sample_count_and_finite_positive_value():
+    assert bound.eligible_floor_row(_goff("4", "20260702_20260714", 1.0, 1.0), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", 1.0, 1.0, window_px=5), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", 0.0, 1.0), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", float("nan"), 1.0), "local_floor_mm_day")
+    assert not bound.eligible_floor_row(_goff("4", "20260702_20260714", 1.0, 1.0, usable="False"), "local_floor_mm_day")

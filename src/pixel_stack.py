@@ -42,6 +42,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -101,9 +102,15 @@ def align(rasters: list[dict]) -> tuple[np.ndarray, np.ndarray, dict]:
     metas = []
     for r in rasters:
         with rasterio.open(r["path"]) as src:
-            metas.append({"t": src.transform, "h": src.height, "w": src.width,
-                          "crs": src.crs, "disp": src.read(1),
-                          "coh": src.read(2) if src.count > 1 else None})
+            transform = src.transform
+            if src.crs is None:
+                raise SystemExit(f"Raster has no CRS: {r['path']}")
+            if abs(transform.b) > 1e-12 or abs(transform.d) > 1e-12:
+                raise SystemExit(f"Rotated/sheared raster is unsupported by this north-up stack: {r['path']}")
+            disp = src.read(1, masked=True).filled(np.nan).astype("float32")
+            coh = src.read(2, masked=True).filled(np.nan).astype("float32") if src.count > 1 else None
+            metas.append({"t": transform, "h": src.height, "w": src.width,
+                          "crs": src.crs, "disp": disp, "coh": coh})
 
     res = {(round(m["t"].a, 9), round(m["t"].e, 9)) for m in metas}
     if len(res) != 1:
@@ -112,12 +119,38 @@ def align(rasters: list[dict]) -> tuple[np.ndarray, np.ndarray, dict]:
         raise SystemExit("Rasters are in different CRSs")
 
     px, py = metas[0]["t"].a, metas[0]["t"].e
+    if not (np.isfinite(px) and np.isfinite(py) and px > 0 and py < 0):
+        raise SystemExit(f"Expected a finite north-up raster grid with positive x and negative y posting; got {(px, py)}")
+    if any(
+        not np.isclose(m["t"].a, px, rtol=0, atol=1e-9)
+        or not np.isclose(m["t"].e, py, rtol=0, atol=1e-9)
+        for m in metas
+    ):
+        raise SystemExit("Rasters have incompatible x/y posting.")
     x0 = min(m["t"].c for m in metas)
     y0 = max(m["t"].f for m in metas)
     x1 = max(m["t"].c + m["w"] * px for m in metas)
     y1 = min(m["t"].f + m["h"] * py for m in metas)
-    W = int(round((x1 - x0) / px))
-    H = int(round((y1 - y0) / py))
+
+    # Do not round a half-pixel or off-lattice offset into false spatial
+    # agreement. Every source origin and the union extent must fall on the
+    # same lattice before any array assignment.
+    tolerance_px = 1e-6
+    for m in metas:
+        raw_col = (m["t"].c - x0) / px
+        raw_row = (m["t"].f - y0) / py
+        if abs(raw_col - round(raw_col)) > tolerance_px or abs(raw_row - round(raw_row)) > tolerance_px:
+            raise SystemExit(
+                f"Raster origin is not aligned to the common pixel lattice: {m['path'] if 'path' in m else m['t']}"
+            )
+    width_float = (x1 - x0) / px
+    height_float = (y1 - y0) / py
+    if abs(width_float - round(width_float)) > tolerance_px or abs(height_float - round(height_float)) > tolerance_px:
+        raise SystemExit("Raster union extent is not an integer number of common-grid pixels.")
+    W = int(round(width_float))
+    H = int(round(height_float))
+    if W <= 0 or H <= 0:
+        raise SystemExit(f"Invalid common-grid dimensions {(H, W)}.")
 
     cube = np.full((len(metas), H, W), np.nan, dtype="float32")
     cohs = np.full((len(metas), H, W), np.nan, dtype="float32")
@@ -156,41 +189,88 @@ def chain(rasters: list[dict]) -> list[list[dict]]:
 
 
 def stack(run: list[dict], remove_common_mode: bool = True):
+    if len(run) < 2:
+        raise ValueError(
+            "Per-pixel velocity requires at least two consecutive pair intervals "
+            "(three acquisition epochs); one pair cannot estimate residual-based uncertainty."
+        )
     cube, cohs, geo = align(run)
     n_ep = len(run) + 1
     H, W = geo["shape"]
 
-    if remove_common_mode:
-        # One number per epoch: the scene median. Whatever is common to the
-        # whole AOI is atmosphere or an unresolved reference offset; whatever
-        # survives is local, which is the only thing a landslide can be.
-        for k in range(cube.shape[0]):
-            med = np.nanmedian(cube[k])
-            if np.isfinite(med):
-                cube[k] -= med
+    common_mode_pair_medians_mm: list[float | None] = []
+    for k in range(cube.shape[0]):
+        finite_values = cube[k][np.isfinite(cube[k])]
+        med = float(np.median(finite_values)) if finite_values.size else float("nan")
+        common_mode_pair_medians_mm.append(med if np.isfinite(med) else None)
+        if remove_common_mode and np.isfinite(med):
+            # Removing each pair's spatial median can also remove true broad
+            # AOI-wide motion. Its exact applied value is retained for audit,
+            # and the pipeline also runs a no-removal sensitivity diagnostic.
+            cube[k] -= med
 
     cum = np.full((n_ep, H, W), np.nan, dtype="float32")
-    cum[0] = 0.0
+    # The first epoch is a relative zero only where at least one actual
+    # pairwise measurement exists; it is not synthetic support for nodata.
+    observed_pair_count = np.isfinite(cube).sum(axis=0).astype("uint16")
+    # A missing pair breaks the per-pixel temporal chain. Keep both the total
+    # number of observed pairs and the length of the longest contiguous segment
+    # so the spatial attrition is visible instead of disappearing into the
+    # complete-case velocity mask.
+    longest_contiguous_pair_count = np.zeros((H, W), dtype="uint16")
+    current_contiguous_pair_count = np.zeros((H, W), dtype="uint16")
+    for pair_index in range(cube.shape[0]):
+        pair_is_valid = np.isfinite(cube[pair_index])
+        current_contiguous_pair_count = np.where(
+            pair_is_valid, current_contiguous_pair_count + 1, 0
+        ).astype("uint16")
+        longest_contiguous_pair_count = np.maximum(
+            longest_contiguous_pair_count, current_contiguous_pair_count
+        )
+    has_any_observation = observed_pair_count > 0
+    cum[0, has_any_observation] = 0.0
     for k in range(cube.shape[0]):
-        cum[k + 1] = cum[k] + cube[k]
+        previous = cum[k]
+        observed = np.isfinite(cube[k]) & np.isfinite(previous)
+        cum[k + 1, observed] = previous[observed] + cube[k, observed]
 
+    complete = np.isfinite(cum).all(axis=0)
+    partial_support = (observed_pair_count > 0) & ~complete
     days = np.array([0.0] + list(np.cumsum([(r["sec"] - r["ref"]).days for r in run])))
-    ok = np.isfinite(cum).all(axis=0)
+    valid_pair_count = int(complete.sum())
 
     vel = np.full((H, W), np.nan, dtype="float32")
     sig = np.full((H, W), np.nan, dtype="float32")
-    if ok.any():
-        y = cum[:, ok]                                   # (n_ep, n_px)
+    dof = n_ep - 2
+    if dof <= 0:
+        # Defensive invariant even though the public API gate above requires
+        # at least three epochs.
+        raise ValueError("Insufficient temporal degrees of freedom for a residual-based velocity uncertainty.")
+    if complete.any():
+        y = cum[:, complete]                            # (n_ep, n_px)
         A = np.vstack([days, np.ones_like(days)]).T
+        if np.linalg.matrix_rank(A) < 2 or not np.isfinite(A).all():
+            raise ValueError("Temporal design matrix is singular or non-finite.")
         coef, *_ = np.linalg.lstsq(A, y, rcond=None)
         resid = A @ coef - y
-        dof = max(n_ep - 2, 1)
         s = np.sqrt((resid ** 2).sum(axis=0) / dof)
         se = s * np.sqrt(np.linalg.inv(A.T @ A)[0, 0])
-        vel[ok] = coef[0]
-        sig[ok] = se
-    return {"velocity": vel, "sigma": sig, "cumulative": cum, "coherence": cohs,
-            "valid": ok, "days": days, "geo": geo, "run": run}
+        vel[complete] = coef[0]
+        sig[complete] = se
+    return {
+        "velocity": vel, "sigma": sig, "cumulative": cum, "coherence": cohs,
+        "valid": complete, "days": days, "geo": geo, "run": run,
+        "observed_pair_count": observed_pair_count,
+        "longest_contiguous_pair_count": longest_contiguous_pair_count,
+        "partial_support": partial_support,
+        "complete_series_pixels": valid_pair_count,
+        "total_grid_pixels": int(complete.size),
+        "minimum_pairs_for_velocity": 2,
+        "uncertainty_status": "RESIDUAL_BASED_DIAGNOSTIC_NOT_INDEPENDENTLY_VALIDATED" if dof > 0 else "WITHHELD_NO_DOF",
+        "common_mode_removed": bool(remove_common_mode),
+        "common_mode_policy": "PAIRWISE_MEDIAN_REMOVED" if remove_common_mode else "PAIRWISE_MEDIAN_RETAINED",
+        "common_mode_pair_medians_mm": common_mode_pair_medians_mm,
+    }
 
 
 def report(res: dict, label: str) -> None:
@@ -199,8 +279,16 @@ def report(res: dict, label: str) -> None:
     print(f"\n{'='*72}\n{label}   {run[0]['ref']} .. {run[-1]['sec']}  "
           f"({len(run)} pairs, {int(res['days'][-1])} d)\n{'='*72}")
     n = int(ok.sum())
-    print(f"  pixels with a complete series : {n:,} of {ok.size:,} "
-          f"({100*n/ok.size:.0f}%)")
+    total = int(ok.size)
+    partial = int(((res["observed_pair_count"] > 0) & ~ok).sum())
+    never = int((res["observed_pair_count"] == 0).sum())
+    print(f"  common-mode policy            : {res['common_mode_policy']}")
+    print(f"  residual uncertainty status   : {res['uncertainty_status']}")
+    print(f"  pixels with a complete series : {n:,} of {total:,} "
+          f"({100*n/max(total, 1):.1f}%)")
+    print(f"  partial temporal support      : {partial:,} px "
+          "(some observed pairs, but not a complete connected chain)")
+    print(f"  no valid pair observations    : {never:,} px")
     if n == 0:
         print("  nothing to fit"); return
 
@@ -429,12 +517,45 @@ def cross_geometry_check(found: dict) -> None:
 def write_geotiff(res: dict, out: Path) -> None:
     import rasterio
     v, s = res["velocity"], res["sigma"]
+    # Bands 1-2 hold only complete-chain velocity and its uncertainty.
+    # Bands 3-4 preserve partial support explicitly; they are not displacement
+    # measurements and must not be interpreted as zero velocity.
+    out.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out, "w", driver="GTiff", height=v.shape[0], width=v.shape[1],
-                       count=2, dtype="float32", crs=res["geo"]["crs"],
+                       count=4, dtype="float32", crs=res["geo"]["crs"],
                        transform=res["geo"]["transform"], nodata=np.nan,
                        compress="deflate", predictor=3) as dst:
-        dst.write(v, 1); dst.set_band_description(1, "LOS velocity (mm/day)")
-        dst.write(s, 2); dst.set_band_description(2, "1-sigma (mm/day)")
+        dst.write(v, 1); dst.set_band_description(1, "LOS velocity (mm/day; complete connected chain only)")
+        dst.write(s, 2); dst.set_band_description(2, "Residual-based OLS sigma (mm/day; diagnostic only)")
+        dst.write(res["observed_pair_count"].astype("float32"), 3)
+        dst.set_band_description(3, "Observed valid pair count (support diagnostic; not motion)")
+        dst.write(res["longest_contiguous_pair_count"].astype("float32"), 4)
+        dst.set_band_description(4, "Longest contiguous valid pair count (support diagnostic; not motion)")
+        pair_records = [
+            {
+                "source": str(Path(p.get("path", "")).name),
+                "reference_date": p["ref"].isoformat(),
+                "secondary_date": p["sec"].isoformat(),
+            }
+            for p in res["run"]
+        ]
+        dst.update_tags(
+            support_policy="velocity bands require complete connected pair chain",
+            partial_support_pixels=str(int(res["partial_support"].sum())),
+            complete_series_pixels=str(int(res["complete_series_pixels"])),
+            no_pair_support_pixels=str(int((res["observed_pair_count"] == 0).sum())),
+            degrees_of_freedom=str(max(len(res["days"]) - 2, 0)),
+            uncertainty_status=str(res["uncertainty_status"]),
+            common_mode_removed=str(res["common_mode_removed"]).lower(),
+            common_mode_policy=str(res["common_mode_policy"]),
+            common_mode_pair_medians_mm_json=json.dumps(res["common_mode_pair_medians_mm"], separators=(",", ":")),
+            pair_records_json=json.dumps(pair_records, separators=(",", ":")),
+            geometry=str(res["run"][0].get("geom", "unknown")),
+            first_acquisition_date=str(res["run"][0]["ref"].isoformat()),
+            last_acquisition_date=str(res["run"][-1]["sec"].isoformat()),
+            source_pair_count=str(len(res["run"])),
+            scientific_claim_limit="Relative LOS trend diagnostic; not independent geophysical validation or a hazard finding.",
+        )
     logger.info("Wrote %s", out)
 
 
@@ -480,8 +601,15 @@ def main() -> int:
         elif fp:
             logger.info("%s cluster did not beat its own noise null - excluded "
                         "from the cross-geometry check.", run[0]["geom"])
-        if args.geotiff and len(runs) == 1:
-            write_geotiff(res, Path(args.geotiff))
+        if args.geotiff:
+            base = Path(args.geotiff)
+            if len(runs) == 1:
+                output_path = base
+            else:
+                geometry = re.sub(r"[^A-Za-z0-9_-]+", "_", str(run[0]["geom"]))
+                output_path = base.with_name(f"{base.stem}_{geometry}_chain{k:02d}{base.suffix or '.tif'}")
+            write_geotiff(res, output_path)
+            logger.info("Wrote target-free per-pixel stack diagnostic: %s", output_path)
 
     cross_geometry_check(found)
     return 0

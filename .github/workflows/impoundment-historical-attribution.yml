@@ -1,0 +1,114 @@
+name: Impoundment historical-model attribution on fixed DEM grids
+
+on:
+  push:
+    branches:
+      - science/valid-pixel-target4-9-audit
+    paths:
+      - ".github/workflows/impoundment-historical-attribution.yml"
+      - "tools/compare_historical_impoundment.py"
+      - "src/impoundment.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: impoundment-historical-attribution
+  cancel-in-progress: false
+
+jobs:
+  same-grid-attribution:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout isolated science branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r requirements.txt
+
+      - name: Download the immutable DEM caches from the completed reproducibility audit
+        uses: actions/download-artifact@v4
+        with:
+          name: impoundment-semantic-audit-39777265576
+          path: ${{ runner.temp }}/impoundment-prior-audit
+          run-id: 39777265576
+          github-token: ${{ github.token }}
+
+      - name: Materialize historical code from the baseline GeoJSON parent commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          HISTORICAL_COMMIT=298b6b18c53511821850517822a4a3b7b045a1e2
+          git show "${HISTORICAL_COMMIT}:src/impoundment.py" > "$RUNNER_TEMP/impoundment_historical.py"
+          python - "$RUNNER_TEMP/impoundment_historical.py" <<'PY'
+          import hashlib,sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          print(f"HISTORICAL_SOURCE_BYTES={p.stat().st_size}")
+          print(f"HISTORICAL_SOURCE_SHA256={hashlib.sha256(p.read_bytes()).hexdigest()}")
+          PY
+
+      - name: Verify cached DEM grids and compare historical/current algorithms on identical samples
+        run: |
+          set -euo pipefail
+          python tools/compare_historical_impoundment.py \
+            --historical-module "$RUNNER_TEMP/impoundment_historical.py" \
+            --dem-dir "$RUNNER_TEMP/impoundment-prior-audit/dem" \
+            --baseline-dir outputs \
+            --out-dir "$RUNNER_TEMP/impoundment-historical-attribution" \
+            --source-run-id 39777265576
+
+      - name: Publish attribution summary; do not auto-accept mismatches
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/impoundment-historical-attribution/historical_model_attribution.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json,sys
+          from pathlib import Path
+          report_path=Path(sys.argv[1])
+          summary=Path(sys.argv[2])
+          if not report_path.is_file():
+              summary.write_text("## Historical impoundment attribution\n\nStatus: INCOMPLETE — no controlled comparison report was written.\n")
+              raise SystemExit(0)
+          d=json.loads(report_path.read_text())
+          lines=[
+            "## Historical impoundment attribution",
+            "",
+            f"- Result: **{d.get('attribution_result','UNKNOWN')}**",
+            f"- AOIs where the historical algorithm is closer to baseline: {d.get('historical_model_closer_to_baseline_aois')}/4",
+            f"- AOIs where current hydrology with historical ranking is closer to baseline than current threshold-first ranking: {d.get('current_hydrology_historical_ranking_closer_to_baseline_aois')}/4",
+            "- Same immutable DEM samples, exact same candidate parameters, and the historical model used to create the committed output snapshot were tested.",
+            "- This attributes the numerical/source of change; it does not endorse the old model or certify either model as physically accurate.",
+            "",
+            "| AOI | Historical model unmatched | Current hydrology + old ranking unmatched | Current threshold-first unmatched | H=10 historical | H=10 current+old ranking | H=10 current threshold-first | Ranking materially changes site list? |",
+            "|---|---:|---:|---:|---:|---:|---:|---|",
+          ]
+          for aoi,item in d.get("historical_model_closeness_by_aoi",{}).items():
+            sub=d["aois"][aoi]
+            old=sub["historical_model"]["scenario_site_counts_by_height_m"].get("10")
+            legacy=sub["current_hydrology_historical_ranking"]["scenario_site_counts_by_height_m"].get("10")
+            new=sub["current_threshold_first_ranking"]["scenario_site_counts_by_height_m"].get("10")
+            lines.append(f"| {aoi} | {item['historical_unmatched_site_total']} | {item['current_legacy_ranking_unmatched_site_total']} | {item['current_threshold_first_ranking_unmatched_site_total']} | {old} | {legacy} | {new} | {item['ranking_policy_effect_is_material_for_site_identity']} |")
+          lines += ["","Semantic mismatches remain REVIEW_REQUIRED. No committed GeoJSON is overwritten."]
+          with summary.open("a",encoding="utf-8") as f:f.write("\n".join(lines)+"\n")
+          PY
+
+      - name: Upload same-grid historical attribution
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impoundment-historical-attribution-${{ github.run_id }}
+          path: ${{ runner.temp }}/impoundment-historical-attribution/**
+          if-no-files-found: warn
+          retention-days: 14

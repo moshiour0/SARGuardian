@@ -29,8 +29,8 @@ import math
 import numpy as np
 import pytest
 
-from geometry_merge import (MIN_SLOPE_DEG, TRACKS, Track, downslope_unit,
-                            heading_deg, los_unit, sensitivities)
+from geometry_merge import (MIN_SLOPE_DEG, TRACKS, Track, decompose,
+                            downslope_unit, heading_deg, los_unit, sensitivities)
 
 # The reported failure point of the 26 Aug 2026 Langtang collapse, and the
 # terrain the sensitivity table is quoted at.
@@ -280,3 +280,27 @@ def test_the_west_facing_pixel_keeps_nisar_ascending_usable():
     rows = sensitivities(28.28771, 85.52809, 27.4, 273.0, 0.3)
     asc = [r for r in rows if "NISAR ASC" in r["track"]][0]
     assert abs(asc["sensitivity"]) > 0.8
+
+
+def test_east_up_decomposition_reports_conditioning_and_north_assumption():
+    asc = np.array([0.6, 0.0, 0.8])
+    desc = np.array([-0.6, 0.0, 0.8])
+    expected_east, expected_up = 4.0, 6.0
+    measured_asc = float(asc[0] * expected_east + asc[2] * expected_up)
+    measured_desc = float(desc[0] * expected_east + desc[2] * expected_up)
+
+    result = decompose(measured_asc, measured_desc, asc, desc)
+    assert result["east"] == pytest.approx(expected_east)
+    assert result["up"] == pytest.approx(expected_up)
+    assert result["design_matrix_rank"] == 2
+    assert np.isfinite(result["design_matrix_condition"])
+    assert result["north_motion_assumption"] == "FIXED_ZERO"
+    assert result["uncertainty_status"] == "NOT_PROPAGATED_INPUT_COVARIANCE_REQUIRED"
+    assert "not a full 3-D" in result["interpretation"]
+
+
+def test_east_up_decomposition_refuses_nearly_collinear_los_vectors():
+    asc = np.array([0.6, 0.0, 0.8])
+    desc = np.array([0.60000001, 0.0, 0.80000001])
+    with pytest.raises(ValueError, match="rank-deficient or ill-conditioned"):
+        decompose(1.0, 1.0, asc, desc)

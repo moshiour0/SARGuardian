@@ -55,6 +55,7 @@ import argparse
 import csv
 import logging
 import math
+import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -84,57 +85,180 @@ def load_series(path: Path) -> dict[tuple[str, int], list[dict]]:
     return dict(series)
 
 
-def load_floors(path: Path, layer: str | None = None) -> dict[tuple[date, date], float]:
+def normalize_series_id(value: str) -> str:
+    """Normalize Pair.network_label and detector-floor series identities."""
+    text = str(value or "").strip().upper()
+    text = re.sub(r"\bASCENDING\b", "ASC", text)
+    text = re.sub(r"\bDESCENDING\b", "DESC", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_NISAR_SOURCE_RE = re.compile(
+    r"NISAR_L2_(?:PR|UR)_(?P<product>GUNW|GOFF)_"
+    r"(?P<cycle>\d+)_(?P<path>\d+)_"
+    r"(?P<direction>[AD])_(?P<frame>\d+)_(?P<subswath>\d+)_"
+    r"(?P<bandwidth>\d+)_(?P<polarisation>[A-Z]{2})_",
+    re.IGNORECASE,
+)
+_NISAR_CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}(?:\.h5)?$", re.IGNORECASE)
+
+
+def series_id_from_granule(value: str) -> str:
+    """Map an exact NISAR granule basename to the timeseries network label."""
+    basename = Path(str(value or "")).name
+    match = _NISAR_SOURCE_RE.match(basename)
+    crid_match = _NISAR_CRID_RE.search(basename)
+    if not match or not crid_match:
+        return ""
+    meta = match.groupdict()
+    direction = "ASC" if meta["direction"].upper() == "A" else "DESC"
+    return normalize_series_id(
+        f"{direction} path {int(meta['path'])} frame {int(meta['frame'])} "
+        f"subswath {int(meta['subswath'])} bandwidth {int(meta['bandwidth'])} "
+        f"pol {meta['polarisation']} CRID {crid_match.group(1)} {meta['product']}"
+    )
+
+
+def load_floor_catalogue(
+    path: Path, layer: str | None = None
+) -> tuple[dict[tuple[date, date], float], dict[str, dict[tuple[date, date], float]]]:
+    """Load either legacy global floors or geometry/CRID-scoped floors, never a mixture.
+
+    Identity is read from an explicit `series_id` column, or inferred from
+    the original NISAR granule basename in `source_product`/`file`. Old
+    raster-name-only CSVs lack enough provenance and remain global/legacy.
+    Duplicate same-series processing variants retain the largest floor.
     """
-    Per-pair detection floors from a goff_reader --csv summary.
-
-    Why this exists
-    ---------------
-    One scalar floor across a stack whose per-pair floors vary twelvefold is not
-    a threshold, it is an average of thresholds, and it is wrong in both
-    directions at once. Measured over the source zone, layer2 floors run from
-    8.5 to 117.9 mm/day. Gating every interval against the median manufactures
-    excursions on the noisy geometry and hides real ones on the quiet geometry.
-
-    The concrete failure: descending 2026-06-29 -> 2026-07-11 reads +19.60
-    mm/day and clears a global 18.6 mm/day gate at 1.05x - while that pair's own
-    3-sigma floor is 114.3 mm/day, against which the same velocity is 0.17x and
-    plainly inside the noise.
-
-    Keyed by (reference, secondary) so it joins straight onto a velocity
-    interval, whose endpoints are the two acquisition dates.
-    """
-    floors: dict[tuple[date, date], float] = {}
+    global_floors: dict[tuple[date, date], float] = {}
+    scoped: dict[str, dict[tuple[date, date], float]] = defaultdict(dict)
     with open(path, newline="") as fh:
-        for row in csv.DictReader(fh):
-            if layer and row.get("layer") and layer not in row["layer"]:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            layer_value = str(row.get("layer") or "")
+            if layer and layer not in layer_value:
                 continue
             raw = row.get("detect_floor_mm_day")
             if not raw:
                 continue
-            # A string comparison against ("nan", "inf") misses "NaN", "-inf",
-            # "1e400" and anything else that parses to a non-finite float. An
-            # infinite floor would put every velocity below the gate and
-            # manufacture a non-detection silently - the one direction of error
-            # this project cannot afford, since it is the direction of the
-            # published conclusion.
             try:
-                probe = float(raw)
-            except ValueError:
+                floor = float(raw)
+            except (TypeError, ValueError, OverflowError):
                 continue
-            if not math.isfinite(probe) or probe <= 0:
+            if not math.isfinite(floor) or floor <= 0:
                 continue
             try:
                 a = datetime.strptime(row["reference"], "%Y%m%d").date()
                 b = datetime.strptime(row["secondary"], "%Y%m%d").date()
-            except (KeyError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 continue
-            f = float(raw)
-            # A pair can appear twice - routine and urgent processing of the
-            # same acquisitions. Keep the larger floor: a bound must not be
-            # improved by reprocessing the same data.
-            floors[(a, b)] = max(f, floors.get((a, b), 0.0))
-    return floors
+            if b <= a:
+                continue
+
+            explicit = normalize_series_id(row.get("series_id", ""))
+            source = row.get("source_product") or row.get("file") or ""
+            series_id = explicit or series_id_from_granule(source)
+            key = (a, b)
+            dest = scoped[series_id] if series_id else global_floors
+            dest[key] = max(floor, dest.get(key, 0.0))
+
+    # Do not combine scoped and unidentified rows: that makes the scope of a
+    # given pair ambiguous and can silently leak one track's floor to another.
+    if scoped and global_floors:
+        raise ValueError(
+            "Floor CSV mixes geometry-scoped and identity-free rows; split it into "
+            "homogeneous files or add exact NISAR source identity to every row."
+        )
+    return global_floors, dict(scoped)
+
+
+
+_TRACK_RE = re.compile(r"\b(ASC|DESC)\b(?:\s+PATH)?\s+0*(\d+)\b", re.IGNORECASE)
+
+
+def normalize_track_id(value: str) -> str:
+    """Normalize a time-series track label and a stats-table track label.
+
+    The time-series output deliberately aggregates measurements at track/path
+    resolution (for example 'ASC path 98'), while GOFF stats retain each
+    frame/subswath/CRID. A track-only time series cannot safely claim one exact
+    granule identity. For this lower-resolution use case, select floors by
+    track + acquisition interval and take the maximum across source products.
+    """
+    match = _TRACK_RE.search(str(value or ""))
+    if not match:
+        raise ValueError(f"Could not identify ASC/DESC path in {value!r}.")
+    return f"{match.group(1).upper()} {int(match.group(2))}"
+
+
+def load_track_floor_catalogue(
+    path: Path, layer: str | None = None, processing: str | None = None
+) -> dict[str, dict[tuple[date, date], float]]:
+    """Load conservative per-pair floors at the time-series track resolution.
+
+    Rows are matched to the time series' actual identity resolution: track and
+    date pair. Multiple frames, subswaths, polarizations, or CRIDs may cover
+    the same track/pair; their maximum finite positive floor wins. This avoids
+    applying a floor from a different track and avoids picking a more
+    optimistic processing variant arbitrarily. It is not a substitute for
+    exact granule-scoped floors where the time-series input retains granule
+    identity.
+    """
+    scoped: dict[str, dict[tuple[date, date], float]] = defaultdict(dict)
+    seen_rows = 0
+    with open(path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            if layer and layer not in str(row.get("layer") or ""):
+                continue
+            if processing and str(row.get("processing") or "").strip().upper() != processing.upper():
+                continue
+            raw = row.get("detect_floor_mm_day")
+            try:
+                floor = float(raw)
+                a = datetime.strptime(str(row.get("reference", "")), "%Y%m%d").date()
+                b = datetime.strptime(str(row.get("secondary", "")), "%Y%m%d").date()
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(floor) or floor <= 0 or b <= a:
+                continue
+            track_value = row.get("track") or ""
+            if not track_value:
+                source = row.get("source_product") or row.get("file") or ""
+                sid = series_id_from_granule(source)
+                if sid:
+                    track_value = sid
+            try:
+                track_id = normalize_track_id(track_value)
+            except ValueError:
+                continue
+            key = (a, b)
+            pair_floors = scoped[track_id]
+            pair_floors[key] = max(floor, pair_floors.get(key, 0.0))
+            seen_rows += 1
+    result = {track: floors for track, floors in scoped.items() if floors}
+    if not result or seen_rows == 0:
+        raise ValueError(
+            f"No finite positive track-scoped floors could be read from {path} "
+            f"(layer={layer!r}, processing={processing!r})."
+        )
+    return result
+
+
+def load_floors(
+    path: Path, layer: str | None = None, series_id: str | None = None
+) -> dict[tuple[date, date], float]:
+    """Load floors for one series; legacy identity-free files remain explicit global inputs."""
+    global_floors, scoped = load_floor_catalogue(path, layer)
+    if scoped:
+        if not series_id:
+            raise ValueError(
+                "Floor CSV contains geometry/CRID-scoped rows; supply series_id or use "
+                "load_floor_catalogue() to select a matching timeseries geometry."
+            )
+        key = normalize_series_id(series_id)
+        if key not in scoped:
+            raise ValueError(f"No floors in {path} match time-series geometry {key!r}.")
+        return scoped[key]
+    return global_floors
 
 
 def velocities(rows: list[dict], floors: dict | None = None) -> list[dict]:
@@ -238,11 +362,35 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
     # depends entirely on the look geometry - so 1/v built from the signed
     # value is negative for half the world's slopes, rises toward zero instead
     # of falling to it, and is rejected by the slope test below.
-    v = np.abs(np.array([w["v_mm_day"] for w in win], dtype=float))
-    inv = 1.0 / v
-
+    raw_velocity = np.array([w["v_mm_day"] for w in win], dtype=float)
+    speed = np.abs(raw_velocity)
     n = len(t)
+
+    def withheld(reason: str) -> dict:
+        return {
+            "slope": float("nan"), "intercept": float("nan"), "r2": float("nan"),
+            "t_fail_days_from_window_start": float("nan"), "t_fail_date": None,
+            "sigma_days": float("nan"), "n": n, "ci_bounded": False,
+            "ci_low_date": None, "ci_high_date": None, "ci_width_days": float("nan"),
+            "status": "WITHHELD_" + reason, "withheld_reason": reason,
+        }
+
+    if n < 3:
+        return withheld("INSUFFICIENT_INDEPENDENT_VELOCITY_POINTS")
+    if not np.isfinite(t).all() or not np.isfinite(speed).all():
+        return withheld("NONFINITE_TIME_OR_VELOCITY")
+    if np.any(speed <= np.finfo(float).eps):
+        return withheld("ZERO_OR_NEAR_ZERO_SPEED_MAKES_INVERSE_UNDEFINED")
+    if np.any(np.diff(t) <= 0):
+        return withheld("NONMONOTONIC_OR_DUPLICATE_INTERVAL_MIDPOINTS")
+
+    inv = 1.0 / speed
     A = np.vstack([t, np.ones_like(t)]).T
+    if np.linalg.matrix_rank(A) < 2:
+        return withheld("RANK_DEFICIENT_TIME_DESIGN")
+    design_condition = float(np.linalg.cond(A))
+    if not np.isfinite(design_condition) or design_condition > 1e10:
+        return withheld("ILL_CONDITIONED_TIME_DESIGN")
     coef, *_ = np.linalg.lstsq(A, inv, rcond=None)
     a, b = float(coef[0]), float(coef[1])
 
@@ -272,6 +420,8 @@ def fit_inverse_velocity(win: list[dict]) -> dict:
                            if np.isfinite(t_fail_rel) else None,
             "sigma_days": sigma_tf, "n": n,
             "ci_bounded": bounded,
+            "status": "FIT_AVAILABLE" if bounded else "POINT_ESTIMATE_ONLY_CI_UNBOUNDED",
+            "withheld_reason": None if bounded else "FAILURE_DATE_CI_UNBOUNDED",
             "ci_low_date": d0 + timedelta(days=ci_lo) if bounded else None,
             "ci_high_date": d0 + timedelta(days=ci_hi) if bounded else None,
             "ci_width_days": (ci_hi - ci_lo) if bounded else float("nan")}
@@ -298,6 +448,40 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
         return {"alarm": False, "reason": "no intervals",
                 "dropped": [], "intervals": []}
 
+    if not np.isfinite(sig_multiple) or sig_multiple <= 0:
+        print("  WITHHELD - significance multiplier must be finite and positive")
+        return {"alarm": False, "reason": "invalid significance multiplier", "dropped": [],
+                "intervals": _spans(vs), "usable": []}
+
+    dropped: list[tuple] = []
+    invalid_floor_spans = []
+    invalid_velocity_spans = []
+    retained = []
+    for interval in vs:
+        speed_value = interval.get("v_mm_day")
+        if speed_value is None or not np.isfinite(speed_value):
+            invalid_velocity_spans.append((interval["t0"], interval["t1"]))
+            continue
+        floor = interval.get("floor")
+        if floor is not None and (not np.isfinite(floor) or float(floor) <= 0):
+            invalid_floor_spans.append((interval["t0"], interval["t1"]))
+            continue
+        if floor is None and (not np.isfinite(noise_floor) or noise_floor <= 0):
+            invalid_floor_spans.append((interval["t0"], interval["t1"]))
+            continue
+        retained.append(interval)
+    if invalid_velocity_spans:
+        dropped.extend(invalid_velocity_spans)
+        print(f"  dropped {len(invalid_velocity_spans)} interval(s) with non-finite velocity")
+    if invalid_floor_spans:
+        dropped.extend(invalid_floor_spans)
+        print(f"  dropped {len(invalid_floor_spans)} interval(s) with missing/invalid floor support")
+    vs = retained
+    if not vs:
+        print("  WITHHELD - no intervals have finite velocities and valid positive floor support")
+        return {"alarm": False, "reason": "no finite intervals with valid noise-floor support",
+                "dropped": dropped, "intervals": [], "usable": []}
+
     # A forecast may only use data that existed before the thing it forecasts.
     #
     # This is not a hypothetical. `--event-date` used to score the prediction
@@ -313,10 +497,9 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     # The midpoint labelling hid it. The fit reported "ending 2026-08-25",
     # which is the midpoint of an interval running to 08-31, so the output
     # looked pre-event while resting on post-event data.
-    dropped: list[tuple] = []
     if cutoff is not None:
         leaked = [w for w in vs if w["t1"] >= cutoff]
-        dropped = [(w["t0"], w["t1"]) for w in leaked]
+        dropped.extend((w["t0"], w["t1"]) for w in leaked)
         if leaked:
             vs = [w for w in vs if w["t1"] < cutoff]
             print(f"\n  FORECAST CUTOFF {cutoff}: dropped {len(leaked)} interval(s)")
@@ -414,12 +597,16 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
     # here because the two give different lead times and the difference is not
     # visible in the output.
     best = None
+    unbounded_failure_date_windows = 0
     for k in range(window, len(usable) + 1):
         win = usable[k - window:k]
         fit = fit_inverse_velocity(win)
         if fit["slope"] >= 0:
             continue                      # 1/v must be falling
-        if fit["r2"] < r2_min:
+        if not np.isfinite(fit["r2"]) or fit["r2"] < r2_min:
+            continue
+        if not fit.get("ci_bounded", False):
+            unbounded_failure_date_windows += 1
             continue
         if fit["t_fail_date"] is None:
             continue
@@ -437,6 +624,13 @@ def analyse_block(label: str, comp: int, rows: list[dict], noise_floor: float,
         break
 
     if best is None:
+        if unbounded_failure_date_windows:
+            print(f"\n  FORECAST WITHHELD - {unbounded_failure_date_windows} accelerating fit window(s) "
+                  "had an unbounded Fieller 95% failure-date interval.")
+            print("  The fitted point estimate is not a bounded forecast; no alarm is issued.")
+            return {"alarm": False, "reason": "failure-date confidence interval unbounded; forecast withheld",
+                    "dropped": dropped, "intervals": _spans(vs), "usable": _spans(usable),
+                    "unbounded_failure_date_windows": unbounded_failure_date_windows}
         print(f"\n  NO ALARM - {len(usable)} usable velocities, but no window of "
               f"{window} met all of:")
         print(f"    1/v decreasing (acceleration), R2 >= {r2_min}, "
@@ -528,6 +722,8 @@ def main() -> int:
                          "you want whenever per-pair floors vary")
     ap.add_argument("--floors-layer", default=None,
                     help="restrict --floors to one layer, e.g. layer2")
+    ap.add_argument("--allow-legacy-global-floors", action="store_true",
+                    help="explicitly permit identity-free date-pair floors to gate every geometry; prefer source-identified floors.")
     ap.add_argument("--sig-multiple", type=float, default=1.0,
                     help="velocity must exceed this many times the floor")
     ap.add_argument("--window", type=int, default=3)
@@ -546,38 +742,94 @@ def main() -> int:
     ap.add_argument("--plot", metavar="OUT.png")
     args = ap.parse_args()
 
-    ev = datetime.strptime(args.event_date, "%Y-%m-%d").date() if args.event_date else None
-    cutoff = (datetime.strptime(args.forecast_cutoff, "%Y-%m-%d").date()
-              if args.forecast_cutoff else ev)
+    try:
+        ev = datetime.strptime(args.event_date, "%Y-%m-%d").date() if args.event_date else None
+        cutoff = (datetime.strptime(args.forecast_cutoff, "%Y-%m-%d").date()
+                  if args.forecast_cutoff else ev)
+    except ValueError:
+        ap.error("--event-date and --forecast-cutoff must use valid YYYY-MM-DD calendar dates.")
+    if args.noise_floor is not None and (
+        not math.isfinite(args.noise_floor) or args.noise_floor <= 0
+    ):
+        ap.error("--noise-floor must be finite and positive.")
+    if not math.isfinite(args.sig_multiple) or args.sig_multiple <= 0:
+        ap.error("--sig-multiple must be finite and positive.")
+    if args.window < 3:
+        ap.error("--window must be at least 3 velocities; two points can force a perfect fit.")
+    if not math.isfinite(args.r2_min) or not 0 <= args.r2_min <= 1:
+        ap.error("--r2-min must be finite and between 0 and 1.")
+    if not math.isfinite(args.horizon) or args.horizon <= 0:
+        ap.error("--horizon must be finite and positive.")
     if args.allow_post_event:
         cutoff = None
     series = load_series(resolve(args.ts))
     if not series:
         logger.error("No rows in %s", args.ts); return 1
 
-    floors: dict = {}
+    global_floors: dict[tuple[date, date], float] = {}
+    floors_by_series: dict[str, dict[tuple[date, date], float]] = {}
     if args.floors:
-        floors = load_floors(resolve(args.floors), args.floors_layer)
-        logger.info("Loaded %d per-pair floors from %s", len(floors), args.floors)
+        try:
+            global_floors, floors_by_series = load_floor_catalogue(
+                resolve(args.floors), args.floors_layer
+            )
+        except (OSError, ValueError) as exc:
+            logger.error("Cannot use floor file safely: %s", exc)
+            return 2
+        if floors_by_series:
+            input_series = {normalize_series_id(geom) for geom, _comp in series}
+            missing_series = sorted(input_series - set(floors_by_series))
+            if missing_series:
+                logger.error(
+                    "Geometry-scoped floor CSV lacks exact identities for one or more "
+                    "timeseries geometries; refusing to apply another track/frame/CRID's "
+                    "floor. Missing=%s available=%s",
+                    missing_series, sorted(floors_by_series),
+                )
+                return 2
+            logger.info(
+                "Loaded %d pair floors for %d exact geometry/CRID identities from %s",
+                sum(len(v) for v in floors_by_series.values()),
+                len(floors_by_series), args.floors,
+            )
+        elif global_floors and not args.allow_legacy_global_floors:
+            logger.error(
+                "Floor CSV has no source geometry/CRID identity. Refusing to apply "
+                "date-pair floors globally; regenerate a source-identified floor CSV "
+                "or explicitly pass --allow-legacy-global-floors after verifying it."
+            )
+            return 2
+        elif global_floors:
+            logger.warning(
+                "LEGACY GLOBAL FLOORS EXPLICITLY ENABLED: identity-free date-pair floors "
+                "will be applied to all %d time-series geometry/CRID series.",
+                len({geom for geom, _comp in series}),
+            )
 
-    # --noise-floor is only needed for intervals that have no per-pair floor.
-    # When it is omitted and floors were supplied, fall back to the LARGEST of
-    # them: a pair whose own floor is unknown must not be gated more leniently
-    # than the noisiest pair that is known, or a missing measurement would
-    # improve the bound.
+    all_floor_values = list(global_floors.values()) + [
+        value for per_series in floors_by_series.values() for value in per_series.values()
+    ]
+    # --noise-floor is only needed for intervals with no matched per-pair floor.
+    # Use the largest available floor as fallback so missing observations never
+    # make a bound more permissive.
     if args.noise_floor is None:
-        if not floors:
+        if not all_floor_values:
             logger.error("Give --noise-floor, or --floors to supply per-pair floors")
             return 2
-        args.noise_floor = max(floors.values())
-        logger.info("No --noise-floor given; falling back to the largest "
-                    "per-pair floor, %.1f mm/day", args.noise_floor)
+        args.noise_floor = max(all_floor_values)
+        logger.info("No --noise-floor given; fallback for missing pair floors is %.1f mm/day",
+                    args.noise_floor)
 
     print(f"\n{len(series)} independent block(s) from {args.ts}")
-    if floors:
-        print(f"Per-pair floors from {args.floors}"
+    if floors_by_series:
+        print(f"Geometry/CRID-scoped per-pair floors from {args.floors}"
               + (f" (layer {args.floors_layer})" if args.floors_layer else "")
               + f", significance gate {args.sig_multiple:g}x")
+        print(f"Each series receives only its own matched floors; missing pairs fall back to {args.noise_floor:g} mm/day")
+    elif global_floors:
+        print(f"LEGACY GLOBAL per-pair floors from {args.floors}"
+              + (f" (layer {args.floors_layer})" if args.floors_layer else "")
+              + f", explicit global-floor override enabled, significance gate {args.sig_multiple:g}x")
         print(f"Fallback floor {args.noise_floor:g} mm/day where a pair has none")
     else:
         print(f"Noise floor {args.noise_floor:g} mm/day, "
@@ -585,9 +837,11 @@ def main() -> int:
 
     results = []
     for (geom, comp), rows in sorted(series.items()):
+        series_floors = (floors_by_series[normalize_series_id(geom)]
+                         if floors_by_series else global_floors)
         results.append(analyse_block(geom, comp, rows, args.noise_floor,
                                      args.window, args.r2_min, args.horizon,
-                                     args.sig_multiple, ev, floors, cutoff))
+                                     args.sig_multiple, ev, series_floors, cutoff))
 
     print(f"\n{'='*74}\nSUMMARY\n{'='*74}")
     fired = [r for r in results if r.get("alarm")]

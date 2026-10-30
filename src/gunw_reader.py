@@ -44,8 +44,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import math
+import os
 import re
 import sys
 from datetime import datetime
@@ -85,41 +87,39 @@ def track_of(name: str) -> str:
     return ("ASC " if m.group(2) == "A" else "DESC ") + m.group(1)
 
 
-# Product maturity. NISAR products are not all the same quality, and nothing in
-# this repository used to say so. ASF releases them in stages, by ACQUISITION
-# date (nisar-docs.asf.alaska.edu/availability-overview):
-#
-#     BETA         released 27 Feb 2026, acquisitions 17 Oct 2025 - 20 Jan 2026,
-#                  "pre-calibration", with known issues
-#     PROVISIONAL  released 20 Jul 2026, acquisitions from 17 Jun 2026,
-#                  "fully calibrated", validated at a limited set of sites
-#
-# Every winter pair here is BETA and every summer pair PROVISIONAL, so any
-# winter-against-monsoon comparison is ALSO a BETA-against-PROVISIONAL
-# comparison. The two cannot be separated with this archive, and the gap
-# between the two windows (20 Jan - 17 Jun 2026) is a release gap, not a
-# physical one. Classified from the dates rather than from the CRID letter
-# because the CRID encoding is not documented where it can be cited; the CRID
-# is carried alongside so a reader can check.
+# Product maturity is inferred from the NISAR Composite Release ID (CRID)
+# first. ASF documents P05023+ as PROVISIONAL and older CRIDs as BETA; selected
+# supplemental PROVISIONAL products can have acquisition dates earlier than
+# 2026-06-17, so dates alone are not authoritative.
+# Sources:
+# https://nisar-docs.asf.alaska.edu/availability-overview/
+# https://nisar-docs.asf.alaska.edu/provisional-known-issues/
 BETA_WINDOW = ("20251017", "20260120")
 PROVISIONAL_FROM = "20260617"
 CRID_RE = re.compile(r"_([A-Z]\d{5})_[A-Z]_[A-Z]_[A-Z]_\d{3}")
 STAMP_RE = re.compile(r"_(\d{8})T\d{6}")
+PROVISIONAL_CRID_MIN = 5023
 
 
 def crid_of(name: str) -> str:
-    """The composite release ID in a granule name, e.g. 'X05010'; '' if absent."""
+    """The composite release ID in a granule name, e.g. 'P05023'; '' if absent."""
     m = CRID_RE.search(str(name))
     return m.group(1) if m else ""
 
 
 def product_maturity(name: str) -> str:
-    """
-    'BETA', 'PROVISIONAL' or 'UNKNOWN' for a granule name, from its dates.
+    """Return BETA, PROVISIONAL or UNKNOWN, preferring recognized CRID over dates."""
+    crid = crid_of(name)
+    if crid:
+        family, version = crid[0], int(crid[1:])
+        if family == "P" and version >= PROVISIONAL_CRID_MIN:
+            return "PROVISIONAL"
+        if family == "X" and version < PROVISIONAL_CRID_MIN:
+            return "BETA"
+        # An unfamiliar CRID may represent a new release policy; do not guess by date.
+        return "UNKNOWN"
 
-    A pair is only as mature as its older acquisition, so both must fall in a
-    window; a pair straddling the release gap would be 'UNKNOWN', not rounded.
-    """
+    # Backward-compatible date fallback only for names without a parseable CRID.
     stamps = STAMP_RE.findall(str(name))
     if len(stamps) < 4:
         return "UNKNOWN"
@@ -197,14 +197,27 @@ SOURCE_RING = [
 
 AOIS = {"source": SOURCE_RING, "langtang": LANGTANG_RING, "lhende": LHENDE_RING}
 
+# A dynamic WGS84 polygon can be supplied to isolated E2E runs. It is installed
+# before any CLI choices or product masks are built, so every reader uses the
+# exact same geometry. The normal named-AOI behavior is unchanged when unset.
+CUSTOM_AOI_WKT = os.environ.get("SARGUARDIAN_AOI_WKT", "").strip()
+if CUSTOM_AOI_WKT:
+    try:
+        from aoi_wkt import parse_polygon_wkt
+        AOIS["custom"] = parse_polygon_wkt(CUSTOM_AOI_WKT)
+    except Exception as exc:
+        raise ValueError(f"Invalid SARGUARDIAN_AOI_WKT: {type(exc).__name__}: {exc}") from exc
+
+AOI_NAME = "langtang"
 AOI_RING = LANGTANG_RING          # module default; set_aoi() overrides
 
 
 def set_aoi(name: str) -> None:
-    """Switch the active AOI. Both readers import AOI_RING from here."""
-    global AOI_RING
+    """Switch the active AOI. Readers and exported rasters share this identity."""
+    global AOI_NAME, AOI_RING
     if name not in AOIS:
         raise SystemExit(f"Unknown AOI '{name}'. Choose from {sorted(AOIS)}")
+    AOI_NAME = name
     AOI_RING = AOIS[name]
 
 
@@ -294,15 +307,18 @@ def build_aoi_mask(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None) -> np
     Works directly when the grid is geographic. For a projected grid it needs
     pyproj to convert the ring into grid coordinates.
     """
+    if epsg is None:
+        raise ValueError("Cannot apply AOI polygon: the source grid has no EPSG/CRS metadata.")
     ring_xy = ring
-    if epsg and epsg != 4326:
+    if epsg != 4326:
         try:
             from pyproj import Transformer
             tf = Transformer.from_crs(4326, epsg, always_xy=True)
             ring_xy = [tf.transform(lon, lat) for lon, lat in ring]
-        except ImportError:
-            logger.warning("Grid is EPSG:%s and pyproj is missing - skipping AOI clip.", epsg)
-            return None
+        except ImportError as exc:
+            raise RuntimeError(
+                f"Cannot apply AOI polygon to EPSG:{epsg}: pyproj is required."
+            ) from exc
 
     xmin = min(p[0] for p in ring_xy); xmax = max(p[0] for p in ring_xy)
     ymin = min(p[1] for p in ring_xy); ymax = max(p[1] for p in ring_xy)
@@ -319,6 +335,66 @@ def build_aoi_mask(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None) -> np
 # ---------------------------------------------------------------------------
 # Core read
 # ---------------------------------------------------------------------------
+# GUNW masks use a 32-bit packed field. Bits 0-7 contain the legacy
+# three-digit water/reference-subswath/secondary-subswath code. Bits 8-15
+# and 16-23 contain secondary/reference anomaly flags; bit 24 flags pixels
+# masked and interpolated in the ionosphere-screen filtering; bits 25-31 are
+# reserved. These definitions are taken from each P05023 HDF5 mask dataset's
+# own `description` attribute and cross-checked against the NISAR product
+# format documentation. Never decode the entire uint32 value as decimal digits.
+GUNW_MASK_LOW_BYTE = 0x000000FF
+GUNW_MASK_ANOMALY_BITS = 0x00FFFF00
+GUNW_MASK_IONOSPHERE_INTERPOLATED = 0x01000000
+GUNW_MASK_RESERVED_BITS = 0xFE000000
+
+
+def decode_gunw_mask(mask: np.ndarray, *, apply_iono: bool = True) -> dict[str, np.ndarray]:
+    """Decode GUNW water/subswath digits and higher-order quality bits separately.
+
+    With ionosphere correction enabled, exclude pixels whose ionosphere-screen
+    values were masked and interpolated. With correction disabled, that
+    screen-only flag is not itself a reason to discard the delivered phase.
+    Anomaly and reserved bits remain conservatively excluded in either mode.
+    """
+    raw = np.asarray(mask)
+    if raw.dtype not in (np.dtype("uint8"), np.dtype("uint32")):
+        raise TypeError(
+            "Unsupported GUNW mask dtype "
+            f"{raw.dtype}; validated schemas are uint8 (legacy decimal-digit mask) "
+            "and uint32 (packed P05023+ mask). Refusing to guess a new schema."
+        )
+    m = raw.astype(np.uint64, copy=False)
+    low = m & np.uint64(GUNW_MASK_LOW_BYTE)
+    fill = m == 255
+    water = (low // 100) % 10
+    ref_sub = (low // 10) % 10
+    sec_sub = low % 10
+    anomaly = (m & np.uint64(GUNW_MASK_ANOMALY_BITS)) != 0
+    iono_interpolated = (m & np.uint64(GUNW_MASK_IONOSPHERE_INTERPOLATED)) != 0
+    reserved = (m & np.uint64(GUNW_MASK_RESERVED_BITS)) != 0
+    valid_subswaths = (ref_sub > 0) & (sec_sub > 0)
+    land_subswaths = (water == 0) & valid_subswaths & ~fill
+    format_supported = ~reserved
+    base = land_subswaths & ~anomaly & format_supported
+    usable = base & (~iono_interpolated if apply_iono else True)
+    return {
+        "fill_255": fill,
+        # The explicit fill code 255 is not a meaningful water/subswath
+        # digit tuple. Keep it separately flagged rather than counting it as
+        # a water pixel in diagnostics.
+        "water_flag_nonzero": (water != 0) & ~fill,
+        "reference_subswath_zero": (ref_sub == 0) & ~fill,
+        "secondary_subswath_zero": (sec_sub == 0) & ~fill,
+        "both_subswaths_valid_ignoring_water": valid_subswaths & ~fill,
+        "land_valid_subswaths_low_byte": land_subswaths,
+        "anomaly_flags_nonzero": anomaly,
+        "ionosphere_interpolated_mask": iono_interpolated,
+        "reserved_bits_nonzero": reserved,
+        "usable_mask_for_policy": usable,
+        "current_reader_mask_gate": usable,
+    }
+
+
 def read_gunw(
     path: Path,
     coherence_threshold: float = DEFAULT_COHERENCE,
@@ -363,10 +439,46 @@ def read_gunw(
 
         p_coh = sibling("coherenceMagnitude", "coherence")
         p_conn = sibling("connectedComponents")
-        p_mask = sibling("mask", "layoverShadowMask")
+        # Do not substitute layoverShadowMask for the encoded GUNW mask:
+        # they are different quality products and have different semantics.
+        p_mask = sibling("mask")
         p_iono = sibling("ionospherePhaseScreen")
+        # Check only an ionosphere screen belonging to this unwrapped grid.
+        # A same-named layer on another product grid must not shadow or
+        # invalidate the correct screen for this phase array.
+        iono_candidates = [
+            (key, shp) for key, (shp, _dtype) in datasets.items()
+            if key.lower().endswith("/ionospherephasescreen")
+            and (key.lower().startswith(parent.lower() + "/")
+                 or key.lower().startswith(grp.lower() + "/"))
+        ]
+        if p_iono is None and iono_candidates:
+            wrong = [(key, shp) for key, shp in iono_candidates if shp != shape]
+            if wrong:
+                raise RuntimeError(
+                    f"Ionosphere-screen grid {wrong[0][1]} does not match phase grid {shape}: {wrong[0][0]}."
+                )
+        elif p_iono is not None and datasets[p_iono][0] != shape:
+            raise RuntimeError(
+                f"Ionosphere-screen grid {datasets[p_iono][0]} does not match phase grid {shape}."
+            )
         p_x = sibling("xCoordinates", ndim=1)
         p_y = sibling("yCoordinates", ndim=1)
+        required = {
+            "coherenceMagnitude": p_coh,
+            "connectedComponents": p_conn,
+            "mask": p_mask,
+            "xCoordinates": p_x,
+            "yCoordinates": p_y,
+        }
+        if apply_iono:
+            required["ionospherePhaseScreen"] = p_iono
+        missing = [name for name, hit in required.items() if hit is None]
+        if missing:
+            raise RuntimeError(
+                "Supported GUNW product is missing required shape-compatible layers: "
+                + ", ".join(missing) + ". Refusing to silently bypass a quality or AOI gate."
+            )
 
         logger.info("group      : %s", grp)
         logger.info("phase      : %s", shape)
@@ -395,6 +507,29 @@ def read_gunw(
 
         wavelength = read_wavelength(f, datasets)
 
+    # Build the spatial mask before quality gates so each gate can account for
+    # attrition inside the requested AOI as well as across the complete frame.
+    # AOI denominators count pixel centres that fall inside the polygon AND on
+    # this product grid; they do not imply that uncovered AOI ground was observed.
+    aoi_mask = None
+    aoi_cells_total = None
+    if clip_aoi:
+        if xs is None or ys is None:
+            raise RuntimeError("AOI clipping requested but GUNW x/y coordinate vectors are missing.")
+        if epsg is None:
+            raise RuntimeError("AOI clipping requested but GUNW projection/EPSG metadata is missing.")
+        if len(xs) != phase.shape[1] or len(ys) != phase.shape[0]:
+            raise RuntimeError(
+                f"AOI clipping requested but coordinate lengths {(len(ys), len(xs))} "
+                f"do not match raster shape {phase.shape}."
+            )
+        aoi_mask = build_aoi_mask(xs, ys, AOI_RING, epsg)
+        if aoi_mask.shape != phase.shape:
+            raise RuntimeError(
+                f"AOI mask shape {aoi_mask.shape} does not match GUNW raster shape {phase.shape}."
+            )
+        aoi_cells_total = int(aoi_mask.sum())
+
     # Ionospheric correction. L-band phase delay scales as 1/f^2, so NISAR is
     # far more affected than C-band and ships an estimated screen with every
     # GUNW. Subtract it unless explicitly told not to.
@@ -403,13 +538,11 @@ def read_gunw(
     if flip_sign:
         scale = -scale
 
-    # Which pixels carry no phase, decided on the RAW array. GUNW fills nodata
-    # with exact zeros, and the ionosphere screen is not zero there - so
-    # subtracting the screen first turns every nodata pixel into a small
-    # non-zero number and the `phase != 0` test below stops finding any of
-    # them. That was survivable only because connectedComponents happens to
-    # reject the same pixels, and that layer is optional.
-    has_phase = phase != 0
+    # A zero phase is a valid relative measurement when the independent
+    # product validity layers say the pixel is usable. Do not drop zero-valued
+    # phase solely because a common fill convention also uses zero; the
+    # connected-component and packed mask gates below decide source validity.
+    has_phase = np.isfinite(phase)
 
     if iono is not None and apply_iono and iono.shape == phase.shape:
         good = np.isfinite(iono)
@@ -425,48 +558,93 @@ def read_gunw(
     disp = phase * scale
 
     valid = np.isfinite(disp) & has_phase
-    gates = {"finite": int(valid.sum())}
+    source_cells_total = int(valid.size)
+    gates = {"finite_phase": int(valid.sum())}
+    gate_rejections: dict[str, int] = {
+        "nonfinite_phase": source_cells_total - int(valid.sum())
+    }
+
+    # AOI-scoped ledger mirrors the exact same quality masks but uses only
+    # in-AOI pixel centres as its denominator. It must finish at the same
+    # survivor count as the actual exported validity mask.
+    aoi_valid = (valid & aoi_mask) if aoi_mask is not None else None
+    aoi_gates = (
+        {"finite_phase": int(aoi_valid.sum())} if aoi_valid is not None else None
+    )
+    aoi_gate_rejections = (
+        {"nonfinite_phase": int(aoi_cells_total - int(aoi_valid.sum()))}
+        if aoi_valid is not None else None
+    )
+
+    def apply_gate(label: str, keep: np.ndarray) -> None:
+        nonlocal valid, aoi_valid
+        keep = np.asarray(keep, dtype=bool)
+        if keep.shape != valid.shape:
+            raise RuntimeError(
+                f"Quality gate '{label}' shape {keep.shape} does not match phase shape {valid.shape}."
+            )
+        before = int(valid.sum())
+        valid &= keep
+        after = int(valid.sum())
+        gates[label] = after
+        gate_rejections[label] = before - after
+        if aoi_valid is not None:
+            aoi_before = int(aoi_valid.sum())
+            aoi_valid &= keep
+            aoi_after = int(aoi_valid.sum())
+            aoi_gates[label] = aoi_after
+            aoi_gate_rejections[label] = aoi_before - aoi_after
 
     if coherence is not None:
-        valid &= coherence >= coherence_threshold
-        gates[f"coherence>={coherence_threshold}"] = int(valid.sum())
+        apply_gate(f"coherence>={coherence_threshold}",
+                   np.isfinite(coherence) & (coherence >= coherence_threshold))
     if components is not None:
-        valid &= components > 0          # component 0 = not reliably unwrapped
-        gates["connected_component>0"] = int(valid.sum())
-    if losmask is not None and losmask.shape == valid.shape:
-        # NISAR's GUNW 'mask' is NOT a layover/shadow flag. Per its own
-        # description it is a three-digit code:
-        #     hundreds = water flag in the reference RSLC (1 = water)
-        #     tens     = subswath number in the reference RSLC (0 = invalid)
-        #     units    = subswath number in the secondary RSLC (0 = invalid)
-        # So a usable pixel is dry land that fell inside a real subswath in
-        # BOTH acquisitions. Naively keeping mask == 0 keeps precisely the
-        # pixels that were invalid in both - the exact inverse of what you want.
-        m = losmask.astype(np.int32)
-        water = m // 100
-        ref_sub = (m // 10) % 10
-        sec_sub = m % 10
-        usable = (water == 0) & (ref_sub > 0) & (sec_sub > 0) & (losmask != 255)
-        valid &= usable
-        gates["land + valid subswath"] = int(valid.sum())
+        apply_gate("connected_component>0", components > 0)
+    if apply_iono:
+        if iono is None or iono.shape != phase.shape:
+            raise RuntimeError("Ionosphere correction was requested but a shape-compatible screen is unavailable.")
+        apply_gate("finite ionosphere screen", np.isfinite(iono))
+
+    # The selected product schema requires an explicit mask. A missing or
+    # incompatible mask must never bypass water/subswath/quality filtering.
+    if losmask is None:
+        raise RuntimeError("GUNW mask dataset is missing; refusing to bypass mask-based quality gates.")
+    if losmask.shape != valid.shape:
+        raise RuntimeError(f"GUNW mask shape {losmask.shape} does not match phase shape {valid.shape}.")
+    mask_bits = decode_gunw_mask(losmask, apply_iono=apply_iono)
+    apply_gate("land + valid subswath (low-byte code)",
+               mask_bits["land_valid_subswaths_low_byte"])
+    apply_gate("reference/secondary anomaly flags clear",
+               ~mask_bits["anomaly_flags_nonzero"])
+    if apply_iono:
+        apply_gate("ionosphere correction not interpolated at pixel",
+                   ~mask_bits["ionosphere_interpolated_mask"])
+    apply_gate("reserved mask bits zero", ~mask_bits["reserved_bits_nonzero"])
 
     # Quality mask WITHOUT the AOI clip. The reference point is usually chosen
     # on stable ground outside the area of interest, so it must not be clipped
     # away before we can use it.
     quality_valid = valid.copy()
 
-    aoi_mask = None
-    if clip_aoi and xs is not None and ys is not None:
-        aoi_mask = build_aoi_mask(xs, ys, globals()['AOI_RING'], epsg)
-        if aoi_mask is not None:
-            valid &= aoi_mask
-            gates["inside AOI"] = int(valid.sum())
+    if aoi_mask is not None:
+        before_aoi = int(valid.sum())
+        valid &= aoi_mask
+        gates["inside AOI"] = int(valid.sum())
+        gate_rejections["outside AOI"] = before_aoi - int(valid.sum())
 
     # Automatic reference selection. Guessing a reference point does not work:
     # on this scene the three "obvious" choices had ZERO usable pixels because
     # winter snow had decorrelated them, while a block 8 km away sat at 0.84
     # coherence. Pick the best fully-valid block instead, preferring ground
     # outside the AOI so the reference is not part of what is being measured.
+    target_comp = None
+    if components is not None and aoi_mask is not None:
+        inside_components = components[quality_valid & aoi_mask]
+        if inside_components.size:
+            ids, counts = np.unique(inside_components, return_counts=True)
+            target_comp = int(ids[int(np.argmax(counts))])
+
+    reference_component = None
     if auto_ref and xs is not None and ys is not None:
         blk = max(3, 2 * ref_radius_px + 1)
         ny, nx = coherence.shape if coherence is not None else disp.shape
@@ -483,7 +661,6 @@ def read_gunw(
             # 2 to 4 fringes (248, 285, 473 mm at lambda/2 = 122 mm) in the
             # summer pairs, and why the same pair processed twice differed by
             # 265 mm.
-            target_comp = None
             comp_ok = np.ones_like(full)
             if components is not None and aoi_mask is not None:
                 inside = components[quality_valid & aoi_mask]
@@ -551,6 +728,8 @@ def read_gunw(
                             components[i, j] if components is not None else "n/a",
                             100 * chosen_level)
                 _auto_grid_ref = (i, j)
+                if components is not None:
+                    reference_component = target_comp if target_comp is not None else int(components[i, j])
             elif target_comp is not None:
                 # No clean block of that component outside the AOI. Referencing
                 # anywhere else would be wrong, so reference INSIDE the AOI and
@@ -566,6 +745,8 @@ def read_gunw(
                         "relative to that point, not to stable ground.",
                         target_comp, i, j)
                     _auto_grid_ref = (i, j)
+                    if components is not None:
+                        reference_component = target_comp
                 else:
                     logger.warning("Auto reference found no usable block.")
                     _auto_grid_ref = None
@@ -605,8 +786,13 @@ def read_gunw(
             r = ref_radius_px
             window = disp[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
             wvalid = quality_valid[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
+            if components is not None and target_comp is not None:
+                component_window = components[max(0, i - r): i + r + 1, max(0, j - r): j + r + 1]
+                wvalid &= component_window == target_comp
             if wvalid.sum() > 0:
                 ref_value = float(np.median(window[wvalid]))
+                if components is not None:
+                    reference_component = target_comp if target_comp is not None else int(components[i, j])
                 disp = disp - ref_value
                 logger.info("Referenced to %.4f N %.4f E: subtracted %.2f mm (%d px)",
                             ref_lat, ref_lon, ref_value, int(wvalid.sum()))
@@ -621,6 +807,55 @@ def read_gunw(
             "scene are meaningful, absolute magnitudes are not. Use --auto-ref."
         )
 
+    component_rejected_pixels = 0
+    if components is not None and reference_component is not None:
+        before_component = int(valid.sum())
+        different_component = valid & (components != reference_component)
+        component_rejected_pixels = int(different_component.sum())
+        valid &= components == reference_component
+        gates["same connected component as reference"] = int(valid.sum())
+        gate_rejections["different component from reference"] = before_component - int(valid.sum())
+        if aoi_valid is not None:
+            aoi_before_component = int(aoi_valid.sum())
+            aoi_valid &= components == reference_component
+            aoi_after_component = int(aoi_valid.sum())
+            aoi_gates["same connected component as reference"] = aoi_after_component
+            aoi_gate_rejections["different component from reference"] = (
+                aoi_before_component - aoi_after_component
+            )
+
+    aoi_gate_ledger_status = "NOT_APPLICABLE_AOI_CLIP_DISABLED"
+    if aoi_mask is not None:
+        aoi_final_valid = int((valid & aoi_mask).sum())
+        aoi_ledger_final = int(aoi_valid.sum()) if aoi_valid is not None else -1
+        if aoi_final_valid != aoi_ledger_final:
+            raise RuntimeError(
+                "AOI gate ledger does not reconcile with final valid pixels: "
+                f"ledger={aoi_ledger_final}, final={aoi_final_valid}."
+            )
+        aoi_gates["final_valid_pixels"] = aoi_final_valid
+        aoi_gate_rejections["final_valid_pixels_check"] = 0
+        if sum(aoi_gate_rejections.values()) != aoi_cells_total - aoi_final_valid:
+            raise RuntimeError(
+                "AOI gate rejection counts do not reconcile with source AOI-grid cells: "
+                f"rejected={sum(aoi_gate_rejections.values())}, "
+                f"source_minus_final={aoi_cells_total - aoi_final_valid}."
+            )
+        aoi_gate_ledger_status = "PASS_AOI_GATE_RECONCILIATION"
+
+    reference_in_aoi = None
+    if _auto_grid_ref is not None and aoi_mask is not None:
+        reference_in_aoi = bool(aoi_mask[_auto_grid_ref[0], _auto_grid_ref[1]])
+    validation_status = (
+        "REFERENCE_COMPONENT_COMPATIBLE_DATUM_STABILITY_UNVALIDATED"
+        if reference_component is not None and ref_value is not None
+        else "REFERENCE_UNVALIDATED"
+    )
+    if reference_in_aoi and reference_component is not None:
+        validation_status = "REFERENCE_INSIDE_AOI_COMPONENT_COMPATIBLE_DATUM_UNVALIDATED"
+    if apply_iono and not (iono is not None and iono.shape == phase.shape):
+        validation_status = "IONOSPHERE_SCREEN_UNAVAILABLE_" + validation_status
+
     return {
         "file": path.name,
         "reference_date": read_pair_dates(path)[0],
@@ -629,16 +864,29 @@ def read_gunw(
         "coherence": coherence,
         "valid": valid,
         "xs": xs, "ys": ys, "epsg": epsg,
+        "aoi_name": AOI_NAME,
+        "aoi_mask_applied": bool(clip_aoi and aoi_mask is not None),
+        "aoi_mask": aoi_mask,
         "wavelength_m": wavelength,
+        "ionosphere_correction_applied": bool(iono is not None and apply_iono and iono.shape == phase.shape),
         # How many grid cells the AOI actually covers. Without this the only
         # denominator available is the full frame - 17.7 M pixels ascending,
         # 26.6 M descending - and "coverage over the source zone" then gets
         # computed against a number that has nothing to do with the source
         # zone. It also makes the ascending/descending comparison unfair,
         # because the two frames differ in size by 1.5x.
-        "aoi_px": int(aoi_mask.sum()) if aoi_mask is not None else None,
+        "aoi_px": aoi_cells_total,
+        "aoi_gate_cumulative_counts": aoi_gates,
+        "aoi_gate_rejections": aoi_gate_rejections,
+        "aoi_gate_ledger_status": aoi_gate_ledger_status,
+        "source_cells_total": source_cells_total,
         "iono_rms_mm": iono_rms_mm,
         "ref_value_mm": ref_value,
+        "reference_component_id": reference_component,
+        "reference_in_aoi": reference_in_aoi,
+        "component_rejected_pixels": component_rejected_pixels,
+        "gate_rejections": gate_rejections,
+        "validation_status": validation_status,
         # Where the reference was taken, in grid indices. Exposed so a caller
         # can check it landed on stable ground outside the AOI rather than
         # inside the thing being measured - a distinction that changes the
@@ -666,9 +914,23 @@ def report(result: dict) -> dict:
     # Percentages here are of the FRAME, and are labelled so, because a gate
     # applied before the AOI clip has no AOI to be a fraction of. The coverage
     # figure that matters is printed below, against the AOI.
-    print("\n  quality gates (cumulative, % of frame):")
-    for name, n in result["gates"].items():
-        print(f"    {name:<28} {n:>10,}  {100*n/total:>7.3f}%")
+    print("\n  quality gates (cumulative survivors, % of frame):")
+    for name, count in result["gates"].items():
+        print(f"    {name:<44} {count:>10,}  {100*count/total:>7.3f}%")
+    print("\n  pixel attrition ledger (rejected at this stage):")
+    for name, count in result.get("gate_rejections", {}).items():
+        print(f"    {name:<44} {count:>10,}  {100*count/total:>7.3f}%")
+    print(f"  reference status  {result.get('validation_status', 'REFERENCE_UNVALIDATED')}")
+    print(f"  reference component {result.get('reference_component_id')}")
+    print(f"  reference inside AOI {result.get('reference_in_aoi')} (stable-ground status is not inferred)")
+    if result.get("aoi_gate_cumulative_counts") is not None:
+        print("\n  AOI-scoped quality gate ledger (pixel centres on this product grid):")
+        for name, count in result["aoi_gate_cumulative_counts"].items():
+            print(f"    {name:<44} {count:>10,}")
+        print("  AOI-scoped rejected-pixel ledger:")
+        for name, count in result["aoi_gate_rejections"].items():
+            print(f"    {name:<44} {count:>10,}")
+        print(f"  AOI ledger reconciliation: {result.get('aoi_gate_ledger_status')}")
 
     n = int(valid.sum())
     aoi_px = result.get("aoi_px")
@@ -706,7 +968,18 @@ def report(result: dict) -> dict:
              # it, so every row says which it is. See product_maturity().
              "maturity": product_maturity(result.get("file", "")),
              "crid": crid_of(result.get("file", "")),
-             "processing": "UR" if "_UR_" in str(result.get("file", "")) else "PR"}
+             "processing": "UR" if "_UR_" in str(result.get("file", "")) else "PR",
+             "source_cells_total": result.get("source_cells_total"),
+             "reference_status": result.get("validation_status"),
+             "reference_component_id": result.get("reference_component_id"),
+             "reference_in_aoi": result.get("reference_in_aoi"),
+             "component_rejected_pixels": result.get("component_rejected_pixels", 0),
+             "ionosphere_correction_applied": bool(result.get("ionosphere_correction_applied")),
+             "gate_cumulative_counts_json": json.dumps(result.get("gates", {}), sort_keys=True),
+             "gate_rejections_json": json.dumps(result.get("gate_rejections", {}), sort_keys=True),
+             "aoi_gate_cumulative_counts_json": json.dumps(result.get("aoi_gate_cumulative_counts"), sort_keys=True),
+             "aoi_gate_rejections_json": json.dumps(result.get("aoi_gate_rejections"), sort_keys=True),
+             "aoi_gate_ledger_status": result.get("aoi_gate_ledger_status")}
 
     if n == 0:
         print("\n  NO VALID PIXELS. Lower --coh-threshold or check the AOI overlaps the frame.")
@@ -754,6 +1027,8 @@ def report(result: dict) -> dict:
 
 
 def write_geotiff(result: dict, out: Path) -> None:
+    if result.get("epsg") is None:
+        raise RuntimeError("Refusing GeoTIFF export: source GUNW projection/EPSG metadata is missing.")
     try:
         import rasterio
         from rasterio.transform import from_origin
@@ -771,11 +1046,31 @@ def write_geotiff(result: dict, out: Path) -> None:
         data = np.flipud(data)
     with rasterio.open(
         out, "w", driver="GTiff", height=data.shape[0], width=data.shape[1],
-        count=1, dtype="float32", crs=f"EPSG:{result['epsg'] or 4326}",
+        count=1, dtype="float32", crs=f"EPSG:{result['epsg']}",
         transform=transform, nodata=np.nan, compress="deflate",
     ) as dst:
         dst.write(data, 1)
-        dst.update_tags(units="mm", pair=f"{result['reference_date']}_{result['secondary_date']}")
+        dst.update_tags(
+            units="mm", pair=f"{result['reference_date']}_{result['secondary_date']}",
+            source=result["file"], aoi_name=str(result.get("aoi_name", AOI_NAME)),
+            aoi_mask_applied=str(bool(result.get("aoi_mask_applied", False))).lower(),
+            crid=crid_of(result["file"]), maturity=product_maturity(result["file"]),
+            ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable",
+            validation_status=str(result.get("validation_status") or "REFERENCE_UNVALIDATED"),
+            reference_component_id=str(result.get("reference_component_id") if result.get("reference_component_id") is not None else ""),
+            reference_in_aoi=str(result.get("reference_in_aoi") if result.get("reference_in_aoi") is not None else "unknown").lower(),
+            component_rejected_pixels=str(int(result.get("component_rejected_pixels") or 0)),
+            source_cells_total=str(int(result.get("source_cells_total") or data.size)),
+            valid_pixels_after_all_gates=str(int(result["valid"].sum())),
+            gate_cumulative_counts_json=json.dumps(result.get("gates", {}), sort_keys=True),
+            gate_rejections_json=json.dumps(result.get("gate_rejections", {}), sort_keys=True),
+            aoi_gate_cumulative_counts_json=json.dumps(result.get("aoi_gate_cumulative_counts"), sort_keys=True),
+            aoi_gate_rejections_json=json.dumps(result.get("aoi_gate_rejections"), sort_keys=True),
+            aoi_gate_ledger_status=str(result.get("aoi_gate_ledger_status") or "UNKNOWN"),
+            aoi_source_grid_cells=str(result.get("aoi_px") if result.get("aoi_px") is not None else ""),
+            aoi_final_valid_pixels=str(int((result["valid"] & result.get("aoi_mask", np.ones_like(result["valid"], dtype=bool))).sum())) if result.get("aoi_mask_applied") else "",
+            export_scope="full_product_grid",
+        )
     logger.info("Wrote %s", out)
 
 
@@ -814,6 +1109,8 @@ def aoi_grid(xs: np.ndarray, ys: np.ndarray, ring, epsg: int | None,
     """
     if xs is None or ys is None or len(xs) < 2 or len(ys) < 2:
         return None
+    if epsg is None:
+        raise ValueError("Cannot place an AOI grid without source EPSG/CRS metadata.")
     res_x = abs(float(xs[1] - xs[0]))
     res_y = abs(float(ys[1] - ys[0]))
     if res_x <= 0 or res_y <= 0:
@@ -884,6 +1181,10 @@ def export_clipped(result: dict, outdir: Path) -> dict:
     the clip rather than the frame is a ~1000x reduction and loses nothing that
     the analysis uses. Bands: displacement (mm) and coherence.
     """
+    if not result.get("aoi_mask_applied", False):
+        raise RuntimeError("Refusing AOI-clipped GeoTIFF export: the source reader did not apply the AOI mask.")
+    if result.get("epsg") is None:
+        raise RuntimeError("Refusing AOI-clipped GeoTIFF export: source GUNW CRS/EPSG metadata is missing.")
     try:
         import rasterio
         from rasterio.transform import from_origin
@@ -896,16 +1197,22 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         logger.error("No coordinates - cannot export.")
         return {}
 
+    aoi_name = result.get("aoi_name")
+    if aoi_name not in AOIS:
+        raise RuntimeError(f"Refusing AOI export: missing or unknown AOI identity {aoi_name!r}.")
+    export_ring = AOIS[aoi_name]
+
     valid = result["valid"]
-    if not valid.any():
-        logger.warning("Nothing valid to export for %s", result["file"][:44])
-        return {}
+    if valid.shape != result["displacement_mm"].shape:
+        raise RuntimeError("GUNW validity mask and displacement array shapes do not match.")
+    if result.get("coherence") is not None and result["coherence"].shape != valid.shape:
+        raise RuntimeError("GUNW validity mask and coherence array shapes do not match.")
 
     full_disp = np.where(valid, result["displacement_mm"], np.nan)
     full_coh = (np.where(valid, result["coherence"], np.nan)
                 if result["coherence"] is not None else None)
 
-    grid = aoi_grid(xs, ys, globals()["AOI_RING"], result["epsg"])
+    grid = aoi_grid(xs, ys, export_ring, result["epsg"])
     if grid is not None:
         # Fixed AOI grid: every export over this AOI at this posting comes out
         # the same size, on the same lattice, and can be differenced directly.
@@ -913,10 +1220,18 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         coh = place_on_grid(full_coh, grid) if full_coh is not None else None
         transform = grid["transform"]
     else:
-        # Fall back to the old per-product clip, and the caller has already been
-        # warned that this file will not align with the others.
-        rows = np.any(valid, axis=1)
-        cols = np.any(valid, axis=0)
+        # If the product grid cannot be placed on the common lattice, keep an
+        # explicit per-product AOI window. Bound this window by AOI cells, not
+        # valid signal pixels: an all-invalid product must still be represented
+        # as a no-data raster when its grid covers the AOI.
+        aoi_mask = build_aoi_mask(xs, ys, export_ring, result["epsg"])
+        if not aoi_mask.any():
+            logger.warning("%s has no source-grid cells inside AOI; no GeoTIFF can represent that AOI.",
+                           result["file"][:44])
+            return {"export_status": "NO_AOI_GRID_COVERAGE", "export_valid_px": 0,
+                    "export_rows": 0, "export_cols": 0}
+        rows = np.any(aoi_mask, axis=1)
+        cols = np.any(aoi_mask, axis=0)
         r0, r1 = int(np.argmax(rows)), int(len(rows) - np.argmax(rows[::-1]))
         c0, c1 = int(np.argmax(cols)), int(len(cols) - np.argmax(cols[::-1]))
         disp = full_disp[r0:r1, c0:c1].astype("float32")
@@ -929,6 +1244,7 @@ def export_clipped(result: dict, outdir: Path) -> dict:
             disp = np.flipud(disp)
             if coh is not None:
                 coh = np.flipud(coh)
+        export_grid_policy = "per_product_aoi_window_not_common_lattice"
 
     outdir.mkdir(parents=True, exist_ok=True)
     # Include the processing type. NASA publishes a routine (PR) and an urgent
@@ -940,6 +1256,8 @@ def export_clipped(result: dict, outdir: Path) -> dict:
     stem = f"{result['reference_date']}_{result['secondary_date']}{tag}"
     target = outdir / f"GUNW_{stem}.tif"
     count = 2 if coh is not None else 1
+    valid_export_px = int(np.isfinite(disp).sum())
+    export_status = "WRITTEN" if valid_export_px else "NO_VALID_PIXELS"
     with rasterio.open(target, "w", driver="GTiff", height=disp.shape[0],
                        width=disp.shape[1], count=count, dtype="float32",
                        crs=f"EPSG:{result['epsg'] or 4326}", transform=transform,
@@ -950,15 +1268,38 @@ def export_clipped(result: dict, outdir: Path) -> dict:
         dst.update_tags(reference=result["reference_date"],
                         secondary=result["secondary_date"],
                         wavelength_m=str(result["wavelength_m"]),
-                        source=result["file"])
+                        aoi_name=str(result["aoi_name"]),
+                        aoi_mask_applied="true",
+                        export_status=export_status,
+                        valid_pixel_count=str(valid_export_px),
+                        grid_policy=("common_aoi_lattice" if grid is not None else export_grid_policy),
+                        source=result["file"],
+                        source_total_pixels=str(int(result.get("source_cells_total") or result["displacement_mm"].size)),
+                        gate_counts_json=json.dumps(result.get("gates", {}), sort_keys=True, separators=(",", ":")),
+                        gate_rejections_json=json.dumps(result.get("gate_rejections", {}), sort_keys=True, separators=(",", ":")),
+                        reference_validation_status=str(result.get("validation_status") or "REFERENCE_UNVALIDATED"),
+                        reference_component_id=str(result.get("reference_component_id") if result.get("reference_component_id") is not None else ""),
+                        reference_in_aoi=str(result.get("reference_in_aoi") if result.get("reference_in_aoi") is not None else "unknown").lower(),
+                        component_rejected_pixels=str(int(result.get("component_rejected_pixels") or 0)),
+                        aoi_gate_cumulative_counts_json=json.dumps(result.get("aoi_gate_cumulative_counts"), sort_keys=True),
+                        aoi_gate_rejections_json=json.dumps(result.get("aoi_gate_rejections"), sort_keys=True),
+                        aoi_gate_ledger_status=str(result.get("aoi_gate_ledger_status") or "UNKNOWN"),
+                        aoi_source_grid_cells=str(result.get("aoi_px") if result.get("aoi_px") is not None else ""),
+                        crid=crid_of(result["file"]),
+                        maturity=product_maturity(result["file"]),
+                        ionosphere_correction="applied" if result.get("ionosphere_correction_applied") else "not_applied_or_unavailable")
     mb = target.stat().st_size / 1024 / 1024
-    logger.info("Exported %s  %dx%d  %.2f MB", target.name, disp.shape[0], disp.shape[1], mb)
+    logger.info("Exported %s  %dx%d  %.2f MB  status=%s valid_px=%d",
+                target.name, disp.shape[0], disp.shape[1], mb, export_status, valid_export_px)
     return {"export_file": target.name, "export_mb": round(mb, 3),
-            "export_rows": disp.shape[0], "export_cols": disp.shape[1]}
+            "export_rows": disp.shape[0], "export_cols": disp.shape[1],
+            "export_valid_px": valid_export_px, "export_status": export_status,
+            "export_grid_policy": "common_aoi_lattice" if grid is not None else export_grid_policy}
 
 
 def find_common_reference(files: list[Path], coherence_threshold: float,
-                          ref_radius_px: int = 5) -> tuple[float, float] | None:
+                          ref_radius_px: int = 5,
+                          apply_iono: bool = True) -> tuple[float, float] | None:
     """
     One reference point for the whole stack, valid in every pair.
 
@@ -1035,8 +1376,7 @@ def find_common_reference(files: list[Path], coherence_threshold: float,
         if conn is not None:
             v &= conn > 0
         if msk is not None and msk.shape == shape:
-            m = msk.astype(np.int32)
-            v &= (m // 100 == 0) & ((m // 10) % 10 > 0) & (m % 10 > 0) & (msk != 255)
+            v &= decode_gunw_mask(msk, apply_iono=apply_iono)["usable_mask_for_policy"]
 
         always = v if always is None else (always & v)
         c = np.nan_to_num(coh, nan=0.0) if coh is not None else np.zeros(shape, np.float32)
@@ -1247,7 +1587,7 @@ def main() -> int:
     ap.add_argument("--ref-radius", type=int, default=5, help="reference window half-width in pixels")
     ap.add_argument("--no-clip", action="store_true", help="do not clip to the AOI ring")
     ap.add_argument("--flip-sign", action="store_true", help="invert the LOS sign convention")
-    ap.add_argument("--aoi", choices=("source", "langtang", "lhende"), default="source",
+    ap.add_argument("--aoi", choices=tuple(sorted(AOIS)), default="source",
                     help="which box to clip to. 'source' is the confirmed detachment zone and the default; 'lhende' is the runout corridor the avalanche dammed, not a control")
     ap.add_argument("--auto-ref", action="store_true",
                     help="pick the highest-coherence fully-valid block outside the AOI "
@@ -1265,6 +1605,8 @@ def main() -> int:
                     help="write AOI-clipped GeoTIFFs (small enough to send back)")
     args = ap.parse_args()
 
+    if args.no_clip and args.export:
+        ap.error("--export requires AOI clipping; remove --no-clip or omit --export.")
     set_aoi(args.aoi)
 
     if args.inspect:
@@ -1285,7 +1627,7 @@ def main() -> int:
         if args.common_ref:
             if args.ref_lat is not None or args.ref_lon is not None:
                 logger.warning("--common-ref overrides --ref-lat/--ref-lon.")
-            found = find_common_reference(files, args.coh_threshold, args.ref_radius)
+            found = find_common_reference(files, args.coh_threshold, args.ref_radius, apply_iono=not args.no_iono)
             if not found:
                 logger.error("Cannot establish a common reference; refusing to "
                              "invert pairs on different datums.")

@@ -23,9 +23,11 @@ too few valid pixels is refused rather than given a MAD of two numbers.
 from __future__ import annotations
 
 import numpy as np
+from pathlib import Path
 
 from local_floor import (MIN_PX, compare, detection_floor, robust_sigma,
-                         span_from_name, window)
+                         span_from_name, window, point_in_aoi, measure_target,
+                         infer_aoi_from_dir, skipped_row)
 
 
 def test_floor_is_three_sigma_over_the_span():
@@ -190,20 +192,49 @@ def test_compare_reports_the_interval_alongside_the_floor():
 def test_local_floors_round_trip_into_the_detector(tmp_path):
     """
     A series measured at a point must be gated on the floor AT the point.
-    --as-floors writes exactly what inverse_velocity.load_floors reads.
+    Detector-floor rows preserve exact footprint/CRID and never rely on TIFF
+    filenames for information those filenames do not encode.
     """
     from datetime import date
     from inverse_velocity import load_floors
     from local_floor import write_as_floors
-    rows = [{"file": "GOFF_20260702_20260714_PR_HH-layer2.tif", "usable": True,
-             "target_id": "4", "local_floor_mm_day": 32.01},
-            {"file": "GOFF_20260629_20260711_PR_HH-layer2.tif", "usable": True,
-             "target_id": "4", "local_floor_mm_day": 255.3}]
+
+    sid = "ASC PATH 98 FRAME 16 SUBSWATH 25 BANDWIDTH 4000 POL SH CRID P05023 GOFF"
+    source1 = (
+        "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_"
+        "20260702T233920_20260702T233955_20260714T233920_20260714T233954_"
+        "P05023_F_F_J_001.h5"
+    )
+    source2 = (
+        "NISAR_L2_PR_GOFF_023_098_A_016_025_4000_SH_"
+        "20260629T233921_20260629T233956_20260711T233921_20260711T233956_"
+        "P05023_N_F_J_001.h5"
+    )
+    common = {
+        "usable": True, "target_id": "4", "lat": 28.27799, "lon": 85.52983,
+        "aoi_name": "source", "aoi_eligible": True, "status": "MEASURED",
+        "window_px": 169, "series_id": sid,
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "crid": "P05023", "maturity": "PROVISIONAL", "product": "GOFF",
+        "track": "ASC path 98", "frame": "16", "subswath": "25",
+        "bandwidth": "4000", "polarisation": "SH", "processing": "PR",
+        "layer": "HH-layer2",
+    }
+    rows = [
+        {**common, "file": "GOFF_20260702_20260714_PR_HH-layer2.tif",
+         "source_product": source1, "local_floor_mm_day": 32.01},
+        {**common, "file": "GOFF_20260629_20260711_PR_HH-layer2.tif",
+         "source_product": source2, "local_floor_mm_day": 255.3},
+    ]
     out = tmp_path / "f.csv"
     assert write_as_floors(rows, out, "layer2") == 2
-    f = load_floors(out, "layer2")
+    f = load_floors(out, "layer2", series_id=sid)
     assert f[(date(2026, 7, 2), date(2026, 7, 14))] == 32.01
     assert f[(date(2026, 6, 29), date(2026, 7, 11))] == 255.3
+    out_rows = list(__import__("csv").DictReader(out.open(newline="")))
+    assert {row["series_id"] for row in out_rows} == {sid}
+    assert {row["crid"] for row in out_rows} == {"P05023"}
+    assert {row["maturity"] for row in out_rows} == {"PROVISIONAL"}
 
 
 def test_floors_from_two_targets_are_refused(tmp_path):
@@ -214,3 +245,200 @@ def test_floors_from_two_targets_are_refused(tmp_path):
              "target_id": t, "local_floor_mm_day": 1.0} for t in ("1", "4")]
     with pytest.raises(ValueError):
         write_as_floors(rows, tmp_path / "f.csv", "layer2")
+
+
+def test_target9_is_rejected_by_source_polygon_but_eligible_in_langtang():
+    # This is the candidate whose point sits ~670 m outside SOURCE_RING but
+    # ~183 m inside LANGTANG_RING. A clipped 0/1-cell window is not a floor.
+    assert not point_in_aoi(85.47591, 28.25460, "source")
+    assert point_in_aoi(85.47591, 28.25460, "langtang")
+    assert point_in_aoi(85.52983, 28.27799, "source")
+
+
+def test_export_aoi_inference_requires_an_unambiguous_folder_name():
+    assert infer_aoi_from_dir("outputs/export_goff_src") == "source"
+    assert infer_aoi_from_dir("outputs/export_source") == "source"
+    assert infer_aoi_from_dir("outputs/export_phase_langtang") == "langtang"
+    assert infer_aoi_from_dir("outputs/export_goff_lhende") == "lhende"
+    assert infer_aoi_from_dir("outputs/export_source_langtang") is None
+    assert infer_aoi_from_dir("outputs/notlangtang") is None
+    assert infer_aoi_from_dir("outputs/some_custom_folder") is None
+
+
+def test_out_of_aoi_target_produces_explicit_nonmeasurement_row():
+    row = skipped_row(
+        Path("GOFF_20260702_20260714_PR_HH-layer2.tif"),
+        target_id="9", lat=28.25460, lon=85.47591, radius=6,
+        aoi_name="source", status="TARGET_OUTSIDE_AOI",
+    )
+    assert row["status"] == "TARGET_OUTSIDE_AOI"
+    assert row["aoi_eligible"] is False
+    assert row["usable"] is False
+    assert row["window_px"] == 0
+    assert np.isnan(row["local_floor_mm_day"])
+
+
+def _write_tagged_floor_raster(path, tags, *, crs="EPSG:32645"):
+    import rasterio
+    from rasterio.transform import from_origin
+
+    with rasterio.open(
+        path, "w", driver="GTiff", height=2, width=2, count=1,
+        dtype="float32", crs=crs, transform=from_origin(500000, 3200000, 80, 80),
+        nodata=np.nan,
+    ) as dst:
+        dst.write(np.ones((2, 2), dtype=np.float32), 1)
+        if tags:
+            dst.update_tags(**tags)
+    return path
+
+
+def test_floor_provenance_requires_exact_matching_aoi_and_applied_mask(tmp_path):
+    import pytest
+    from local_floor import validate_export_provenance
+
+    good = _write_tagged_floor_raster(
+        tmp_path / "good.tif",
+        {"aoi_name": "source", "aoi_mask_applied": "true"},
+    )
+    validate_export_provenance([good], "source")
+    with pytest.raises(ValueError, match="AOI tag is"):
+        validate_export_provenance([good], "langtang")
+
+    unclipped = _write_tagged_floor_raster(
+        tmp_path / "unclipped.tif",
+        {"aoi_name": "source", "aoi_mask_applied": "false"},
+    )
+    with pytest.raises(ValueError, match="unclipped/mislabelled"):
+        validate_export_provenance([unclipped], "source")
+
+
+def test_untagged_legacy_floor_raster_needs_explicit_opt_in(tmp_path, caplog):
+    import pytest
+    from local_floor import validate_export_provenance
+
+    legacy = _write_tagged_floor_raster(tmp_path / "legacy.tif", {})
+    with pytest.raises(ValueError, match="missing aoi_name provenance tag"):
+        validate_export_provenance([legacy], "source")
+    validate_export_provenance([legacy], "source", allow_legacy_untagged=True)
+    assert "explicit legacy assumption" in caplog.text
+
+
+def test_floor_provenance_rejects_raster_without_resolvable_crs(tmp_path):
+    import pytest
+    from local_floor import validate_export_provenance
+
+    unreferenced = _write_tagged_floor_raster(
+        tmp_path / "no_crs.tif",
+        {"aoi_name": "source", "aoi_mask_applied": "true"},
+        crs=None,
+    )
+    with pytest.raises(ValueError, match="CRS/EPSG metadata"):
+        validate_export_provenance([unreferenced], "source")
+
+
+def test_zero_local_mad_is_not_published_as_zero_instrument_noise():
+    from local_floor import detection_floor, floor_ci
+
+    constant = np.full((13, 13), 5.0)
+    aoi = np.random.default_rng(20261022).normal(0.0, 20.0, (100, 100))
+    result = compare(aoi, constant, 12.0)
+
+    assert np.isnan(detection_floor(constant, 12.0))
+    assert not result["usable"]
+    assert result["status"] == "DEGENERATE_LOCAL_MAD"
+    assert np.isnan(result["local_floor_mm_day"])
+    lo, hi = floor_ci(constant.ravel(), 12.0)
+    assert np.isnan(lo) and np.isnan(hi)
+
+
+def test_zero_aoi_mad_does_not_turn_a_valid_local_floor_into_zero():
+    from local_floor import detection_floor
+
+    aoi = np.full((130, 130), 5.0)
+    window_values = np.random.default_rng(20261023).normal(0.0, 30.0, (13, 13))
+    result = compare(aoi, window_values, 12.0)
+
+    assert result["usable"]
+    assert np.isfinite(result["local_floor_mm_day"])
+    assert result["local_floor_mm_day"] > 0
+    assert np.isnan(detection_floor(aoi, 12.0))
+    assert np.isnan(result["aoi_floor_mm_day"])
+    assert np.isnan(result["ratio"])
+    assert result["status"] == "MEASURED_LOCAL_FLOOR_AOI_MAD_UNUSABLE"
+
+
+def test_inverse_velocity_floor_export_refuses_a_stale_usable_flag(tmp_path):
+    import pytest
+    from local_floor import write_as_floors
+
+    common = {
+        "file": "GOFF_20260702_20260714_PR_HH-layer2.tif",
+        "usable": True, "target_id": "4",
+        "lat": 28.27799, "lon": 85.52983, "aoi_name": "source",
+        "aoi_eligible": True, "status": "MEASURED",
+        "series_id": "ASC PATH 98 FRAME 16 SUBSWATH 26 BANDWIDTH 4000 POL SH CRID P05023 GOFF",
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "source_product": "NISAR_L2_PR_GOFF_026_098_A_016_028_4000_SH_20260726T233919_20260726T233954_20260819T233918_20260819T233953_P05023_N_F_J_001.h5",
+        "crid": "P05023", "maturity": "PROVISIONAL", "product": "GOFF",
+        "track": "ASC path 98", "frame": "16", "subswath": "26",
+        "bandwidth": "4000", "polarisation": "SH", "processing": "PR",
+        "layer": "HH-layer2",
+        "window_px": 169,
+    }
+    for bad_floor in (0.0, -1.0, float("nan"), float("inf")):
+        row = {**common, "local_floor_mm_day": bad_floor}
+        with pytest.raises(ValueError, match="finite positive value"):
+            write_as_floors([row], tmp_path / f"bad-{bad_floor}.csv", "layer2")
+
+    too_few = {**common, "local_floor_mm_day": 1.0, "window_px": 3}
+    with pytest.raises(ValueError, match="at least MIN_PX"):
+        write_as_floors([too_few], tmp_path / "too-few.csv", "layer2")
+
+
+def test_inverse_velocity_floor_export_refuses_a_target_outside_the_aoi(tmp_path):
+    import pytest
+    from local_floor import write_as_floors
+
+    row = {
+        "file": "GOFF_20260702_20260714_PR_HH-layer2.tif",
+        "usable": True, "target_id": "9",
+        "lat": 28.25460, "lon": 85.47591, "aoi_name": "source",
+        "aoi_eligible": True, "status": "MEASURED",
+        "series_id": "ASC PATH 98 FRAME 16 SUBSWATH 26 BANDWIDTH 4000 POL SH CRID P05023 GOFF",
+        "series_identity_status": "PARSED_SOURCE_GRANULE",
+        "source_product": "NISAR_L2_PR_GOFF_026_098_A_016_028_4000_SH_20260726T233919_20260726T233954_20260819T233918_20260819T233953_P05023_N_F_J_001.h5",
+        "crid": "P05023", "maturity": "PROVISIONAL", "product": "GOFF",
+        "track": "ASC path 98", "frame": "16", "subswath": "26",
+        "bandwidth": "4000", "polarisation": "SH", "processing": "PR",
+        "layer": "HH-layer2",
+        "window_px": 169, "local_floor_mm_day": 12.0,
+    }
+    with pytest.raises(ValueError, match="outside its named AOI"):
+        write_as_floors([row], tmp_path / "outside.csv", "layer2")
+
+
+def test_invalid_calendar_date_in_export_filename_is_not_a_crash():
+    assert np.isnan(span_from_name("GOFF_20261302_20261315_PR_HH-layer2.tif"))
+
+
+def test_target_outside_raster_emits_one_row_per_requested_radius(tmp_path):
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "GOFF_20260702_20260714_PR_HH-layer2.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=10, width=10, count=1,
+        dtype="float32", crs="EPSG:32645",
+        transform=from_origin(500000, 3200000, 80, 80), nodata=-9999.0,
+    ) as dst:
+        dst.write(np.ones((10, 10), dtype=np.float32), 1)
+
+    rows = measure_target(
+        [path], "outside", lat=-20.0, lon=-40.0,
+        radii=[2, 6, 9], band=1, aoi_name="source",
+    )
+    assert len(rows) == 3
+    assert {row["radius_px"] for row in rows} == {2, 6, 9}
+    assert all(row["status"] == "TARGET_OUTSIDE_RASTER" for row in rows)
+    assert all(not row["usable"] and np.isnan(row["local_floor_mm_day"]) for row in rows)

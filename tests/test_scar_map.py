@@ -21,7 +21,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from scar_map import AOI, GRID, UNUSABLE, grid_transform, grow, measure, probe
+from scar_map import (
+    AOI, GRID, SOURCE_RING, UNUSABLE, grid_transform, grow, measure, probe,
+    source_aoi_mask, point_in_ring, representative_cluster_index,
+)
 
 
 def test_the_grid_transform_comes_from_the_aoi_not_a_band():
@@ -37,6 +40,26 @@ def test_the_grid_transform_comes_from_the_aoi_not_a_band():
     # and the grid must span the AOI, not a fraction of it
     width_m = tf.a * GRID[1]
     assert width_m == pytest.approx(9140, rel=0.02)
+
+
+def test_source_aoi_mask_excludes_target9_outside_the_bbox_polygon():
+    """Bounding-box I/O must not promote an outside target into a scar/floor."""
+    from pyproj import Transformer
+    from rasterio.transform import rowcol
+
+    tf = grid_transform()
+    to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32645", always_xy=True)
+    mask = source_aoi_mask()
+    assert mask.shape == GRID
+    assert 0 < int(mask.sum()) < mask.size
+
+    x4, y4 = to_utm.transform(85.52983, 28.27799)
+    r4, c4 = rowcol(tf, x4, y4)
+    x9, y9 = to_utm.transform(85.47591, 28.25460)
+    r9, c9 = rowcol(tf, x9, y9)
+
+    assert mask[r4, c4], "Target 4 is inside the confirmed source polygon"
+    assert not mask[r9, c9], "Target 9 is outside the source polygon despite being in its bbox"
 
 
 def test_snow_is_not_treated_as_unusable():
@@ -121,3 +144,53 @@ def test_measure_reports_extent_and_a_change_weighted_centroid():
     assert s["was_snow_pct"] == 100.0
     # weighted centroid pulled north of the plain one (north = larger latitude)
     assert s["weighted_lat"] > s["centroid_lat"]
+
+
+def test_representative_sample_stays_inside_concave_aoi_when_centroid_does_not():
+    # A U-shaped polygon: the 4 observed pixels are inside its two arms, but
+    # their arithmetic centroid falls in the excluded notch.
+    ring = [
+        (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (3.0, 4.0),
+        (3.0, 1.0), (1.0, 1.0), (1.0, 4.0), (0.0, 4.0),
+    ]
+    xs = np.array([0.5, 0.5, 3.5, 3.5])
+    ys = np.array([2.5, 3.5, 2.5, 3.5])
+    lons, lats = xs.copy(), ys.copy()
+
+    centroid_lon, centroid_lat = float(lons.mean()), float(lats.mean())
+    assert not point_in_ring(centroid_lon, centroid_lat, ring)
+
+    idx = representative_cluster_index(xs, ys, lons, lats, ring)
+    assert (xs[idx], ys[idx]) in set(zip(xs, ys))
+    assert point_in_ring(float(lons[idx]), float(lats[idx]), ring)
+
+
+def test_representative_sample_refuses_clusters_without_an_in_aoi_pixel():
+    ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    xs = np.array([2.0, 3.0])
+    ys = np.array([2.0, 3.0])
+    with pytest.raises(ValueError, match="no observed pixel centre"):
+        representative_cluster_index(xs, ys, xs, ys, ring)
+
+
+def test_probe_refuses_target9_outside_source_polygon_even_if_nearby_pixels_are_valid():
+    # Every array cell is valid, but the requested centre itself is 670 m
+    # outside SOURCE_RING. Nearby in-polygon cells must not imply observation
+    # at this point.
+    d = np.full(GRID, -0.5, np.float32)
+    both = np.ones(GRID, bool)
+    pre = np.full(GRID, 0.9, np.float32)
+    r = probe(28.25460, 85.47591, d, both, pre, grid_transform(), radius=20)
+    assert r["observed"] is False
+    assert r["n_usable"] == 0
+    assert r["status"] == "TARGET_OUTSIDE_AOI"
+
+
+def test_probe_reports_exact_aoi_edge_as_eligible():
+    lon, lat = SOURCE_RING[0]
+    d = np.zeros(GRID, np.float32)
+    both = np.ones(GRID, bool)
+    pre = np.full(GRID, 0.9, np.float32)
+    r = probe(lat, lon, d, both, pre, grid_transform(), radius=1)
+    # Eligibility is a polygon property; the chosen AOI vertex is accepted.
+    assert r.get("status") != "TARGET_OUTSIDE_AOI"

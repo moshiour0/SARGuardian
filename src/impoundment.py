@@ -18,14 +18,26 @@ a site that is both dammable and moving.
 
 Method
 ======
-1. Fill depressions (priority-flood) for routing purposes only.
-2. D8 flow directions and flow accumulation.
-3. Channel = cells whose upstream contributing area exceeds a threshold.
-4. For each channel cell, treat it as a dam site. For a range of dam heights,
-   flood the *upstream contributing area* to that water level and integrate
-   the depth.
-5. Rank by impounded volume; flag sites whose pool touches the AOI edge
-   (truncated, so the volume is a lower bound).
+1. Validate the DEM grid and preserve an identity hash of the actual samples,
+   coordinate axes, request bbox and sample count.
+2. Priority-flood fill depressions for routing only; do not replace the original
+   DEM elevations used for pool depth.
+3. Route D8 using steepest downhill neighbours and deterministic equal-height
+   routing toward a downhill cell or raster outlet. Compute contributing area
+   in graph-topological order and refuse cycles/invalid receiver edges.
+4. Treat channel cells above a configurable contributing-cell threshold as
+   candidate blockage sites. For a proposed water level (sill + imposed height),
+   traverse the candidate's upstream receiver tree only through cells whose
+   original elevation is below that level. This is a tree-constrained connected
+   ponding approximation, not a two-dimensional hydraulic/spillway solver.
+5. Integrate depth over the modelled pool, record pool area and bounding-box
+   backwater extent, and flag pools touching the grid edge. Edge-truncated pool
+   volume is a lower bound on that modelled pool; unmodelled lateral spill over
+   divides can instead make a closed-basin interpretation an overestimate.
+6. Rank and spatially suppress candidates using explicit parameters. The full
+   analysis is bound to the input DEM hash, implementation hash, model version,
+   runtime and parameter sidecar. A successful run does not establish physical
+   accuracy against a real impoundment.
 
 DEM sources
 ===========
@@ -54,13 +66,16 @@ Usage
 from __future__ import annotations
 
 import argparse
+import hashlib
 import heapq
 import json
 import logging
 import math
 import sys
 import time
+from collections import deque
 import urllib.parse
+from datetime import datetime, timezone
 import urllib.request
 from pathlib import Path
 
@@ -93,61 +108,359 @@ NB = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
 # ---------------------------------------------------------------------------
 # DEM loading
 # ---------------------------------------------------------------------------
-def dem_from_api(bbox, target_cells: int = 12000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Sample SRTM 30 m from OpenTopoData over the bbox."""
-    lon0, lat0, lon1, lat1 = bbox
+API_ENDPOINT = "https://api.opentopodata.org/v1/srtm30m"
+API_CACHE_SCHEMA = 2
+
+
+def api_grid_shape(bbox, target_cells: int = 12000) -> tuple[int, int, float]:
+    """Return the deterministic north-to-south grid dimensions for an API AOI."""
+    if len(bbox) != 4:
+        raise ValueError("AOI bbox must be [west, south, east, north].")
+    lon0, lat0, lon1, lat1 = map(float, bbox)
+    if not (all(math.isfinite(v) for v in (lon0, lat0, lon1, lat1))
+            and -180 <= lon0 < lon1 <= 180 and -90 <= lat0 < lat1 <= 90):
+        raise ValueError(f"Invalid WGS84 bbox: {bbox!r}")
+    if int(target_cells) != target_cells or target_cells < 4:
+        raise ValueError("--cells must be an integer >= 4 so both grid axes contain at least two samples.")
     midlat = (lat0 + lat1) / 2
     w_km = (lon1 - lon0) * 111.32 * math.cos(math.radians(midlat))
     h_km = (lat1 - lat0) * 110.57
     aspect = w_km / h_km
-    ny = int(round(math.sqrt(target_cells / aspect)))
-    nx = int(round(target_cells / ny))
+    if not (math.isfinite(aspect) and aspect > 0):
+        raise ValueError("AOI grid aspect ratio is invalid.")
+    ny = max(2, int(round(math.sqrt(target_cells / aspect))))
+    nx = max(2, int(round(target_cells / ny)))
+    return ny, nx, w_km
 
-    lats = np.linspace(lat1, lat0, ny)          # north -> south, image order
-    lons = np.linspace(lon0, lon1, nx)
+
+def elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint: str | None = None) -> str:
+    """Stable digest of the exact elevation array, axes and request geometry."""
+    digest = hashlib.sha256()
+    descriptor = {
+        "schema_version": API_CACHE_SCHEMA,
+        "endpoint": endpoint,
+        "bbox": [float(v) for v in bbox],
+        "target_cells": int(target_cells),
+        "shape": list(np.asarray(z).shape),
+    }
+    digest.update(json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    for value in (z, lats, lons):
+        array = np.ascontiguousarray(np.asarray(value, dtype="<f8"))
+        digest.update(json.dumps(list(array.shape), separators=(",", ":")).encode("ascii"))
+        digest.update(array.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _validate_elevation_grid(z, lats, lons, bbox) -> None:
+    z = np.asarray(z)
+    lats = np.asarray(lats)
+    lons = np.asarray(lons)
+    if z.ndim != 2 or lats.ndim != 1 or lons.ndim != 1:
+        raise ValueError("DEM cache must contain a 2-D elevation grid and 1-D axes.")
+    if z.shape != (lats.size, lons.size) or min(z.shape) < 2:
+        raise ValueError(f"DEM shape {z.shape} does not match coordinate axes ({lats.size}, {lons.size}).")
+    # NaN represents an API/DEM no-data cell. +/-Inf is never a valid elevation
+    # and must not flow into slopes, depression filling, or pool volumes.
+    if np.isinf(z).any():
+        raise ValueError("DEM grid contains infinite elevations; refusing the hydrology calculation.")
+    if not (np.all(np.isfinite(lats)) and np.all(np.isfinite(lons)) and np.isfinite(z).any()):
+        raise ValueError("DEM grid has invalid coordinate axes or no finite elevation samples.")
+    if not (np.all(np.diff(lats) < 0) and np.all(np.diff(lons) > 0)):
+        raise ValueError("DEM axes must be strictly north-to-south in latitude and west-to-east in longitude.")
+    west, south, east, north = map(float, bbox)
+    eps = 1e-9
+    if (lons.min() < west - eps or lons.max() > east + eps
+            or lats.min() < south - eps or lats.max() > north + eps):
+        raise ValueError("DEM coordinate axes extend outside the requested WGS84 bbox.")
+
+
+def _load_api_cache(path: Path, bbox, target_cells: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            metadata = json.loads(str(data["metadata_json"].item()))
+            z = np.asarray(data["z"], dtype=np.float64)
+            lats = np.asarray(data["lats"], dtype=np.float64)
+            lons = np.asarray(data["lons"], dtype=np.float64)
+    except Exception as exc:
+        raise ValueError(f"DEM cache {path} is unreadable; refusing to fall back silently to live API data.") from exc
+
+    if metadata.get("schema_version") != API_CACHE_SCHEMA:
+        raise ValueError(f"DEM cache schema mismatch in {path}.")
+    if metadata.get("endpoint") != API_ENDPOINT:
+        raise ValueError(f"DEM cache endpoint mismatch in {path}.")
+    if metadata.get("bbox") != [float(v) for v in bbox]:
+        raise ValueError(f"DEM cache AOI bbox does not match the requested AOI in {path}.")
+    if metadata.get("target_cells") != int(target_cells):
+        raise ValueError(f"DEM cache target-cell request does not match --cells in {path}.")
+    ny, nx, _ = api_grid_shape(bbox, target_cells)
+    if metadata.get("shape") != [ny, nx]:
+        raise ValueError(f"DEM cache metadata shape mismatch in {path}.")
+    if z.shape != (ny, nx):
+        raise ValueError(f"DEM cache shape mismatch: expected {(ny, nx)}, got {z.shape}.")
+    _validate_elevation_grid(z, lats, lons, bbox)
+    fingerprint = elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint=API_ENDPOINT)
+    if metadata.get("grid_sha256") != fingerprint:
+        raise ValueError(f"DEM cache fingerprint mismatch in {path}; the cached grid may be incomplete or modified.")
+    logger.info("Loaded fixed DEM grid %s sha256=%s", path, fingerprint)
+    return z, lats, lons
+
+
+def _save_api_cache(path: Path, z, lats, lons, bbox, target_cells: int) -> None:
+    _validate_elevation_grid(z, lats, lons, bbox)
+    metadata = {
+        "schema_version": API_CACHE_SCHEMA,
+        "source": "OpenTopoData SRTM 30m",
+        "endpoint": API_ENDPOINT,
+        "bbox": [float(v) for v in bbox],
+        "target_cells": int(target_cells),
+        "shape": list(np.asarray(z).shape),
+        "nodata_cells": int(np.count_nonzero(~np.isfinite(z))),
+        "grid_sha256": elevation_grid_sha256(z, lats, lons, bbox, target_cells, endpoint=API_ENDPOINT),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    with temp.open("wb") as stream:
+        np.savez_compressed(
+            stream, z=np.asarray(z, dtype=np.float64),
+            lats=np.asarray(lats, dtype=np.float64),
+            lons=np.asarray(lons, dtype=np.float64),
+            metadata_json=np.array(json.dumps(metadata, sort_keys=True, separators=(",", ":"))),
+        )
+    temp.replace(path)
+    logger.info("Saved fixed DEM grid %s sha256=%s", path, metadata["grid_sha256"])
+
+
+def _api_coordinate_axes(bbox, ny: int, nx: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return exactly the coordinate grid sent to the API, at its 5-decimal precision.
+
+    Requests are serialized to five decimal places; storing the unrounded
+    linspace axes made provenance slightly disagree with the actual SRTM sample
+    locations. Axes are rounded inward to stay inside the requested AOI bbox.
+    If the requested grid is finer than the API coordinate precision, refuse
+    instead of silently duplicating coordinates.
+    """
+    west, south, east, north = map(float, bbox)
+    scale = 100_000.0
+    west_i = math.ceil(west * scale) / scale
+    east_i = math.floor(east * scale) / scale
+    south_i = math.ceil(south * scale) / scale
+    north_i = math.floor(north * scale) / scale
+    if not (west_i < east_i and south_i < north_i):
+        raise ValueError("AOI bbox is narrower than OpenTopoData's five-decimal coordinate precision.")
+    lats = np.clip(np.round(np.linspace(north, south, ny), 5), south_i, north_i)
+    lons = np.clip(np.round(np.linspace(west, east, nx), 5), west_i, east_i)
+    if (not np.all(np.diff(lats) < 0) or not np.all(np.diff(lons) > 0)):
+        raise ValueError(
+            f"Requested {ny}x{nx} grid is finer than the API's 0.00001-degree coordinate precision; "
+            "reduce --cells to avoid duplicate sampling locations."
+        )
+    return lats, lons
+
+
+def dem_from_api(bbox, target_cells: int = 12000, cache_path: Path | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sample SRTM 30 m through OpenTopoData, optionally pinning the exact grid.
+
+    When cache_path exists it is verified and reused without a network request.
+    A malformed/mismatched cache is an error, never an implicit cache miss.
+    """
+    ny, nx, w_km = api_grid_shape(bbox, target_cells)
+    if cache_path is not None and cache_path.exists():
+        return _load_api_cache(cache_path, bbox, target_cells)
+
+    lats, lons = _api_coordinate_axes(bbox, ny, nx)
     pts = [(la, lo) for la in lats for lo in lons]
-
     n_calls = (len(pts) + 99) // 100
     logger.info("Sampling %d x %d = %d cells (~%.0f m) via OpenTopoData: %d calls, ~%.0f s",
                 ny, nx, len(pts), w_km * 1000 / nx, n_calls, n_calls * 1.15)
 
-    z = []
+    elevations = []
     for k in range(0, len(pts), 100):
         chunk = pts[k:k + 100]
-        loc = "|".join(f"{a:.5f},{b:.5f}" for a, b in chunk)
-        url = "https://api.opentopodata.org/v1/srtm30m?locations=" + urllib.parse.quote(loc)
+        locations = "|".join(f"{lat:.5f},{lon:.5f}" for lat, lon in chunk)
+        url = API_ENDPOINT + "?locations=" + urllib.parse.quote(locations)
         for attempt in range(4):
             try:
-                d = json.loads(urllib.request.urlopen(url, timeout=120).read().decode())
-                z += [r.get("elevation") for r in d["results"]]
+                response = urllib.request.urlopen(url, timeout=120)
+                try:
+                    payload = json.loads(response.read().decode("utf-8"))
+                finally:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
+                results = payload.get("results")
+                if not isinstance(results, list) or len(results) != len(chunk):
+                    raise ValueError(f"OpenTopoData returned {len(results) if isinstance(results, list) else 'no'} results for {len(chunk)} requested cells.")
+                elevations.extend(item.get("elevation") for item in results)
                 break
             except Exception as exc:
                 if attempt == 3:
-                    raise
-                logger.warning("retry (%s)", exc)
+                    raise RuntimeError(f"OpenTopoData failed for request batch {k//100 + 1}/{n_calls}: {type(exc).__name__}: {exc}") from exc
+                logger.warning("retrying OpenTopoData batch %d/%d after %s", k//100 + 1, n_calls, type(exc).__name__)
                 time.sleep(3)
-        time.sleep(1.1)
-        if (k // 100) % 20 == 0 and k:
-            logger.info("  %d/%d", k, len(pts))
+        if k + len(chunk) < len(pts):
+            time.sleep(1.1)
 
-    arr = np.array([np.nan if v is None else v for v in z], dtype=float).reshape(ny, nx)
-    return arr, lats, lons
+    z = np.array([np.nan if value is None else value for value in elevations], dtype=np.float64).reshape(ny, nx)
+    _validate_elevation_grid(z, lats, lons, bbox)
+    if cache_path is not None:
+        _save_api_cache(cache_path, z, lats, lons, bbox, target_cells)
+    return z, lats, lons
 
 
 def dem_from_file(path: Path, bbox=None):
+    """Load only an axis-aligned north-up EPSG:4326 GeoTIFF for this grid solver.
+
+    The solver computes metric postings from degree axes. Treating a projected
+    UTM GeoTIFF as longitude/latitude would silently corrupt flow slopes,
+    cell areas, and output site coordinates, so unsupported CRS/affines fail
+    closed instead of being interpreted by assumption.
+    """
     try:
         import rasterio
     except ImportError:
-        logger.error("rasterio required for --dem:  pip install rasterio")
+        logger.error("rasterio required for --dem: pip install rasterio")
         raise SystemExit(1)
+    from rasterio.windows import Window
+
     with rasterio.open(path) as src:
-        arr = src.read(1).astype(float)
+        if src.crs is None or src.crs.to_epsg() != 4326:
+            raise ValueError("The impoundment solver currently requires a WGS84/EPSG:4326 DEM; reproject the GeoTIFF before analysis.")
+        transform = src.transform
+        if (abs(transform.b) > 1e-10 or abs(transform.d) > 1e-10
+                or transform.a <= 0 or transform.e >= 0):
+            raise ValueError("DEM must be an unrotated north-up EPSG:4326 grid (positive x posting, negative y posting).")
+        h, w = src.height, src.width
+        if min(h, w) < 2:
+            raise ValueError("DEM must contain at least two rows and columns.")
+        full_xs = np.array([src.xy(0, col)[0] for col in range(w)], dtype=float)
+        full_ys = np.array([src.xy(row, 0)[1] for row in range(h)], dtype=float)
+        if bbox is None:
+            west, south, east, north = (
+                float(full_xs.min()), float(full_ys.min()),
+                float(full_xs.max()), float(full_ys.max())
+            )
+        else:
+            west, south, east, north = map(float, bbox)
+        cols = np.flatnonzero((full_xs >= west) & (full_xs <= east))
+        rows = np.flatnonzero((full_ys >= south) & (full_ys <= north))
+        if cols.size < 2 or rows.size < 2:
+            raise ValueError("DEM has fewer than two pixel centres in each axis inside the selected AOI bbox.")
+        # Crop by pixel centres in their native geographic grid, not by a
+        # rounded window that could reintroduce samples outside the AOI bbox.
+        r0, c0 = int(rows[0]), int(cols[0])
+        rh, cw = int(rows[-1] - rows[0] + 1), int(cols[-1] - cols[0] + 1)
+        arr = src.read(1, window=Window(c0, r0, cw, rh)).astype(float)
         if src.nodata is not None:
             arr[arr == src.nodata] = np.nan
-        h, w = arr.shape
-        xs = np.array([src.xy(0, c)[0] for c in range(w)])
-        ys = np.array([src.xy(r, 0)[1] for r in range(h)])
+        xs, ys = full_xs[cols], full_ys[rows]
+    _validate_elevation_grid(arr, ys, xs, (west, south, east, north))
     return arr, ys, xs
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def dem_provenance(z, lats, lons, *, bbox, source: str,
+                   target_cells: int, source_file: Path | None = None,
+                   cache_path: Path | None = None) -> dict:
+    """Machine-readable provenance for DEM samples AND the hydrology implementation.
+
+    The input-grid SHA identifies terrain values and sample positions; the code
+    SHA and explicit model labels make intentional algorithm changes visible
+    instead of attributing new candidate locations to changing elevation data.
+    """
+    _validate_elevation_grid(z, lats, lons, bbox)
+    implementation = Path(__file__).resolve()
+    is_api_source = source == "OpenTopoData SRTM 30m"
+    latitude_posting_deg = float(np.median(-np.diff(np.asarray(lats, dtype=float))))
+    longitude_posting_deg = float(np.median(np.diff(np.asarray(lons, dtype=float))))
+    mean_latitude_deg = float(np.mean(np.asarray(lats, dtype=float)))
+    posting_ns_m = latitude_posting_deg * 110_574.0
+    posting_ew_m = longitude_posting_deg * 111_320.0 * math.cos(math.radians(mean_latitude_deg))
+    data = {
+        # Bump the sidecar schema when the provenance contract adds source-vs-grid
+        # resolution semantics. This is intentionally separate from API_CACHE_SCHEMA.
+        "schema_version": 3,
+        "source": source,
+        "endpoint": API_ENDPOINT if is_api_source else None,
+        "elevation_source": {
+            "name": source,
+            "nominal_resolution_m": 30.0 if is_api_source else None,
+            "access_method": "point_elevation_api_on_regular_analysis_grid" if is_api_source else "local_geotiff_pixel_centres",
+            "native_source_raster_grid_used_for_analysis": not is_api_source,
+            "resolution_note": (
+                "The elevation service is nominally SRTM 30 m, but this analysis requests "
+                "sparser point samples on a regular grid; the resulting analysis grid is not "
+                "a native 30 m raster."
+                if is_api_source else
+                "The local GeoTIFF pixel-centre grid is used after validating its CRS and affine."
+            ),
+        },
+        "analysis_grid_posting_approx_m": {
+            "east_west": float(posting_ew_m),
+            "north_south": float(posting_ns_m),
+            "note": "Approximate local metric postings derived from WGS84 coordinate axes; not a claim of source-data resolution.",
+        },
+        "hydrology_model": {
+            "algorithm_id": "priority-flood-d8-flat-routing-tree-connected-ponding-v2",
+            "depression_filling": "priority-flood-for-routing-only",
+            "flow_routing": "steepest-downhill-plus-acyclic-equal-height-routing",
+            "flow_accumulation": "Kahn-graph-topological-order-cycle-checked",
+            "ponding": "upstream-receiver-tree-connected-below-proposed-waterline",
+            "lateral_spill_solver": None,
+            "backwater_extent": "axis-aligned-grid-bounds-diagonal",
+        },
+        "implementation_file": implementation.name,
+        "implementation_sha256": file_sha256(implementation),
+        "runtime": {
+            "python_version": sys.version.split()[0],
+            "numpy_version": np.__version__,
+        },
+        "bbox_wgs84": [float(v) for v in bbox],
+        "shape_rows_cols": list(np.asarray(z).shape),
+        "latitude_north_south": [float(np.max(lats)), float(np.min(lats))],
+        "longitude_west_east": [float(np.min(lons)), float(np.max(lons))],
+        "latitude_posting_deg": latitude_posting_deg,
+        "longitude_posting_deg": longitude_posting_deg,
+        "elevation_nodata_cells": int(np.count_nonzero(~np.isfinite(z))),
+        "elevation_min_m": float(np.nanmin(z)),
+        "elevation_max_m": float(np.nanmax(z)),
+        "grid_sha256": elevation_grid_sha256(
+            z, lats, lons, bbox, target_cells,
+            endpoint=API_ENDPOINT if source == "OpenTopoData SRTM 30m" else None,
+        ),
+    }
+    if source_file is not None:
+        data["source_file"] = Path(source_file).name
+        data["source_file_sha256"] = file_sha256(source_file)
+    if cache_path is not None:
+        # Absolute runner/temp paths are not portable evidence and differ between
+        # otherwise identical runs; identify the cache by basename only.
+        data["api_cache_file"] = Path(cache_path).name
+        data["api_cache_path_policy"] = "portable_basename_only"
+    return data
+
+
+def write_provenance(out: Path, provenance: dict, parameters: dict, rows: list[dict]) -> Path:
+    """Write an atomic sidecar binding a GeoJSON result to input grid and parameters."""
+    rows_payload = json.dumps(rows, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    result = dict(provenance)
+    result["analysis_parameters"] = parameters
+    result["result_features"] = len(rows)
+    result["result_rows_sha256"] = hashlib.sha256(rows_payload).hexdigest()
+    if out.is_file():
+        result["geojson_sha256"] = file_sha256(out)
+    path = out.with_suffix(out.suffix + ".provenance.json")
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    temp.replace(path)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +495,20 @@ def fill_depressions(z: np.ndarray) -> np.ndarray:
 
 
 def d8_receivers(filled: np.ndarray, dx: float, dy: float) -> np.ndarray:
-    """Index of the steepest-descent neighbour for each cell (-1 if none)."""
+    """D8 receiver indices, including acyclic routing across filled DEM flats.
+
+    First assign the steepest strictly downhill neighbour. Priority-flood
+    filling creates equal-height plateaus; leaving those cells with receiver
+    -1 turns them into artificial sinks. Resolve equal-height cells with a
+    multi-source shortest-path search seeded at existing downhill receivers
+    and the raster boundary. Each flat receiver points to a cell with strictly
+    smaller distance-to-outlet, which makes the flat routing acyclic.
+    """
+    filled = np.asarray(filled, dtype=float)
+    if filled.ndim != 2 or min(filled.shape) < 2:
+        raise ValueError("Filled DEM must be a 2-D grid with at least two rows and columns.")
+    if not (math.isfinite(dx) and math.isfinite(dy) and dx > 0 and dy > 0):
+        raise ValueError("DEM x/y postings must be finite positive metre distances.")
     ny, nx = filled.shape
     recv = np.full(ny * nx, -1, dtype=np.int64)
     for i in range(ny):
@@ -190,28 +516,115 @@ def d8_receivers(filled: np.ndarray, dx: float, dy: float) -> np.ndarray:
             if not np.isfinite(filled[i, j]):
                 continue
             best, best_idx = 0.0, -1
-            for di, dj, dist in NB:
+            for di, dj, _ in NB:
                 ni, nj = i + di, j + dj
                 if not (0 <= ni < ny and 0 <= nj < nx) or not np.isfinite(filled[ni, nj]):
                     continue
-                length = dist * (dx if dj else dy) if di == 0 or dj == 0 else dist * (dx + dy) / 2
+                # Exact map-plane distance for rectangular geographic postings.
+                length = math.hypot(dj * dx, di * dy)
                 slope = (filled[i, j] - filled[ni, nj]) / length
                 if slope > best:
                     best, best_idx = slope, ni * nx + nj
             recv[i * nx + j] = best_idx
+
+    # A filled depression/flat has no local downhill direction. Seed the
+    # equal-height routing graph with cells that already drain downhill and
+    # all valid cells on the raster edge (off-grid drainage is an outlet).
+    flat_distance = np.full(ny * nx, np.inf, dtype=float)
+    flat_parent = np.full(ny * nx, -1, dtype=np.int64)
+    queue: list[tuple[float, int]] = []
+    for i in range(ny):
+        for j in range(nx):
+            if not np.isfinite(filled[i, j]):
+                continue
+            idx = i * nx + j
+            is_edge = i == 0 or j == 0 or i == ny - 1 or j == nx - 1
+            if recv[idx] >= 0 or is_edge:
+                flat_distance[idx] = 0.0
+                heapq.heappush(queue, (0.0, idx))
+
+    while queue:
+        distance, idx = heapq.heappop(queue)
+        if distance > flat_distance[idx] + 1e-9:
+            continue
+        i, j = divmod(idx, nx)
+        for di, dj, _ in NB:
+            ni, nj = i + di, j + dj
+            if not (0 <= ni < ny and 0 <= nj < nx):
+                continue
+            nidx = ni * nx + nj
+            if not np.isfinite(filled[ni, nj]):
+                continue
+            # Flat routing only crosses equal elevations. Strictly descending
+            # edges were already resolved above and stay authoritative.
+            if not math.isclose(float(filled[i, j]), float(filled[ni, nj]),
+                                rel_tol=0.0, abs_tol=1e-9):
+                continue
+            length = math.hypot(dj * dx, di * dy)
+            candidate_distance = distance + length
+            if candidate_distance + 1e-9 < flat_distance[nidx]:
+                flat_distance[nidx] = candidate_distance
+                flat_parent[nidx] = idx
+                heapq.heappush(queue, (candidate_distance, nidx))
+
+    flat_cells = np.isfinite(filled.ravel()) & (recv < 0)
+    routable_flat_cells = flat_cells & (flat_parent >= 0)
+    recv[routable_flat_cells] = flat_parent[routable_flat_cells]
     return recv
 
 
 def flow_accumulation(filled: np.ndarray, recv: np.ndarray) -> np.ndarray:
-    """Number of upstream cells draining through each cell (including itself)."""
+    """Accumulate upstream cells in topological order, including each cell itself.
+
+    Elevation sorting is not a topological ordering when multiple cells share
+    a filled elevation. Build graph indegrees instead; refuse to publish
+    accumulation if any receiver cycle or invalid edge is present.
+    """
+    filled = np.asarray(filled, dtype=float)
+    recv = np.asarray(recv, dtype=np.int64)
+    if filled.ndim != 2 or recv.size != filled.size or recv.ndim not in (1, 2):
+        raise ValueError("Filled DEM and receiver array must contain the same number of cells.")
+    if recv.ndim == 2 and recv.shape != filled.shape:
+        raise ValueError("A 2-D receiver array must match the filled DEM shape.")
     ny, nx = filled.shape
-    acc = np.ones(ny * nx, dtype=np.float64)
-    acc[~np.isfinite(filled).ravel()] = 0.0
-    order = np.argsort(-np.nan_to_num(filled.ravel(), nan=-np.inf))
-    for idx in order:
-        r = recv[idx]
-        if r >= 0:
-            acc[r] += acc[idx]
+    flat_z = filled.ravel()
+    flat_recv = recv.ravel()
+    valid = np.isfinite(flat_z)
+    n_valid = int(valid.sum())
+    acc = np.zeros(ny * nx, dtype=np.float64)
+    acc[valid] = 1.0
+    indegree = np.zeros(ny * nx, dtype=np.int64)
+
+    for idx in np.flatnonzero(valid):
+        target = int(flat_recv[idx])
+        if target < -1 or target >= ny * nx:
+            raise ValueError(f"Receiver index {target} is invalid for cell {idx}.")
+        if target < 0:
+            continue
+        if not valid[target]:
+            raise ValueError(f"Valid cell {idx} points into a nodata cell {target}.")
+        indegree[target] += 1
+
+    # Kahn's algorithm: sources first, accumulating only after all upstream
+    # predecessors have been processed.
+    queue = deque(int(idx) for idx in np.flatnonzero(valid & (indegree == 0)))
+    processed = 0
+    while queue:
+        idx = queue.popleft()
+        processed += 1
+        target = int(flat_recv[idx])
+        if target >= 0:
+            acc[target] += acc[idx]
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                queue.append(target)
+
+    if processed != n_valid:
+        cyclic = np.flatnonzero(valid & (indegree > 0))
+        raise ValueError(
+            "Receiver graph contains a cycle; refusing hydrologic accumulation "
+            f"({processed}/{n_valid} cells processed, {len(cyclic)} remain cyclic)."
+        )
     return acc.reshape(ny, nx)
 
 
@@ -226,9 +639,77 @@ def upstream_of(idx: int, recv: np.ndarray, children: dict[int, list[int]]) -> n
 
 
 # ---------------------------------------------------------------------------
+def connected_flooded_upstream(
+    idx: int, elevation: np.ndarray, children: dict[int, list[int]], water_level: float
+) -> np.ndarray:
+    """Upstream-tree cells hydraulically connected to a dam site below water level.
+
+    upstream_of() returns the entire contributing catchment. That set is not
+    itself a water mask: a high saddle can separate low terrain farther upstream
+    from the dam at a lower water level. Starting at the dam, traverse upstream
+    receiver-tree edges only while the child cell's original elevation is
+    strictly below the proposed water surface. A cell above the waterline blocks
+    its entire upstream subtree until a higher water level overtops it.
+
+    This is a tree-constrained ponding model, not a full 2-D spillway model:
+    lateral spill across watershed divides and the geometry of a breached dam
+    are still outside this function and must remain explicit limitations.
+    """
+    z = np.asarray(elevation, dtype=float).ravel()
+    if not isinstance(idx, (int, np.integer)) or idx < 0 or idx >= z.size:
+        raise ValueError("Dam-site index is outside the elevation grid.")
+    if not math.isfinite(water_level):
+        raise ValueError("Water level must be finite.")
+    if not np.isfinite(z[idx]) or z[idx] >= water_level:
+        return np.empty(0, dtype=np.int64)
+
+    connected: list[int] = [int(idx)]
+    seen = {int(idx)}
+    stack = [int(idx)]
+    while stack:
+        current = stack.pop()
+        for child_value in children.get(current, ()):
+            child = int(child_value)
+            if child in seen:
+                continue
+            if child < 0 or child >= z.size:
+                raise ValueError(f"Upstream child index {child} is outside the elevation grid.")
+            child_elevation = z[child]
+            if not np.isfinite(child_elevation) or child_elevation >= water_level:
+                # Do not traverse behind a dry ridge/saddle or nodata hole.
+                continue
+            seen.add(child)
+            connected.append(child)
+            stack.append(child)
+    return np.asarray(connected, dtype=np.int64)
+
+
 def analyse(z, lats, lons, heights, min_accum_cells, top_n,
             min_separation_km=1.5, rank_by="volume"):
+    z = np.asarray(z, dtype=float)
+    lats = np.asarray(lats, dtype=float)
+    lons = np.asarray(lons, dtype=float)
+    if z.ndim != 2 or z.shape != (lats.size, lons.size) or min(z.shape) < 2:
+        raise ValueError(f"DEM grid shape {z.shape} does not match the latitude/longitude axes.")
+    if not (np.isfinite(z).any() and np.all(np.isfinite(lats)) and np.all(np.isfinite(lons))
+            and np.all(np.diff(lats) < 0) and np.all(np.diff(lons) > 0)):
+        raise ValueError("DEM must have finite north-to-south latitude and west-to-east longitude axes and finite elevation samples.")
+    # Capture the validated raster dimensions before reporting or reshaping.
+    # Without this, a real DEM run reaches a NameError in the first log line;
+    # the previous unit tests did not execute analyse() end to end.
     ny, nx = z.shape
+    heights = list(heights)
+    if (not heights or any(not math.isfinite(float(h)) or float(h) <= 0 for h in heights)
+            or len(set(float(h) for h in heights)) != len(heights)):
+        raise ValueError("Blockage heights must be unique, finite and positive.")
+    if not isinstance(min_accum_cells, (int, np.integer)) or min_accum_cells < 1:
+        raise ValueError("Minimum channel accumulation must be a positive integer.")
+    if not isinstance(top_n, (int, np.integer)) or top_n < 1:
+        raise ValueError("top_n must be a positive integer.")
+    if not math.isfinite(min_separation_km) or min_separation_km < 0:
+        raise ValueError("Minimum site separation must be finite and non-negative.")
+    if rank_by not in {"volume", "efficiency"}:
+        raise ValueError("rank_by must be 'volume' or 'efficiency'.")
     midlat = float(np.mean(lats))
     dy = abs(float(lats[1] - lats[0])) * 110570.0
     dx = abs(float(lons[1] - lons[0])) * 111320.0 * math.cos(math.radians(midlat))
@@ -268,13 +749,31 @@ def analyse(z, lats, lons, heights, min_accum_cells, top_n,
             continue
         for H in heights:
             wl = sill + H
-            flooded = zup < wl
-            if flooded.sum() < 2:
+            flooded_indices = connected_flooded_upstream(idx, zf, children, wl)
+            if flooded_indices.size < 2:
                 continue
-            vol = float(np.sum(wl - zup[flooded]) * cell_area)
-            area = float(flooded.sum() * cell_area)
-            fi = up[flooded] // nx
-            fj = up[flooded] % nx
+            flooded_z = zf[flooded_indices]
+            # These are physical invariants of the simplified water-surface
+            # calculation, independent of ranking: every counted cell must
+            # have finite ground strictly below the water level, and both
+            # volume and area must be finite and positive. Fail closed rather
+            # than serialising impossible geometry into a "successful" result.
+            depths = wl - flooded_z
+            if (flooded_indices.size != np.unique(flooded_indices).size
+                    or not np.all(np.isfinite(flooded_z))
+                    or not np.all(np.isfinite(depths))
+                    or not np.all(depths > 0)):
+                raise RuntimeError(
+                    f"Invalid ponding cells for site ({i}, {j}) at H={H:g} m."
+                )
+            vol = float(np.sum(depths, dtype=np.float64) * cell_area)
+            area = float(flooded_indices.size * cell_area)
+            if not (math.isfinite(vol) and vol > 0 and math.isfinite(area) and area > 0):
+                raise RuntimeError(
+                    f"Non-finite/non-positive ponding volume or area for site ({i}, {j}) at H={H:g} m."
+                )
+            fi = flooded_indices // nx
+            fj = flooded_indices % nx
             edge = bool((fi.min() == 0) or (fj.min() == 0) or
                         (fi.max() == ny - 1) or (fj.max() == nx - 1))
             back = float(math.hypot((fi.max() - fi.min()) * dy,
@@ -304,6 +803,23 @@ def analyse(z, lats, lons, heights, min_accum_cells, top_n,
     hs = sorted(heights)
     for s_ in sites.values():
         bh = s_["by_height"]
+        # Raising a water surface at a fixed dam sill cannot shrink the
+        # connected pool or reduce its volume. This is a physical invariant of
+        # the current tree-connected screening model, not a claim that the
+        # model captures lateral spill or real dam hydraulics.
+        ordered_present = [(h, bh[h]) for h in hs if h in bh]
+        for (h0, lower), (h1, upper) in zip(ordered_present, ordered_present[1:]):
+            tol = 1e-12
+            if upper["area_km2"] + tol < lower["area_km2"]:
+                raise RuntimeError(
+                    f"Ponded area decreased as water level rose at "
+                    f"({s_['lat']}, {s_['lon']}): H={h0:g}->{h1:g} m."
+                )
+            if upper["volume_Mm3"] + tol < lower["volume_Mm3"]:
+                raise RuntimeError(
+                    f"Ponded volume decreased as water level rose at "
+                    f"({s_['lat']}, {s_['lon']}): H={h0:g}->{h1:g} m."
+                )
         s_["max_volume_Mm3"] = max(v["volume_Mm3"] for v in bh.values())
         # The smallest blockage this site responds to at all. A reach that needs
         # 100 m of debris before it holds anything is a different proposition
@@ -327,6 +843,22 @@ def rank_sites(sites: list[dict], rank_by: str, top_n: int,
     of this module that makes a claim - "favours sites a small landslide could
     dam" - so it has to be checkable without several thousand DEM queries.
     """
+    if rank_by not in {"volume", "efficiency"}:
+        raise ValueError("rank_by must be 'volume' or 'efficiency'.")
+    if not isinstance(top_n, (int, np.integer)) or top_n < 1:
+        raise ValueError("top_n must be a positive integer.")
+    if not math.isfinite(min_separation_km) or min_separation_km < 0:
+        raise ValueError("min_separation_km must be finite and non-negative.")
+    for row in sites:
+        try:
+            lat, lon = float(row["lat"]), float(row["lon"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Every impoundment site must have numeric latitude/longitude.") from exc
+        if not (math.isfinite(lat) and math.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError(f"Invalid WGS84 impoundment site coordinates: {lat}, {lon}.")
+    if not sites:
+        return []
     if rank_by == "efficiency":
         # Threshold height FIRST, then volume per metre within it.
         #
@@ -410,12 +942,24 @@ def report(rows, heights, rank_by):
 
 
 def write_geojson(rows, out: Path):
-    fc = {"type": "FeatureCollection", "features": [
-        {"type": "Feature",
-         "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
-         "properties": {k: v for k, v in r.items() if k not in ("lat", "lon")}}
-        for r in rows]}
-    out.write_text(json.dumps(fc, indent=1))
+    """Write finite WGS84 point features atomically; provenance is a separate sidecar."""
+    features = []
+    for row in rows:
+        lat, lon = float(row["lat"]), float(row["lon"])
+        if not (math.isfinite(lat) and math.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError(f"Cannot write invalid WGS84 site coordinates: {row.get('name', row)}")
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {k: v for k, v in row.items() if k not in ("lat", "lon")},
+        })
+    fc = {"type": "FeatureCollection", "features": features}
+    text = json.dumps(fc, indent=1, allow_nan=False) + "\n"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temp = out.with_suffix(out.suffix + ".tmp")
+    temp.write_text(text, encoding="utf-8")
+    temp.replace(out)
     logger.info("Wrote %s (%d sites)", out, len(rows))
 
 
@@ -427,6 +971,8 @@ def main() -> int:
     ap.add_argument("--aoi", choices=sorted(AOIS), default="source",
                     help="terrain AOI. 'lhende' is the valley the 26 Aug 2026 avalanche dammed and breached, so its map is a testable prediction")
     ap.add_argument("--cells", type=int, default=12000, help="approx grid cells for --api")
+    ap.add_argument("--api-cache", type=Path, default=None,
+                    help="save/reuse the exact API elevation grid (.npz); existing cache is validated, not silently refreshed")
     ap.add_argument("--heights", type=float, nargs="+", default=[25, 50, 100, 150])
     ap.add_argument("--min-accum", type=int, default=40,
                     help="upstream cells needed to count as channel")
@@ -439,21 +985,59 @@ def main() -> int:
     ap.add_argument("--geojson", metavar="OUT.geojson")
     args = ap.parse_args()
 
+    if args.cells < 4:
+        ap.error("--cells must be at least 4")
+    if args.api_cache is not None and not args.api:
+        ap.error("--api-cache is only valid together with --api")
+    if args.api and args.geojson and args.api_cache is None:
+        ap.error("for reproducible GeoJSON output, pass --api-cache PATH so the exact API elevation grid is retained and can be reused")
+    if (not args.heights or any(not math.isfinite(h) or h <= 0 for h in args.heights)
+            or len(set(args.heights)) != len(args.heights)):
+        ap.error("--heights must be unique, finite, positive blockage heights")
+    if args.min_accum < 1:
+        ap.error("--min-accum must be a positive integer")
+    if args.top < 1:
+        ap.error("--top must be at least 1")
+    if not math.isfinite(args.min_separation) or args.min_separation < 0:
+        ap.error("--min-separation must be a finite non-negative number")
+
     bbox = AOIS[args.aoi]
     print(f"\nAOI {args.aoi}: {bbox}")
     print(f"Dam heights tested: {', '.join(f'{h:g} m' for h in args.heights)}")
 
+    source_file = None
     if args.api:
-        z, lats, lons = dem_from_api(bbox, args.cells)
+        z, lats, lons = dem_from_api(bbox, args.cells, args.api_cache)
+        source = "OpenTopoData SRTM 30m"
+        target_cells = args.cells
     else:
-        z, lats, lons = dem_from_file(Path(args.dem))
+        source_file = Path(args.dem).resolve()
+        z, lats, lons = dem_from_file(source_file, bbox=bbox)
+        source = "local GeoTIFF"
+        target_cells = int(z.size)
+    provenance = dem_provenance(z, lats, lons, bbox=bbox, source=source,
+                                target_cells=target_cells, source_file=source_file,
+                                cache_path=args.api_cache)
+    logger.info("DEM_GRID_SHA256=%s shape=%s nodata_cells=%d",
+                provenance["grid_sha256"], provenance["shape_rows_cols"],
+                provenance["elevation_nodata_cells"])
+    logger.info("DEM_PROVENANCE: %s", json.dumps(provenance, sort_keys=True))
 
     rows = analyse(z, lats, lons, args.heights, args.min_accum, args.top,
                    args.min_separation, args.rank_by)
     report(rows, args.heights, args.rank_by)
 
-    if args.geojson and rows:
-        write_geojson(rows, Path(args.geojson))
+    if args.geojson:
+        output = Path(args.geojson)
+        write_geojson(rows, output)
+        sidecar = write_provenance(
+            output, provenance,
+            {"aoi": args.aoi, "heights_m": args.heights,
+             "min_accum_cells": args.min_accum, "top": args.top,
+             "min_separation_km": args.min_separation, "rank_by": args.rank_by},
+            rows,
+        )
+        logger.info("DEM_AND_OUTPUT_PROVENANCE=%s", sidecar)
 
     print("\nCaveats: pools are not tested for spilling over cols, so volumes are")
     print("upper bounds near divides. Dam height is imposed, not predicted -")
