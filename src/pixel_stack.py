@@ -651,32 +651,46 @@ def main() -> int:
     if args.keep_common_mode:
         logger.warning("Common mode kept - atmosphere will dominate every pixel.")
 
-    runs = [r for r in chain(rasters) if len(r) >= 2]
+    exact_network_count = len({r["network_id"] for r in rasters})
+    all_runs = chain(rasters)
+    runs = [run for run in all_runs if len(run) >= 2]
+    print(f"PIXEL_STACK_PAIRS_EXAMINED={len(rasters)}")
+    print(f"PIXEL_STACK_EXACT_NETWORKS={exact_network_count}")
+    print(f"PIXEL_STACK_CONTIGUOUS_RUNS={len(all_runs)}")
+    print(f"PIXEL_STACK_NETWORKS_WITH_2_PLUS_PAIRS={len(runs)}")
     if not runs:
-        logger.error("No contiguous chain of 2+ pairs; nothing to stack.")
-        return 1
+        print("PIXEL_STACK_STATUS=WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK")
+        print(
+            "VERDICT: NOT TESTABLE. The GUNW pairs do not contain two consecutive "
+            "intervals within the same frame, subswath, bandwidth, polarization "
+            "and processing CRID. Combining different networks would mix LOS "
+            "geometry or processing lineage."
+        )
+        return 0
 
+    print("PIXEL_STACK_STATUS=COMPLETED_WITH_COMPATIBLE_NETWORKS")
     found = {}
     for k, run in enumerate(runs, 1):
         res = stack(run, remove_common_mode=not args.keep_common_mode)
-        survived = report(res, f"{run[0]['geom']}  chain {k}")
+        survived = report(res, f"{run[0]['geom']} {run[0]['network_id']} chain {k}")
         fp = cluster_footprint(res)
-        # Only a cluster that beat its OWN noise null is worth cross-checking.
-        # Confirming one blob against another that its own test already called
-        # noise is not corroboration - it is two random blobs, and with enough
-        # of them some pair will always overlap.
-        if fp and survived:
+        # A withheld null test is not a no-detection result and cannot
+        # contribute to cross-geometry corroboration.
+        if fp and survived is True:
             found.setdefault(run[0]["geom"], fp)
-        elif fp:
-            logger.info("%s cluster did not beat its own noise null - excluded "
-                        "from the cross-geometry check.", run[0]["geom"])
+        elif fp and survived is False:
+            logger.info("%s cluster did not beat its completed noise null - excluded "
+                        "from the cross-geometry check.", run[0]["network_id"])
+        elif fp and survived is None:
+            logger.warning("%s spatial noise null was not estimable; candidate "
+                           "withheld from the cross-geometry check.", run[0]["network_id"])
         if args.geotiff:
             base = Path(args.geotiff)
             if len(runs) == 1:
                 output_path = base
             else:
-                geometry = re.sub(r"[^A-Za-z0-9_-]+", "_", str(run[0]["geom"]))
-                output_path = base.with_name(f"{base.stem}_{geometry}_chain{k:02d}{base.suffix or '.tif'}")
+                network = re.sub(r"[^A-Za-z0-9_-]+", "_", str(run[0]["network_id"]))
+                output_path = base.with_name(f"{base.stem}_{network}_chain{k:02d}{base.suffix or '.tif'}")
             write_geotiff(res, output_path)
             logger.info("Wrote target-free per-pixel stack diagnostic: %s", output_path)
 
