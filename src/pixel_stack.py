@@ -297,7 +297,7 @@ def stack(run: list[dict], remove_common_mode: bool = True):
     }
 
 
-def report(res: dict, label: str) -> None:
+def report(res: dict, label: str) -> bool | None:
     v, s, ok = res["velocity"], res["sigma"], res["valid"]
     run = res["run"]
     print(f"\n{'='*72}\n{label}   {run[0]['ref']} .. {run[-1]['sec']}  "
