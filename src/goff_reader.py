@@ -565,6 +565,7 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
         bands = [(a, d) for a, d in bands if a is not None]
         if not bands:
             continue
+        band_indexes = {description: index for index, (_, description) in enumerate(bands, 1)}
 
         if grid is not None:
             transform = grid["transform"]
@@ -603,9 +604,9 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                             robust_inlier_pixels=str(int(valid.sum())),
                             robust_outlier_pixels=str(int(outlier_mask.sum())),
                             outlier_flag_band="4",
-                             range_variance_band="5" if L.get("range_var") is not None else "not_exported",
-                             along_track_variance_band="6" if L.get("azimuth_var") is not None else "not_exported",
-                             cross_offset_variance_band="7" if L.get("cross_offset_variance") is not None else "not_exported",
+                             range_variance_band=str(band_indexes.get("slant-range offset variance (mm^2)", "not_exported")),
+                             along_track_variance_band=str(band_indexes.get("along-track offset variance (mm^2)", "not_exported")),
+                             cross_offset_variance_band=str(band_indexes.get("cross offset variance (mm^2; preserved as supplied, not assumed to be covariance)", "not_exported")),
                             aoi_mask_applied="true",
                             correlation_min=str(res["correlation_min"]),
                             snr_min=str(res["snr_min"]),
