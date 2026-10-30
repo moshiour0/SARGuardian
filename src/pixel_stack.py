@@ -617,6 +617,12 @@ def write_geotiff(res: dict, out: Path) -> None:
             first_acquisition_date=str(res["run"][0]["ref"].isoformat()),
             last_acquisition_date=str(res["run"][-1]["sec"].isoformat()),
             source_pair_count=str(len(res["run"])),
+            spatial_null_test_status=str(res.get("spatial_null_test_status", "NOT_REPORTED")),
+            spatial_correlation_length_km=(
+                "" if res.get("spatial_correlation_length_km") is None
+                else str(res.get("spatial_correlation_length_km"))
+            ),
+            network_id=str(res["run"][0].get("network_id", "unknown")),
             scientific_claim_limit="Relative LOS trend diagnostic; not independent geophysical validation or a hazard finding.",
         )
     logger.info("Wrote %s", out)
