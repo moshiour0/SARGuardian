@@ -38,6 +38,12 @@ a single cell.
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from datetime import date, timedelta
+from io import StringIO
+from types import SimpleNamespace
+import warnings
+
 import math
 import subprocess
 import sys
@@ -47,6 +53,7 @@ import numpy as np
 import pytest
 
 from detectability import Detector, Precursor, simulate
+from pixel_stack import _correlation_length_km, report
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -277,3 +284,87 @@ def test_too_few_samples_reports_zero_windows_tested():
     d = Detector(noise_mm=5.0)
     t = np.array([0.0, 1.0])
     assert d.run(t, np.zeros_like(t), failure_day=5.0)["tested"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Sparse GUNW spatial-noise calibration
+# ---------------------------------------------------------------------------
+
+def _sparse_geo(pixel_size_m: float = 200.0) -> dict:
+    return {"transform": SimpleNamespace(a=pixel_size_m)}
+
+
+def _sparse_points():
+    return [(5, 5), (15, 17), (25, 29), (35, 41), (45, 53),
+            (55, 65), (65, 8), (8, 70), (70, 70), (40, 10),
+            (10, 40), (30, 60)]
+
+
+def test_sparse_stack_cannot_estimate_a_spatial_correlation_length():
+    """Isolated sparse samples cannot measure a spatial correlation scale."""
+    velocity = np.full((80, 80), np.nan, dtype="float32")
+    valid = np.zeros(velocity.shape, dtype=bool)
+    for row, col in _sparse_points():
+        velocity[row, col] = 1.0
+        valid[row, col] = True
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        assert _correlation_length_km(velocity, valid, _sparse_geo()) is None
+
+
+def test_dense_field_has_estimable_spatial_correlation_length():
+    """A dense independent field provides enough paired neighbours."""
+    rng = np.random.default_rng(23)
+    velocity = rng.normal(0.0, 1.0, size=(80, 80)).astype("float32")
+    valid = np.ones(velocity.shape, dtype=bool)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        estimate = _correlation_length_km(velocity, valid, _sparse_geo())
+
+    assert estimate is not None
+    assert estimate >= 0.2
+
+
+def test_sparse_stack_reports_not_testable_instead_of_no_detection():
+    """A sparse chain must not receive a noise-null pass/fail verdict."""
+    velocity = np.full((80, 80), np.nan, dtype="float32")
+    sigma = np.full_like(velocity, np.nan)
+    valid = np.zeros(velocity.shape, dtype=bool)
+    observed = np.zeros(velocity.shape, dtype="uint16")
+    for row, col in _sparse_points():
+        velocity[row, col] = 0.5
+        sigma[row, col] = 0.01
+        valid[row, col] = True
+        observed[row, col] = 3
+
+    first = date(2026, 6, 1)
+    run = [
+        {"ref": first, "sec": first + timedelta(days=12)},
+        {"ref": first + timedelta(days=12), "sec": first + timedelta(days=24)},
+        {"ref": first + timedelta(days=24), "sec": first + timedelta(days=36)},
+    ]
+    result = {
+        "velocity": velocity,
+        "sigma": sigma,
+        "valid": valid,
+        "run": run,
+        "days": np.array([0.0, 12.0, 24.0, 36.0]),
+        "observed_pair_count": observed,
+        "common_mode_policy": "PAIRWISE_MEDIAN_REMOVED",
+        "uncertainty_status": "RESIDUAL_BASED_DIAGNOSTIC_NOT_INDEPENDENTLY_VALIDATED",
+        "geo": _sparse_geo(),
+    }
+
+    output = StringIO()
+    with redirect_stdout(output), warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        verdict = report(result, "A098 chain 1")
+
+    rendered = output.getvalue()
+    assert verdict is None
+    assert result["spatial_null_test_status"] == "WITHHELD_INSUFFICIENT_SPATIAL_NEIGHBOR_SUPPORT"
+    assert "VERDICT: NOT TESTABLE" in rendered
+    assert "NO DETECTION" not in rendered
+    assert "noise-only cluster test        : WITHHELD" in rendered
