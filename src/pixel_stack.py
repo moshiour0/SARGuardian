@@ -355,6 +355,20 @@ def report(res: dict, label: str) -> bool | None:
     # own, and cluster size proves nothing until compared with what this
     # scene's own correlation length produces from pure noise.
     corr_km = _correlation_length_km(v, ok, res["geo"])
+    if corr_km is None:
+        res["spatial_null_test_status"] = "WITHHELD_INSUFFICIENT_SPATIAL_NEIGHBOR_SUPPORT"
+        res["spatial_correlation_length_km"] = None
+        print("\n  measured correlation length   : NOT ESTIMABLE")
+        print(f"  valid complete pixels          : {n} (requires at least "
+              f"{MIN_SPATIAL_CORRELATION_PAIRS} pixels and neighbouring pairs)")
+        print("  noise-only cluster test        : WITHHELD")
+        print("\n  VERDICT: NOT TESTABLE. Too few nearby valid pixels are available "
+              "to estimate the spatial background-noise level. This is not a "
+              "no-detection result.")
+        return None
+
+    res["spatial_null_test_status"] = "COMPLETED"
+    res["spatial_correlation_length_km"] = float(corr_km)
     null = _null_cluster_sizes(v.shape, corr_km, res["geo"], trials=20)
     p95 = int(np.percentile(null, 95))
     print(f"\n  measured correlation length   : {corr_km:.1f} km")
