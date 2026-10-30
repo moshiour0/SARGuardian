@@ -202,7 +202,10 @@ def report(res: dict, label: str) -> None:
     print(f"  pixels with a complete series : {n:,} of {ok.size:,} "
           f"({100*n/ok.size:.0f}%)")
     if n == 0:
-        print("  nothing to fit"); return
+        res["spatial_null_test_status"] = "WITHHELD_NO_COMPLETE_SERIES"
+        print("  nothing to fit")
+        print("\n  VERDICT: NOT TESTABLE. No complete pixel time series is available.")
+        return None
 
     vv, ss = v[ok], s[ok]
     rob = 1.4826 * np.median(np.abs(vv - np.median(vv)))
