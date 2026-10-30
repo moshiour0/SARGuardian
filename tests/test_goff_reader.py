@@ -152,6 +152,9 @@ def test_coherent_high_offset_patch_survives_for_spatial_review(tmp_path):
     azimuth_m = rng.normal(0.0, 0.015, size=shape)
     corr = np.full(shape, 0.9, dtype=np.float32)
     snr = np.full(shape, 10.0, dtype=np.float32)
+    range_variance = np.full(shape, 0.0004, dtype=np.float32)
+    azimuth_variance = np.full(shape, 0.0009, dtype=np.float32)
+    cross_offset_variance = np.full(shape, 0.0001, dtype=np.float32)
     lon, lat = synth.LHENDE_INSIDE
     col = int(np.argmin(np.abs(xs - lon)))
     row = int(np.argmin(np.abs(ys - lat)))
@@ -167,6 +170,9 @@ def test_coherent_high_offset_patch_survives_for_spatial_review(tmp_path):
         group.create_dataset("alongTrackOffset", data=azimuth_m)
         group.create_dataset("correlationSurfacePeak", data=corr)
         group.create_dataset("snr", data=snr)
+        group.create_dataset("slantRangeOffsetVariance", data=range_variance)
+        group.create_dataset("alongTrackOffsetVariance", data=azimuth_variance)
+        group.create_dataset("crossOffsetVariance", data=cross_offset_variance)
         group.create_dataset("xCoordinates", data=xs)
         group.create_dataset("yCoordinates", data=ys)
         projection = group.create_dataset("projection", data=np.uint32(4326))
@@ -177,6 +183,9 @@ def test_coherent_high_offset_patch_survives_for_spatial_review(tmp_path):
     )
     layer = result["layers"]["HH/layer2"]
     assert layer["screen_valid"][row, col]
+    assert layer["range_var"][row, col] == range_variance[row, col]
+    assert layer["azimuth_var"][row, col] == azimuth_variance[row, col]
+    assert layer["cross_offset_variance"][row, col] == cross_offset_variance[row, col]
     assert layer["outlier_mask"][row, col], "the truth patch must exercise the global MAD gate"
     assert not layer["valid"][row, col], "conservative pairwise stats still exclude the outlier"
     rejected = sum(int(n) for n in layer["gate_rejections"].values())
@@ -187,8 +196,14 @@ def test_coherent_high_offset_patch_survives_for_spatial_review(tmp_path):
     assert exported and exported[0]["export_status"] == "WRITTEN"
     raster_path = tmp_path / "exports" / exported[0]["export_file"]
     with rasterio.open(raster_path) as src:
-        assert src.count == 4
+        assert src.count == 7
+        assert src.descriptions[4] == "slant-range offset variance (mm^2)"
+        assert src.descriptions[5] == "along-track offset variance (mm^2)"
+        assert src.descriptions[6].startswith("cross offset variance (mm^2")
         rr, cc = src.index(lon, lat)
+        assert np.isclose(src.read(5)[rr, cc], 400.0)
+        assert np.isclose(src.read(6)[rr, cc], 900.0)
+        assert np.isclose(src.read(7)[rr, cc], 100.0)
         assert np.isfinite(src.read(1)[rr, cc]), "screen raster must retain the high range offset"
         assert np.isfinite(src.read(2)[rr, cc]), "screen raster must retain the paired azimuth offset"
         assert src.read(4)[rr, cc] == 0.0, "band 4 must identify a global-MAD outlier"
