@@ -394,16 +394,18 @@ def report(res: dict, label: str) -> bool | None:
         print("  support a detection on their own.")
 
     if count <= p95:
+        res["spatial_null_test_status"] = "COMPLETED_NO_DETECTION"
         print("\n  VERDICT: NO DETECTION. The largest cluster is within what this")
-        print("  scene's own correlation length produces from noise with no")
+        print("  scene's own estimated correlation length produces from noise with no")
         print("  signal present. Cluster size is not evidence here.")
         return False
-    else:
-        print("\n  VERDICT: cluster exceeds the noise-only 95th percentile. That is")
-        print("  necessary, not sufficient. Before calling it anything: check it")
-        print("  appears in the other geometry, in a different time window, and")
-        print("  moves consistently in one direction.")
-        return True
+
+    res["spatial_null_test_status"] = "COMPLETED_CLUSTER_EXCEEDS_NOISE_NULL"
+    print("\n  VERDICT: cluster exceeds the noise-only 95th percentile. That is")
+    print("  necessary, not sufficient. Before calling it anything: check it")
+    print("  appears in the other geometry, in a different time window, and")
+    print("  moves consistently in one direction.")
+    return True
 
 
 def _correlation_length_km(v: np.ndarray, ok: np.ndarray, geo: dict) -> float:
