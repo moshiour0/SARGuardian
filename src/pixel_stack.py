@@ -287,13 +287,13 @@ def report(res: dict, label: str) -> None:
         print("  scene's own estimated correlation length produces from noise with no")
         print("  signal present. Cluster size is not evidence here.")
         return False
+
     res["spatial_null_test_status"] = "COMPLETED_CLUSTER_EXCEEDS_NOISE_NULL"
-    else:
-        print("\n  VERDICT: cluster exceeds the noise-only 95th percentile. That is")
-        print("  necessary, not sufficient. Before calling it anything: check it")
-        print("  appears in the other geometry, in a different time window, and")
-        print("  moves consistently in one direction.")
-        return True
+    print("\n  VERDICT: cluster exceeds the noise-only 95th percentile. That is")
+    print("  necessary, not sufficient. Before calling it anything: check it")
+    print("  appears in the other geometry, in a different time window, and")
+    print("  moves consistently in one direction.")
+    return True
 
 
 MIN_SPATIAL_CORRELATION_PAIRS = 30
