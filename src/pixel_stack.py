@@ -524,11 +524,14 @@ def main() -> int:
         # Confirming one blob against another that its own test already called
         # noise is not corroboration - it is two random blobs, and with enough
         # of them some pair will always overlap.
-        if fp and survived:
+        if fp and survived is True:
             found.setdefault(run[0]["geom"], fp)
-        elif fp:
-            logger.info("%s cluster did not beat its own noise null - excluded "
+        elif fp and survived is False:
+            logger.info("%s cluster did not beat its completed noise null - excluded "
                         "from the cross-geometry check.", run[0]["geom"])
+        elif fp and survived is None:
+            logger.warning("%s spatial noise null was not estimable; candidate "
+                           "withheld from the cross-geometry check.", run[0]["geom"])
         if args.geotiff and len(runs) == 1:
             write_geotiff(res, Path(args.geotiff))
 
