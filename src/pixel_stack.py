@@ -474,8 +474,16 @@ def write_geotiff(res: dict, out: Path) -> None:
                        count=2, dtype="float32", crs=res["geo"]["crs"],
                        transform=res["geo"]["transform"], nodata=np.nan,
                        compress="deflate", predictor=3) as dst:
-        dst.write(v, 1); dst.set_band_description(1, "LOS velocity (mm/day)")
-        dst.write(s, 2); dst.set_band_description(2, "1-sigma (mm/day)")
+        dst.write(v, 1); dst.set_band_description(1, "LOS velocity (mm/day; complete connected chain only)")
+        dst.write(s, 2); dst.set_band_description(2, "Residual-based OLS sigma (mm/day; diagnostic only)")
+        dst.update_tags(
+            spatial_null_test_status=str(res.get("spatial_null_test_status", "NOT_REPORTED")),
+            spatial_correlation_length_km=(
+                "" if res.get("spatial_correlation_length_km") is None
+                else str(res.get("spatial_correlation_length_km"))
+            ),
+            scientific_claim_limit="Relative LOS trend diagnostic; not independent geophysical validation or a hazard finding.",
+        )
     logger.info("Wrote %s", out)
 
 
