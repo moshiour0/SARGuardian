@@ -62,30 +62,50 @@ WINTER_MONTHS = (11, 12, 1, 2, 3)
 
 def parse_export(path: Path):
     """
-    Dates and processing type from the name; orbit geometry from the tags.
+    Parse dates and the complete measurement-network identity from the source tag.
 
-    The exported filename carries no direction, so nothing in the name
-    distinguishes ascending path 98 from descending path 48. Chaining on dates
-    alone would happily build a series that alternates between two geometries
-    measuring different projections of the same motion. The exporter writes the
-    source granule into the GeoTIFF tags, and that does carry it.
+    Path/look alone is not a sufficient time-series key. Frame, subswath,
+    bandwidth, polarization and processing CRID can change the effective
+    observation geometry or processing lineage. Combining pair intervals from
+    different keys can manufacture a temporal series from incompatible inputs.
     """
     m = re.match(r"GUNW_(\d{8})_(\d{8})(?:_([A-Z]{2}))?\.tif$", path.name)
     if not m:
         return None
-    geom = "?"
+    import rasterio
+
     try:
-        import rasterio
         with rasterio.open(path) as src:
-            src_name = src.tags().get("source", "")
-        g = re.search(r"_GUNW_\d+_(\d+)_([AD])_", src_name)
-        if g:
-            geom = f"{g.group(2)}{int(g.group(1)):03d}"
-    except Exception:
-        pass
-    return {"path": path, "ref": datetime.strptime(m.group(1), "%Y%m%d").date(),
-            "sec": datetime.strptime(m.group(2), "%Y%m%d").date(),
-            "proc": m.group(3) or "PR", "geom": geom}
+            source_name = str(src.tags().get("source") or "")
+    except Exception as exc:
+        logger.warning("Cannot read source identity from %s: %s", path.name, type(exc).__name__)
+        return None
+
+    granule = re.search(
+        r"_GUNW_(?P<version>\d+)_(?P<path>\d+)_(?P<look>[AD])_"
+        r"(?P<frame>\d+)_(?P<subswath>\d+)_(?P<bandwidth>\d+)_"
+        r"(?P<polarization>[A-Z]{2})_.*?_(?P<crid>[A-Z]\d{5})_[A-Z]_",
+        source_name,
+    )
+    if not granule:
+        logger.warning("Cannot derive a complete GUNW network key from %s", path.name)
+        return None
+
+    geom = f"{granule.group('look')}{int(granule.group('path')):03d}"
+    network_id = (
+        f"{geom}-F{int(granule.group('frame')):03d}"
+        f"-SW{int(granule.group('subswath')):03d}"
+        f"-BW{int(granule.group('bandwidth')):04d}"
+        f"-{granule.group('polarization')}-{granule.group('crid')}"
+    )
+    return {
+        "path": path,
+        "ref": datetime.strptime(m.group(1), "%Y%m%d").date(),
+        "sec": datetime.strptime(m.group(2), "%Y%m%d").date(),
+        "proc": m.group(3) or "PR",
+        "geom": geom,
+        "network_id": network_id,
+    }
 
 
 def align(rasters: list[dict]) -> tuple[np.ndarray, np.ndarray, dict]:
