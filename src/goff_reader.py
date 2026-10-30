@@ -180,6 +180,22 @@ def read_goff(
             corr = ds("correlationSurfacePeak")
             snr = ds("snr")
             rng_var = ds("slantRangeOffsetVariance")
+            azi_var = ds("alongTrackOffsetVariance")
+            cross_var = ds("crossOffsetVariance")
+            optional_arrays = {
+                "slantRangeOffsetVariance": rng_var,
+                "alongTrackOffsetVariance": azi_var,
+                "crossOffsetVariance": cross_var,
+            }
+            optional_mismatched = [
+                name for name, value in optional_arrays.items()
+                if value is not None and value.shape != rng.shape
+            ]
+            if optional_mismatched:
+                raise RuntimeError(
+                    f"{grp}: optional GOFF variance-layer shape mismatch against "
+                    f"slantRangeOffset {rng.shape}: {optional_mismatched}"
+                )
             required = {
                 "slantRangeOffset": rng, "alongTrackOffset": azi,
                 "correlationSurfacePeak": corr, "snr": snr,
@@ -214,6 +230,7 @@ def read_goff(
             pol_name = grp.split("/")[-2]
             results[f"{pol_name}/{grp.rsplit('/', 1)[-1]}"] = dict(
                 rng=rng, azi=azi, corr=corr, snr=snr, rng_var=rng_var,
+                azi_var=azi_var, cross_var=cross_var,
                 xs=xs, ys=ys, epsg=epsg, group=grp,
             )
 
@@ -416,6 +433,8 @@ def read_goff(
             "correlation": L["corr"],
             "snr": L["snr"],
             "range_var": L["rng_var"],
+            "azimuth_var": L.get("azi_var"),
+            "cross_offset_variance": L.get("cross_var"),
             "valid": valid,
             "screen_valid": screen_valid,
             "outlier_mask": outlier_mask,
@@ -539,6 +558,9 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
             (band("azimuth_m", 1000.0), "along-track offset (mm)"),
             (band("correlation"), "correlation"),
             (mask_band(outlier_flag), "robust inlier flag (1=inlier, 0=global-MAD outlier retained for review)"),
+            (band("range_var", 1_000_000.0), "slant-range offset variance (mm^2)"),
+            (band("azimuth_var", 1_000_000.0), "along-track offset variance (mm^2)"),
+            (band("cross_offset_variance", 1_000_000.0), "cross offset variance (mm^2; preserved as supplied, not assumed to be covariance)"),
         ]
         bands = [(a, d) for a, d in bands if a is not None]
         if not bands:
@@ -581,6 +603,9 @@ def export_clipped(res: dict, outdir: Path) -> list[dict]:
                             robust_inlier_pixels=str(int(valid.sum())),
                             robust_outlier_pixels=str(int(outlier_mask.sum())),
                             outlier_flag_band="4",
+                             range_variance_band="5" if L.get("range_var") is not None else "not_exported",
+                             along_track_variance_band="6" if L.get("azimuth_var") is not None else "not_exported",
+                             cross_offset_variance_band="7" if L.get("cross_offset_variance") is not None else "not_exported",
                             aoi_mask_applied="true",
                             correlation_min=str(res["correlation_min"]),
                             snr_min=str(res["snr_min"]),
