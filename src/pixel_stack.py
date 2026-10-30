@@ -408,38 +408,58 @@ def report(res: dict, label: str) -> bool | None:
     return True
 
 
-def _correlation_length_km(v: np.ndarray, ok: np.ndarray, geo: dict) -> float:
-    """
-    Distance at which the velocity field decorrelates to 1/e.
+MIN_SPATIAL_CORRELATION_PAIRS = 30
 
-    This is the number that decides whether a cluster is remarkable. Assuming
-    independent pixels puts the chance rate at 0.27% and makes any blob look
-    extraordinary; the truth is that a troposphere correlated over kilometres
-    manufactures blobs for free.
+
+def _correlation_length_km(v: np.ndarray, ok: np.ndarray, geo: dict) -> float | None:
     """
-    a = np.where(ok, v, np.nan)
-    a = a - np.nanmean(a)
-    px_km = abs(geo["transform"].a) / 1000.0
-    ref = np.nanmean(a * a)
+    Estimate the 1/e decorrelation distance, or withhold it when neighbouring
+    valid pixels do not support an empirical spatial-correlation estimate.
+
+    Pixel spacing is not a measured correlation length. Substituting it for a
+    sparse/disconnected mask creates an unjustifiably permissive noise null.
+    """
+    values_array = np.asarray(v, dtype="float64")
+    valid = np.asarray(ok, dtype=bool) & np.isfinite(values_array)
+    if int(valid.sum()) < MIN_SPATIAL_CORRELATION_PAIRS:
+        return None
+
+    values = values_array[valid]
+    mean_value = float(np.mean(values))
+    ref = float(np.mean((values - mean_value) ** 2))
     if not np.isfinite(ref) or ref <= 0:
-        return px_km
+        return None
 
-    # Both directions, and keep the LARGER. Residual atmosphere over a valley
-    # is anisotropic - it streaks along the wind - and measuring across the
-    # streaks only makes noise look more local than it is, which is precisely
-    # the direction that turns an ordinary blob into a false candidate.
-    def decay(axis: int) -> float:
+    a = np.full(values_array.shape, np.nan, dtype="float64")
+    a[valid] = values - mean_value
+    px_km = abs(float(geo["transform"].a)) / 1000.0
+    if not np.isfinite(px_km) or px_km <= 0:
+        return None
+
+    # Measure both axes and keep the larger decorrelation length. Require
+    # enough actual neighbour pairs at every tested lag.
+    def decay(axis: int) -> float | None:
         n = a.shape[axis]
         for lag in range(1, min(60, n // 2)):
             if axis == 1:
-                c = np.nanmean(a[:, :-lag] * a[:, lag:]) / ref
+                left, right = a[:, :-lag], a[:, lag:]
             else:
-                c = np.nanmean(a[:-lag, :] * a[lag:, :]) / ref
-            if not np.isfinite(c) or c < np.e ** -1:
+                left, right = a[:-lag, :], a[lag:, :]
+            paired = np.isfinite(left) & np.isfinite(right)
+            if int(paired.sum()) < MIN_SPATIAL_CORRELATION_PAIRS:
+                return None
+            correlation = float(np.mean(left[paired] * right[paired]) / ref)
+            if not np.isfinite(correlation):
+                return None
+            if correlation < np.e ** -1:
                 return lag * px_km
         return 60 * px_km
 
-    return max(decay(0), decay(1))
+    x_length = decay(1)
+    y_length = decay(0)
+    if x_length is None or y_length is None:
+        return None
+    return max(x_length, y_length)
 
 
 def _null_cluster_sizes(shape, corr_km: float, geo: dict, trials: int = 20):
